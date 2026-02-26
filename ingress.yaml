@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: open-llm-proxy-ingress
+  annotations:
+    haproxy.org/cors-enable: "true"
+    haproxy.org/cors-allow-origin: "*"
+    haproxy.org/cors-allow-methods: "GET, POST, OPTIONS"
+    haproxy.org/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Accept,Accept-Encoding,Accept-Language,Connection,Host,Origin,Referer,Sec-Fetch-Dest,Sec-Fetch-Mode,Sec-Fetch-Site,Priority,Authorization"
+    haproxy.org/cors-expose-headers: "Content-Length,Content-Range"
+    haproxy.org/cors-allow-credentials: "false"
+    haproxy.org/cors-max-age: "600"
+    haproxy.org/timeout-http-request: "600s"
+    haproxy.org/timeout-server: "600s"
+    haproxy.org/timeout-client: "600s"
+    haproxy.org/timeout-connect: "30s"
+    haproxy.org/error-files: "true"
+spec:
+  ingressClassName: haproxy
+  tls:
+    - hosts:
+        - open-llm-proxy.nrp-nautilus.io
+  rules:
+    - host: open-llm-proxy.nrp-nautilus.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: open-llm-proxy
+                port:
+                  number: 8002

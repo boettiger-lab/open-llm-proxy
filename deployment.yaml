@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-llm-proxy
+  labels:
+    app: open-llm-proxy
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: open-llm-proxy
+  template:
+    metadata:
+      labels:
+        app: open-llm-proxy
+    spec:
+      initContainers:
+      - name: git-sync
+        image: alpine/git:latest
+        command:
+        - sh
+        - -c
+        - |
+          git clone https://github.com/boettiger-lab/open-llm-proxy.git /tmp/repo
+          cp -r /tmp/repo/. /app/
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      containers:
+      - name: open-llm-proxy
+        image: astral/uv:python3.12-bookworm-slim
+        command: ["uvx", "--from", "uvicorn", "--with", "fastapi", "--with", "httpx", "--with", "pydantic", "uvicorn", "llm_proxy:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
+        workingDir: /app
+        ports:
+        - containerPort: 8002
+        env:
+        - name: NRP_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: nrp-api-key
+        - name: PROXY_KEY
+          valueFrom:
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: proxy-key
+        - name: OPENROUTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openrouter-key
+              key: OPENROUTER_KEY
+        - name: NIMBUS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: nimbus-api-key
+              key: NIMBUS_API_KEY
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "1Gi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 30
+      tolerations:
+      - key: "nautilus.io/issue"
+        operator: "Equal"
+        value: "1476"
+        effect: "NoSchedule"
+      volumes:
+      - name: app-code
+        emptyDir: {}

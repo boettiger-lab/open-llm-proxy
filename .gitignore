@@ -1,0 +1,16 @@
+# Kubernetes secrets - NEVER commit these!
+secrets.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Local testing
+.env
+*.log
