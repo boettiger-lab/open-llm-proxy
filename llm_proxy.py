@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
     task.cancel()
     await _flush_to_s3()  # final flush on shutdown
 
-app = FastAPI(title="Multi-Provider LLM Proxy for Wetlands Chatbot", lifespan=lifespan)
+app = FastAPI(title="Multi-Provider LLM Proxy", lifespan=lifespan)
 
 # Enable CORS - allow requests from GitHub Pages and k8s deployment
 app.add_middleware(
@@ -399,7 +399,7 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 async def root():
     """Root endpoint"""
     return {
-        "service": "Multi-Provider LLM Proxy for Wetlands Chatbot",
+        "service": "Multi-Provider LLM Proxy",
         "version": "2.0",
         "providers": list(PROVIDERS.keys()),
         "endpoints": {

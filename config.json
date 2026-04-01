@@ -9,7 +9,12 @@
                 "glm-4.7",
                 "minimax-m2",
                 "gpt-oss"
-            ]
+            ],
+            "thinking_models": {
+                "kimi":   "thinking",
+                "qwen3":  "enable_thinking",
+                "glm-4.7": "enable_thinking"
+            }
         },
         "openrouter": {
             "endpoint": "https://openrouter.ai/api/v1/chat/completions",
@@ -23,8 +28,8 @@
                 "nvidia/"
             ],
             "extra_headers": {
-                "HTTP-Referer": "https://wetlands.nrp-nautilus.io",
-                "X-Title": "Wetlands Chatbot"
+                "HTTP-Referer": "https://open-llm-proxy.nrp-nautilus.io",
+                "X-Title": "Open LLM Proxy"
             }
         },
         "nimbus": {
