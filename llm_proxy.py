@@ -13,6 +13,7 @@ import httpx
 import os
 import json
 import time
+import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
@@ -76,18 +77,20 @@ def load_config() -> dict:
 # Load config and build providers
 config = load_config()
 PROXY_KEY = os.getenv("PROXY_KEY")  # Key required from clients
+CACHE_SALT = os.getenv("CACHE_SALT")  # Optional: isolate cached responses per deployment
 
 # Build PROVIDERS dictionary from config
 PROVIDERS = {}
 for provider_name, provider_config in config["providers"].items():
     api_key_env = provider_config.get("api_key_env")
     api_key = os.getenv(api_key_env) if api_key_env else None
-    
+
     PROVIDERS[provider_name] = {
         "endpoint": provider_config["endpoint"],
         "api_key": api_key,
         "models": provider_config["models"],
-        "extra_headers": provider_config.get("extra_headers", {})
+        "extra_headers": provider_config.get("extra_headers", {}),
+        "thinking_models": provider_config.get("thinking_models", {})
     }
 
 # Log configuration status
@@ -100,6 +103,10 @@ for provider, config in PROVIDERS.items():
     print(f"{status} {provider.upper()}: {config['endpoint']} (key: {'set' if has_key else 'MISSING'})")
 if not PROXY_KEY:
     print("⚠️  WARNING: PROXY_KEY not set - proxy will reject all requests!")
+if CACHE_SALT:
+    print("✓ CACHE_SALT configured - responses isolated from other NRP tenants")
+else:
+    print("ℹ️  CACHE_SALT not set - cached responses may be shared with other NRP users")
 print("=" * 60)
 
 def get_provider_for_model(model: str) -> tuple[str, dict]:
@@ -119,27 +126,48 @@ def get_provider_for_model(model: str) -> tuple[str, dict]:
     print(f"⚠️  Unknown model '{model}', defaulting to NRP")
     return "nrp", PROVIDERS["nrp"]
 
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None):
     """Log incoming request in structured JSON format"""
+    # Extract the original user question (first human message, stable across all turns)
+    user_question = next(
+        (m.get("content", "") for m in messages if m.get("role") == "user"),
+        ""
+    )
+    # Extract tool results added in this turn (role=tool messages at the end of history)
+    # These capture both local geo-agent tool results and MCP tool results
+    tool_results = []
+    for m in reversed(messages):
+        if m.get("role") == "tool":
+            tool_results.append({
+                "tool_call_id": m.get("tool_call_id"),
+                "content": (m.get("content") or "")[:500]
+            })
+        elif m.get("role") == "assistant":
+            break  # stop at the previous assistant turn
+
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "type": "request",
+        "request_id": request_id,
         "provider": provider,
         "model": model,
         "origin": origin,
         "message_count": len(messages),
         "tools_count": tools_count,
-        "user_message": messages[-1].get("content", "")[:200] if messages else ""  # Last message preview
+        "user_question": user_question[:500],
+        "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
     }
     print(f"📥 REQUEST: {json.dumps(log_entry)}", flush=True)
 
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "type": "response",
+        "request_id": request_id,
         "provider": provider,
         "model": model,
+        "origin": origin,
         "latency_ms": latency_ms,
     }
     
@@ -154,8 +182,10 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
             log_entry["content_preview"] = (message.get("content") or "")[:200]
             
             if message.get("tool_calls"):
-                tool_names = [tc["function"]["name"] for tc in message["tool_calls"]]
-                log_entry["tool_calls"] = tool_names
+                log_entry["tool_calls"] = [
+                    {"name": tc["function"]["name"], "arguments": tc["function"].get("arguments", "")}
+                    for tc in message["tool_calls"]
+                ]
         
         # Extract token usage if available
         if "usage" in response_data:
@@ -170,6 +200,7 @@ class ChatRequest(BaseModel):
     tool_choice: Optional[str] = "auto"
     model: Optional[str] = "gpt-4"
     temperature: Optional[float] = 0.7
+    enable_thinking: Optional[bool] = None  # None = use model default; True/False to override
 
 @app.post("/v1/chat/completions")
 @app.post("/chat")  # Keep for backward compatibility
@@ -202,10 +233,11 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         error_msg = f"{provider_name.upper()} API key not configured on server"
         log_response(provider_name, request.model, {}, 0, error=error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
-    
+
     # Log incoming request
+    request_id = uuid.uuid4().hex[:8]
     origin = http_request.headers.get("origin") or http_request.headers.get("referer")
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id)
     
     # Prepare request to LLM provider
     headers = {
@@ -227,6 +259,19 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if request.tools:
         payload["tools"] = request.tools
         payload["tool_choice"] = request.tool_choice
+
+    # Cache salt: isolate this deployment's cached responses from other NRP tenants
+    if CACHE_SALT and provider_name == "nrp":
+        payload["cache_salt"] = CACHE_SALT
+
+    # Thinking mode: inject per-model chat_template_kwargs if enable_thinking is set
+    if request.enable_thinking is not None:
+        thinking_models = provider_config.get("thinking_models", {})
+        thinking_key = thinking_models.get(request.model)
+        if thinking_key:
+            payload["chat_template_kwargs"] = {thinking_key: request.enable_thinking}
+        else:
+            print(f"ℹ️  enable_thinking requested for '{request.model}' but no thinking_key configured — ignoring")
     
     # Make request to LLM provider
     async with httpx.AsyncClient(timeout=600.0) as client:
@@ -237,21 +282,21 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             
             # Log successful response
             latency_ms = int((time.time() - start_time) * 1000)
-            log_response(provider_name, request.model, result, latency_ms)
-            
+            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id)
+
             return result
-            
+
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id)
             raise HTTPException(status_code=504, detail=error_detail)
-            
+
         except httpx.HTTPStatusError as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Provider returned {e.response.status_code}: {e.response.text[:200]}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail)
-            
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id)
+
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
                 # Client errors and rate limits - pass through the original status
@@ -259,11 +304,11 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             else:
                 # Other errors become 502 Bad Gateway (more accurate than 500)
                 raise HTTPException(status_code=502, detail=error_detail)
-            
+
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors
