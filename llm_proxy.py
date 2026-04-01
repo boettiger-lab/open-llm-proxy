@@ -6,9 +6,11 @@ API keys stored in environment variables, never exposed to browser
 Requires authentication token to prevent unauthorized use
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import asyncio
 import httpx
 import os
 import json
@@ -18,7 +20,54 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
-app = FastAPI(title="Multi-Provider LLM Proxy for Wetlands Chatbot")
+# --- S3 log buffer -----------------------------------------------------------
+_log_buffer: List[dict] = []
+_LOG_BUCKET = os.getenv("LOG_BUCKET", "logs-open-llm-proxy")
+_S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "http://rook-ceph-rgw-nautiluss3.rook")
+_S3_ENABLED = bool(os.getenv("AWS_ACCESS_KEY_ID"))
+
+def _emit(log_entry: dict):
+    """Print log entry and add to S3 buffer."""
+    _log_buffer.append(log_entry)
+
+async def _flush_to_s3():
+    """Write buffered log entries to S3 as a JSONL chunk file."""
+    if not _log_buffer or not _S3_ENABLED:
+        return
+    entries, _log_buffer[:] = list(_log_buffer), []
+    body = "\n".join(json.dumps(e) for e in entries) + "\n"
+    now = datetime.utcnow()
+    key = f"{now.strftime('%Y-%m-%d')}/{now.strftime('%H-%M-%S')}-{os.getpid()}.jsonl"
+    try:
+        import boto3
+        client = boto3.client(
+            "s3",
+            endpoint_url=_S3_ENDPOINT,
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        )
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: client.put_object(Bucket=_LOG_BUCKET, Key=key, Body=body.encode())
+        )
+        print(f"✓ Flushed {len(entries)} log entries to s3://{_LOG_BUCKET}/{key}", flush=True)
+    except Exception as e:
+        print(f"⚠️  S3 flush failed: {e} — entries remain in pod logs only", flush=True)
+
+async def _flush_loop():
+    while True:
+        await asyncio.sleep(300)  # flush every 5 minutes
+        await _flush_to_s3()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_flush_loop())
+    yield
+    task.cancel()
+    await _flush_to_s3()  # final flush on shutdown
+
+app = FastAPI(title="Multi-Provider LLM Proxy for Wetlands Chatbot", lifespan=lifespan)
 
 # Enable CORS - allow requests from GitHub Pages and k8s deployment
 app.add_middleware(
@@ -158,6 +207,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
     }
     print(f"📥 REQUEST: {json.dumps(log_entry)}", flush=True)
+    _emit(log_entry)
 
 def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None):
     """Log response in structured JSON format"""
@@ -193,6 +243,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
     
     status = "✗" if error else "✓"
     print(f"{status} RESPONSE: {json.dumps(log_entry)}", flush=True)
+    _emit(log_entry)
 
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]  # Accept any message format from OpenAI API

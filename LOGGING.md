@@ -2,27 +2,75 @@
 
 ## Where logs live
 
-Logs are written to **pod stdout** (via `print(..., flush=True)`). They are accessible via `kubectl` while the pod is running. Logs are lost on pod restart.
+Logs are written to two places:
 
-S3 persistence is not yet implemented.
+1. **Pod stdout** — available immediately via `kubectl`, lost on pod restart
+2. **S3 bucket `logs-open-llm-proxy`** — flushed every 5 minutes as JSONL chunk files, persisted indefinitely
+
+### S3 layout
+
+```
+logs-open-llm-proxy/
+├── 2026-03-31/
+│   ├── 02-00-05-39.jsonl     # flush at 02:00:05 from worker PID 39
+│   ├── 02-05-07-39.jsonl
+│   └── ...
+├── 2026-04-01/
+│   └── ...
+```
+
+Each file is newline-delimited JSON (one log entry per line, mix of request and response entries).
 
 ## Access pattern
+
+### S3 (preferred — no kubectl needed)
+
+Query with DuckDB via the MCP server or locally:
+
+```sql
+-- All logs for a date
+SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl');
+
+-- Filter to one app
+SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl')
+WHERE origin = 'https://padus.nrp-nautilus.io';
+
+-- Pair requests and responses
+SELECT req.user_question, req.timestamp, resp.tool_calls, resp.tokens
+FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl') req
+JOIN read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl') resp
+  ON req.request_id = resp.request_id
+WHERE req.type = 'request' AND resp.type = 'response';
+```
+
+DuckDB S3 secret config (inside NRP pods, use internal endpoint):
+```sql
+CREATE SECRET (TYPE S3, ENDPOINT 'rook-ceph-rgw-nautiluss3.rook', USE_SSL 'FALSE',
+               URL_STYLE 'path', REGION 'us-east-1');
+```
+
+External (public endpoint, read-only if bucket is public):
+```sql
+CREATE SECRET (TYPE S3, ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL 'TRUE', URL_STYLE 'path');
+```
+
+Or via rclone:
+```bash
+rclone copy nrp:logs-open-llm-proxy/2026-03-31/ ./logs/
+```
+
+### kubectl (live logs / last ~5 min before next flush)
 
 ```bash
 # Live tail
 kubectl -n biodiversity logs deployment/open-llm-proxy -f
 
-# Recent history (adjust --tail as needed)
+# Recent history
 kubectl -n biodiversity logs deployment/open-llm-proxy --tail=500
 
-# Filter to a specific app by origin
+# Filter to a specific app
 kubectl -n biodiversity logs deployment/open-llm-proxy --tail=1000 \
   | grep '"origin":"https://padus.nrp-nautilus.io"'
-
-# All pods (if replicas > 1)
-for pod in $(kubectl -n biodiversity get pods -l app=open-llm-proxy -o name); do
-  kubectl -n biodiversity logs $pod --tail=500
-done | sort
 ```
 
 ## Log format
