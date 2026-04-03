@@ -8,7 +8,8 @@
                 "qwen3",
                 "glm-4.7",
                 "minimax-m2",
-                "gpt-oss"
+                "gpt-oss",
+                "gemma4"
             ],
             "thinking_models": {
                 "kimi":   "thinking",
