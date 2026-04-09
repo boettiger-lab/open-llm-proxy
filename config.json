@@ -39,6 +39,13 @@
             "models": [
                 "nemotron"
             ]
+        },
+        "gemma4-nimbus": {
+            "endpoint": "https://gemma4-nimbus.carlboettiger.info/v1/chat/completions",
+            "api_key_env": "NIMBUS_API_KEY",
+            "models": [
+                "gemma4"
+            ]
         }
     }
 }
