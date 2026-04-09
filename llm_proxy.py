@@ -348,7 +348,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
 
         except httpx.HTTPStatusError as e:
             latency_ms = int((time.time() - start_time) * 1000)
-            error_detail = f"Provider returned {e.response.status_code}: {e.response.text[:200]}"
+            error_detail = f"Provider returned {e.response.status_code}: {e.response.text[:1000]}"
             log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id)
 
             # Pass through certain status codes to client
