@@ -45,7 +45,8 @@
             "api_key_env": "NIMBUS_API_KEY",
             "models": [
                 "gemma4"
-            ]
+            ],
+            "no_tools": true
         }
     }
 }

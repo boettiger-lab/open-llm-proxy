@@ -139,7 +139,8 @@ for provider_name, provider_config in config["providers"].items():
         "api_key": api_key,
         "models": provider_config["models"],
         "extra_headers": provider_config.get("extra_headers", {}),
-        "thinking_models": provider_config.get("thinking_models", {})
+        "thinking_models": provider_config.get("thinking_models", {}),
+        "no_tools": provider_config.get("no_tools", False)
     }
 
 # Log configuration status
@@ -309,8 +310,8 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         "temperature": request.temperature
     }
     
-    # Add tools if provided
-    if request.tools:
+    # Add tools if provided (skip for providers that don't support tool choice)
+    if request.tools and not provider_config.get("no_tools"):
         payload["tools"] = request.tools
         payload["tool_choice"] = request.tool_choice
 
