@@ -9,7 +9,8 @@
                 "glm-4.7",
                 "minimax-m2",
                 "gpt-oss",
-                "gemma"
+                "gemma",
+                "gemma-4-e4b"
             ],
             "thinking_models": {
                 "kimi":   "thinking",
