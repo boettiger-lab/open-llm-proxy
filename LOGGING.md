@@ -5,7 +5,7 @@
 Logs are written to two places:
 
 1. **Pod stdout** — available immediately via `kubectl`, lost on pod restart
-2. **S3 bucket `logs-open-llm-proxy`** — flushed every 5 minutes as JSONL chunk files, persisted indefinitely
+2. **S3 bucket `logs-open-llm-proxy`** — flushed every 60 seconds (configurable via `FLUSH_INTERVAL` env var) as JSONL chunk files, persisted indefinitely
 
 ### S3 layout
 
@@ -59,7 +59,7 @@ Or via rclone:
 rclone copy nrp:logs-open-llm-proxy/2026-03-31/ ./logs/
 ```
 
-### kubectl (live logs / last ~5 min before next flush)
+### kubectl (live logs / last ~60s before next flush)
 
 ```bash
 # Live tail

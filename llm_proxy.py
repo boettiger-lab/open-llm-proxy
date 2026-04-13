@@ -25,6 +25,7 @@ _log_buffer: List[dict] = []
 _LOG_BUCKET = os.getenv("LOG_BUCKET", "logs-open-llm-proxy")
 _S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "http://rook-ceph-rgw-nautiluss3.rook")
 _S3_ENABLED = bool(os.getenv("AWS_ACCESS_KEY_ID"))
+_FLUSH_INTERVAL = int(os.getenv("FLUSH_INTERVAL", "60"))
 
 def _emit(log_entry: dict):
     """Print log entry and add to S3 buffer."""
@@ -57,7 +58,7 @@ async def _flush_to_s3():
 
 async def _flush_loop():
     while True:
-        await asyncio.sleep(300)  # flush every 5 minutes
+        await asyncio.sleep(_FLUSH_INTERVAL)
         await _flush_to_s3()
 
 @asynccontextmanager
