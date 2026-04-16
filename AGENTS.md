@@ -23,8 +23,10 @@ Narrow the S3 glob to an hour (`2026-04-07/17-*.jsonl`) when you only need recen
 Each LLM call produces a `request` entry and a `response` entry linked by `request_id`. Key fields:
 
 - **Request**: `user_question`, `tool_results_this_turn`, `model`, `origin`, `message_count`
-- **Response**: `tool_calls`, `content_preview`, `tokens`, `latency_ms`, `error`
+- **Response**: `tool_calls`, `content_preview`, `tokens`, `latency_ms`, `error` (sparse — only present in files that contain failures; omit from JOIN queries or use `TRY(resp.error)`)
 
 **Reconstructing a conversation**: group by `user_question`, filter by `origin`, sort by `timestamp`. The `tool_results_this_turn` on each request shows what the previous turn's tool calls returned; `tool_calls` on each response shows what the LLM called next.
 
 See [LOGGING.md](LOGGING.md) for full field reference, SQL patterns, kubectl access, and session reconstruction examples.
+
+When analyzing geo-agent app behavior (tool-call counts, query failures, session reconstructions), invoke the `geo-agent-training` skill — it provides the full step-by-step diagnostic workflow.

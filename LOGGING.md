@@ -48,7 +48,15 @@ WHERE req.type = 'request' AND resp.type = 'response';
 "
 ```
 
-Narrow the glob to an hour (`2026-03-31/14-*.jsonl`) when you only need recent traffic. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files).
+**Narrow the glob to the current hour** when looking at recent traffic — do NOT scan the whole day. Example: `2026-03-31/14-*.jsonl`. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files). If the queried window has zero error responses, `error` is absent from all files — omit it from JOIN queries or use `TRY(resp.error)`.
+
+**Temporal filter:** `timestamp` is stored as VARCHAR (ISO8601). Cast to `TIMESTAMPTZ` (not `TIMESTAMP`) when comparing against `now()`:
+```sql
+CAST(req.timestamp AS TIMESTAMPTZ) >= now() - INTERVAL 20 MINUTES
+```
+Using `TIMESTAMP` causes a type mismatch binder error because `now()` returns `TIMESTAMPTZ`.
+
+**Log field truncation:** `tool_results_this_turn[N].content` and `content_preview` are truncated to ~200 chars in logs. A tool result that appears to contain only column names likely has full descriptions below the truncation point — verify using the STAC MCP tools directly rather than inferring from log previews.
 
 Inside NRP pods, use the internal endpoint instead (`rook-ceph-rgw-nautiluss3.rook`, `USE_SSL false`) — faster and no public-endpoint throttling.
 
@@ -130,13 +138,13 @@ REQUEST  msg=2  user_question="Tell me about datasets"  tool_results=null
 RESPONSE tool_calls=[{name: list_datasets, arguments: {}}]
 
 REQUEST  msg=4  user_question="Tell me about datasets"  tool_results=[{content: "[{id: pad-us...}]"}]
-RESPONSE tool_calls=[{name: get_dataset_details, arguments: {dataset_id: "pad-us-4.1-fee"}}]
+RESPONSE tool_calls=[{name: get_schema, arguments: {dataset_id: "pad-us-4.1-fee"}}]
 
-REQUEST  msg=6  user_question="Tell me about datasets"  tool_results=[{content: "{columns: [...]}"}]
+REQUEST  msg=6  user_question="Tell me about datasets"  tool_results=[{content: "path: s3://... | column | sample..."}]
 RESPONSE has_content=true  content_preview="The PAD-US dataset contains..."
 ```
 
-Note: `list_datasets` and `get_dataset_details` are local geo-agent tools — their results appear in `tool_results_this_turn` on the proxy but never reach the MCP server.
+Note: `list_datasets` and `get_schema` are local geo-agent tools — their results appear in `tool_results_this_turn` on the proxy but never reach the MCP server.
 
 ## What the MCP server logs add
 
