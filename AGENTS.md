@@ -8,12 +8,17 @@ This is an LLM proxy service that routes chat completion requests to NRP, OpenRo
 
 Logs live in two places: pod stdout (ephemeral) and S3 bucket `logs-open-llm-proxy` (persisted as JSONL chunks, preferred).
 
-**Query logs with DuckDB** (external endpoint):
+The bucket is private. Agents should assume `LOG_S3_KEY` and `LOG_S3_SECRET` are pre-set in the shell and use those env vars via the Bash tool — the shell expands them at execution time so the values never appear in chat. Do not hunt for credentials in rclone config, k8s secrets, etc.
 
-```sql
-CREATE SECRET (TYPE S3, ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL 'TRUE', URL_STYLE 'path');
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-04-07/*.jsonl');
+```bash
+duckdb -s "
+CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
+  ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
+SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-04-07/*.jsonl', union_by_name=true);
+"
 ```
+
+Narrow the S3 glob to an hour (`2026-04-07/17-*.jsonl`) when you only need recent traffic.
 
 Each LLM call produces a `request` entry and a `response` entry linked by `request_id`. Key fields:
 

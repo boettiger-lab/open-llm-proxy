@@ -25,39 +25,32 @@ Each file is newline-delimited JSON (one log entry per line, mix of request and 
 
 ### S3 (preferred — no kubectl needed)
 
-Query with DuckDB via the MCP server or locally:
+The bucket is **private**. Set `LOG_S3_KEY` and `LOG_S3_SECRET` in your shell (scoped keys for this bucket — distinct from your general NRP credentials) and let the shell expand them into DuckDB's `CREATE SECRET`. Agents should use the Bash tool so shell expansion keeps the secret values out of the conversation transcript.
 
-```sql
+```bash
+duckdb -s "
+CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
+  ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
+
 -- All logs for a date
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl');
+SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true);
 
 -- Filter to one app
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl')
+SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true)
 WHERE origin = 'https://padus.nrp-nautilus.io';
 
 -- Pair requests and responses
 SELECT req.user_question, req.timestamp, resp.tool_calls, resp.tokens
-FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl') req
-JOIN read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl') resp
+FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true) req
+JOIN read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true) resp
   ON req.request_id = resp.request_id
 WHERE req.type = 'request' AND resp.type = 'response';
+"
 ```
 
-DuckDB S3 secret config (inside NRP pods, use internal endpoint):
-```sql
-CREATE SECRET (TYPE S3, ENDPOINT 'rook-ceph-rgw-nautiluss3.rook', USE_SSL 'FALSE',
-               URL_STYLE 'path', REGION 'us-east-1');
-```
+Narrow the glob to an hour (`2026-03-31/14-*.jsonl`) when you only need recent traffic. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files).
 
-External (public endpoint, read-only if bucket is public):
-```sql
-CREATE SECRET (TYPE S3, ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL 'TRUE', URL_STYLE 'path');
-```
-
-Or via rclone:
-```bash
-rclone copy nrp:logs-open-llm-proxy/2026-03-31/ ./logs/
-```
+Inside NRP pods, use the internal endpoint instead (`rook-ceph-rgw-nautiluss3.rook`, `USE_SSL false`) — faster and no public-endpoint throttling.
 
 ### kubectl (live logs / last ~60s before next flush)
 
