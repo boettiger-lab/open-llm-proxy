@@ -2,154 +2,169 @@
 
 ## Where logs live
 
-Logs are written to two places:
+Every LLM request/response pair is written to **three** surfaces. Each serves a distinct purpose:
 
-1. **Pod stdout** — available immediately via `kubectl`, lost on pod restart
-2. **S3 bucket `logs-open-llm-proxy`** — flushed every 60 seconds (configurable via `FLUSH_INTERVAL` env var) as JSONL chunk files, persisted indefinitely
+| Surface | Purpose | Latency | Retention |
+|---|---|---|---|
+| **Postgres `logs` table** | Primary durable store; queryable | Sub-second | 1 year |
+| **Pod stdout** | Live tail for active debugging | Real-time | Until pod restart |
+| **S3 `archive/YYYY-MM.parquet`** | Cold archive; monthly rollup | End of month + ~3h | Forever |
 
-### S3 layout
+The Postgres row **is** the log. Stdout is a realtime view and a safety net if Postgres is unreachable. S3 Parquet is the long-term archive so the Postgres PVC stays bounded.
+
+## Postgres (primary access pattern)
+
+### Credentials
+
+There are two roles, both created at Postgres first-init:
+
+- `log_writer` — `INSERT` only, used by the proxy itself (`LOG_DB_URL` secret)
+- `log_reader` — `SELECT` only, used by developers / cron archive job
+
+Agents and developers should have **`LOG_DB_READ_URL`** pre-set in their shell, pointing at the reader role:
 
 ```
-logs-open-llm-proxy/
-├── 2026-03-31/
-│   ├── 02-00-05-39.jsonl     # flush at 02:00:05 from worker PID 39
-│   ├── 02-05-07-39.jsonl
-│   └── ...
-├── 2026-04-01/
-│   └── ...
+postgresql://log_reader:<password>@<host>:5432/logs
 ```
 
-Each file is newline-delimited JSON (one log entry per line, mix of request and response entries).
+Use the env var via the Bash tool so the password never appears in chat. **Do not** look up or copy the password out of `postgres-logs-auth` or any k8s Secret.
 
-## Access pattern
+### Schema
 
-### S3 (preferred — no kubectl needed)
+```sql
+CREATE TABLE logs (
+    id         BIGSERIAL PRIMARY KEY,
+    ts         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    type       TEXT NOT NULL,            -- 'request' | 'response'
+    request_id TEXT,
+    origin     TEXT,
+    entry      JSONB NOT NULL            -- the full payload
+);
+```
 
-The bucket is **private**. Set `LOG_S3_KEY` and `LOG_S3_SECRET` in your shell (scoped keys for this bucket — distinct from your general NRP credentials) and let the shell expand them into DuckDB's `CREATE SECRET`. Agents should use the Bash tool so shell expansion keeps the secret values out of the conversation transcript.
+`entry` is the full JSON object — query into it with `entry->>'field'` (text) or `entry->'field'` (jsonb).
+
+### psql (simple one-offs)
+
+```bash
+psql "$LOG_DB_READ_URL" -c "
+  SELECT ts, entry->>'user_question' AS q, entry->'tool_calls' AS tools
+  FROM logs
+  WHERE type='response' AND origin='https://tpl.nrp-nautilus.io'
+    AND ts > now() - INTERVAL '1 hour'
+  ORDER BY ts DESC;
+"
+```
+
+### DuckDB (joins, Parquet spillover, richer analysis)
+
+DuckDB has a `postgres` extension that can query the live table directly:
+
+```bash
+duckdb -s "
+INSTALL postgres; LOAD postgres;
+ATTACH '$LOG_DB_READ_URL' AS pg (TYPE postgres, READ_ONLY);
+
+-- Pair requests and responses
+SELECT req.ts, req.entry->>'user_question' AS q,
+       resp.entry->'tool_calls' AS tools, (resp.entry->>'latency_ms')::INT AS ms
+FROM pg.public.logs req
+JOIN pg.public.logs resp ON req.request_id = resp.request_id
+WHERE req.type='request' AND resp.type='response'
+  AND req.origin='https://tpl.nrp-nautilus.io'
+  AND req.ts > now() - INTERVAL 20 MINUTES
+ORDER BY req.ts DESC;
+"
+```
+
+## Stdout (live tail, fallback)
+
+Same JSON payload as Postgres, on every pod. Use `kubectl` for real-time inspection during active debugging:
+
+```bash
+kubectl -n biodiversity logs deployment/open-llm-proxy -f \
+  | grep '"origin":"https://tpl.nrp-nautilus.io"'
+```
+
+If the Postgres pod is unavailable, log rows will **only** exist in stdout until the pod restarts. That's the safety net.
+
+## S3 Parquet archive (cold storage)
+
+On the first day of each month, a CronJob dumps the previous month's rows to `s3://logs-open-llm-proxy/archive/YYYY-MM.parquet` (zstd-compressed). The archive format keeps `entry` as a JSON-encoded `VARCHAR` column so DuckDB can still parse into it:
 
 ```bash
 duckdb -s "
 CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
   ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
 
--- All logs for a date
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true);
-
--- Filter to one app
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true)
-WHERE origin = 'https://padus.nrp-nautilus.io';
-
--- Pair requests and responses
-SELECT req.user_question, req.timestamp, resp.tool_calls, resp.tokens
-FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true) req
-JOIN read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true) resp
-  ON req.request_id = resp.request_id
-WHERE req.type = 'request' AND resp.type = 'response';
+SELECT ts, entry::JSON->>'user_question' AS q
+FROM read_parquet('s3://logs-open-llm-proxy/archive/2026-03.parquet')
+WHERE entry::JSON->>'origin' = 'https://tpl.nrp-nautilus.io';
 "
 ```
 
-**Narrow the glob to the current hour** when looking at recent traffic — do NOT scan the whole day. Example: `2026-03-31/14-*.jsonl`. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files). If the queried window has zero error responses, `error` is absent from all files — omit it from JOIN queries or use `TRY(resp.error)`.
+To query live + archive as one set, UNION the Postgres table and the Parquet files in DuckDB.
 
-**Temporal filter:** `timestamp` is stored as VARCHAR (ISO8601). Cast to `TIMESTAMPTZ` (not `TIMESTAMP`) when comparing against `now()`:
-```sql
-CAST(req.timestamp AS TIMESTAMPTZ) >= now() - INTERVAL 20 MINUTES
-```
-Using `TIMESTAMP` causes a type mismatch binder error because `now()` returns `TIMESTAMPTZ`.
+## Log fields
 
-**Log field truncation:** `tool_results_this_turn[N].content` and `content_preview` are truncated to ~200 chars in logs. A tool result that appears to contain only column names likely has full descriptions below the truncation point — verify using the STAC MCP tools directly rather than inferring from log previews.
-
-Inside NRP pods, use the internal endpoint instead (`rook-ceph-rgw-nautiluss3.rook`, `USE_SSL false`) — faster and no public-endpoint throttling.
-
-### kubectl (live logs / last ~60s before next flush)
-
-```bash
-# Live tail
-kubectl -n biodiversity logs deployment/open-llm-proxy -f
-
-# Recent history
-kubectl -n biodiversity logs deployment/open-llm-proxy --tail=500
-
-# Filter to a specific app
-kubectl -n biodiversity logs deployment/open-llm-proxy --tail=1000 \
-  | grep '"origin":"https://padus.nrp-nautilus.io"'
-```
-
-## Log format
-
-Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the call arrives and a `RESPONSE` line when it completes.
-
-### REQUEST entry
-
-```
-📥 REQUEST: {"timestamp": "...", "type": "request", ...}
-```
+### REQUEST entry (`type='request'`)
 
 | Field | Description |
 |---|---|
-| `timestamp` | UTC ISO8601 |
-| `type` | `"request"` |
+| `timestamp` | UTC ISO8601 (also stored as `ts TIMESTAMPTZ`) |
 | `request_id` | 8-char hex — correlates this request to its response |
 | `provider` | `"nrp"`, `"openrouter"`, or `"nimbus"` |
 | `model` | Model name as sent by the client |
 | `origin` | Origin or Referer header — identifies which app sent the request |
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
-| `user_question` | First `role: user` message in the conversation — the human's original question, stable across all turns of a tool-use loop |
-| `tool_results_this_turn` | Array of `{tool_call_id, content}` for any `role: tool` messages appended since the last assistant turn. Captures results from both local geo-agent tools (e.g. `list_datasets`, `get_dataset_details`) and remote MCP tools (e.g. `query`). `null` on the first turn. |
+| `user_question` | First `role: user` message — stable across all turns of a tool-use loop |
+| `tool_results_this_turn` | Array of `{tool_call_id, content}` for any `role: tool` messages appended since the last assistant turn. `null` on the first turn. Content truncated to ~500 chars. |
 
-### RESPONSE entry
-
-```
-✓ RESPONSE: {"timestamp": "...", "type": "response", ...}
-✗ RESPONSE: {"timestamp": "...", "type": "response", "error": "...", ...}
-```
+### RESPONSE entry (`type='response'`)
 
 | Field | Description |
 |---|---|
-| `timestamp` | UTC ISO8601 |
-| `type` | `"response"` |
-| `request_id` | Matches the corresponding request entry |
-| `provider` | Provider that handled the request |
-| `model` | Model used |
-| `origin` | Same as request — identifies which app |
+| `timestamp`, `request_id`, `provider`, `model`, `origin` | Same semantics as request |
 | `latency_ms` | End-to-end latency in milliseconds |
-| `has_content` | Whether the LLM returned text content |
-| `has_tool_calls` | Whether the LLM made tool calls |
+| `has_content`, `has_tool_calls` | Booleans |
 | `content_preview` | First 200 chars of text response |
 | `tool_calls` | Array of `{name, arguments}` — full tool call arguments including SQL query strings |
-| `tokens` | Token usage object from the provider (`prompt_tokens`, `completion_tokens`, `total_tokens`) |
+| `tokens` | Token usage from the provider (`prompt_tokens`, `completion_tokens`, `total_tokens`) |
 | `error` | Error detail string (only present on failed requests) |
 
 ## Reconstructing a conversation
 
-Each POST to `/v1/chat/completions` is one LLM turn. A single user session produces multiple request/response pairs. To reconstruct a session:
+Each POST to `/v1/chat/completions` is one LLM turn. To reconstruct a session:
 
-1. Match by `origin` to isolate one app
-2. Group turns by `user_question` (same question = same session)
-3. Sort by `timestamp`
-4. Interleave: each request's `tool_results_this_turn` shows what the previous turn's tool calls returned; each response's `tool_calls` shows what the LLM decided to call next
+1. Filter by `origin` to isolate one app
+2. Group turns by `entry->>'user_question'` (same question = same session)
+3. Sort by `ts`
+4. Pair each request with its response via `request_id`. Each request's `tool_results_this_turn` shows what the previous turn's tool calls returned; each response's `tool_calls` shows what the LLM decided to call next.
 
-Use `request_id` to pair each request with its response when log lines are interleaved under concurrent load.
+## Bootstrap (one-time)
 
-## Example session reconstruction
+Before the proxy can log to Postgres, the cluster needs:
 
-```
-REQUEST  msg=2  user_question="Tell me about datasets"  tool_results=null
-RESPONSE tool_calls=[{name: list_datasets, arguments: {}}]
-
-REQUEST  msg=4  user_question="Tell me about datasets"  tool_results=[{content: "[{id: pad-us...}]"}]
-RESPONSE tool_calls=[{name: get_schema, arguments: {dataset_id: "pad-us-4.1-fee"}}]
-
-REQUEST  msg=6  user_question="Tell me about datasets"  tool_results=[{content: "path: s3://... | column | sample..."}]
-RESPONSE has_content=true  content_preview="The PAD-US dataset contains..."
-```
-
-Note: `list_datasets` and `get_schema` are local geo-agent tools — their results appear in `tool_results_this_turn` on the proxy but never reach the MCP server.
-
-## What the MCP server logs add
-
-The DuckDB MCP server logs SQL execution separately. MCP logs are only needed for:
-- SQL execution errors not visible to the LLM (failed queries that return an error string)
-- Exact query timing at the database layer
-
-For conversation-level analysis (what users asked, what the LLM decided, what tools returned), proxy logs are self-sufficient.
+1. **Secret `postgres-logs-auth`** — three passwords (superuser, writer, reader). Generate and apply manually (not committed).
+   ```bash
+   kubectl -n biodiversity create secret generic postgres-logs-auth \
+     --from-literal=POSTGRES_PASSWORD="$(openssl rand -base64 32)" \
+     --from-literal=LOG_WRITER_PASSWORD="$(openssl rand -base64 32)" \
+     --from-literal=LOG_READER_PASSWORD="$(openssl rand -base64 32)"
+   ```
+2. **`log-db-url` key in `open-llm-proxy-secrets`** — writer DSN used by the proxy pod:
+   ```
+   postgresql://log_writer:<LOG_WRITER_PASSWORD>@postgres-logs:5432/logs
+   ```
+3. **Apply manifests in order**:
+   ```bash
+   kubectl apply -f postgres-initdb-configmap.yaml
+   kubectl apply -f postgres-statefulset.yaml
+   kubectl apply -f postgres-service.yaml
+   # wait for LoadBalancer IP to be assigned, verify external 5432 reachable
+   kubectl apply -f archive-cronjob.yaml
+   kubectl apply -f retention-cronjob.yaml
+   # finally, roll the proxy
+   kubectl -n biodiversity rollout restart deployment/open-llm-proxy
+   ```

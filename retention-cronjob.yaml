@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-logs-retention
+  labels:
+    app: postgres-logs
+spec:
+  # 04:00 UTC every Sunday — archive lead time ensures deleted rows already
+  # live in S3 Parquet (monthly archive runs day 1; retention boundary is ~11
+  # months behind the most recent archived month).
+  schedule: "0 4 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          priorityClassName: opportunistic
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/pci-10de.present
+                        operator: NotIn
+                        values: ["true"]
+          containers:
+            - name: retention
+              image: postgres:16
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-logs-auth
+                      key: POSTGRES_PASSWORD
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  psql -h postgres-logs -U postgres -d logs -v ON_ERROR_STOP=1 <<'SQL'
+                  BEGIN;
+                  WITH del AS (
+                      DELETE FROM logs
+                      WHERE ts < now() - INTERVAL '365 days'
+                      RETURNING 1
+                  )
+                  SELECT count(*) AS rows_deleted FROM del;
+                  COMMIT;
+                  SQL
+              resources:
+                requests:
+                  cpu: "200m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "256Mi"

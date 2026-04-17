@@ -1,0 +1,96 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-logs-archive
+  labels:
+    app: postgres-logs
+spec:
+  # 03:00 UTC on day 1 of every month — dumps the completed previous month
+  schedule: "0 3 1 * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          priorityClassName: opportunistic
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/pci-10de.present
+                        operator: NotIn
+                        values: ["true"]
+          containers:
+            - name: archive
+              image: python:3.12-slim
+              env:
+                - name: LOG_READER_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-logs-auth
+                      key: LOG_READER_PASSWORD
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY }
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  pip install --quiet duckdb
+
+                  START=$(date -u -d "$(date -u +%Y-%m-01) -1 month" +%Y-%m-%d)
+                  END=$(date -u +%Y-%m-01)
+                  MONTH=$(date -u -d "$START" +%Y-%m)
+                  echo "Archiving logs from $START (inclusive) to $END (exclusive) → archive/$MONTH.parquet"
+
+                  python - <<PY
+                  import os, duckdb
+                  con = duckdb.connect()
+                  con.execute("INSTALL httpfs; LOAD httpfs;")
+                  con.execute("INSTALL postgres; LOAD postgres;")
+                  con.execute(f"""
+                      CREATE SECRET s3_archive (
+                          TYPE S3,
+                          KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
+                          SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
+                          ENDPOINT 'rook-ceph-rgw-nautiluss3.rook',
+                          USE_SSL false,
+                          URL_STYLE 'path'
+                      )
+                  """)
+                  con.execute(f"""
+                      ATTACH 'postgresql://log_reader:{os.environ["LOG_READER_PASSWORD"]}@postgres-logs:5432/logs'
+                      AS pg (TYPE postgres, READ_ONLY)
+                  """)
+                  con.execute(f"""
+                      COPY (
+                          SELECT ts, type, request_id, origin, entry::VARCHAR AS entry
+                          FROM pg.public.logs
+                          WHERE ts >= TIMESTAMPTZ '$START'
+                            AND ts <  TIMESTAMPTZ '$END'
+                      ) TO 's3://logs-open-llm-proxy/archive/$MONTH.parquet'
+                      (FORMAT PARQUET, COMPRESSION zstd)
+                  """)
+                  rows = con.execute(f"""
+                      SELECT count(*) FROM pg.public.logs
+                      WHERE ts >= TIMESTAMPTZ '$START' AND ts < TIMESTAMPTZ '$END'
+                  """).fetchone()[0]
+                  print(f"✓ Archived {rows} rows to s3://logs-open-llm-proxy/archive/$MONTH.parquet")
+                  PY
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "500m"
+                  memory: "1Gi"

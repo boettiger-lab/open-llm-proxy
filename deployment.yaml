@@ -34,7 +34,7 @@ spec:
       containers:
       - name: open-llm-proxy
         image: astral/uv:python3.12-bookworm-slim
-        command: ["uvx", "--from", "uvicorn", "--with", "fastapi", "--with", "httpx", "--with", "pydantic", "--with", "boto3", "uvicorn", "llm_proxy:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
+        command: ["uvx", "--from", "uvicorn", "--with", "fastapi", "--with", "httpx", "--with", "pydantic", "--with", "asyncpg", "uvicorn", "llm_proxy:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
         workingDir: /app
         ports:
         - containerPort: 8002
@@ -64,12 +64,11 @@ spec:
             secretKeyRef:
               name: open-llm-proxy-secrets
               key: cache-salt
-        - name: AWS_ACCESS_KEY_ID
+        - name: LOG_DB_URL
           valueFrom:
-            secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID }
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY }
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: log-db-url
         resources:
           requests:
             cpu: "1000m"

@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-logs-initdb
+  labels:
+    app: postgres-logs
+data:
+  # Runs only on first initialization (empty PGDATA). Schema migrations after
+  # first init must be applied manually via psql.
+  init.sh: |
+    #!/bin/bash
+    set -e
+
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<EOF
+    CREATE TABLE IF NOT EXISTS logs (
+        id         BIGSERIAL PRIMARY KEY,
+        ts         TIMESTAMPTZ NOT NULL DEFAULT now(),
+        type       TEXT NOT NULL,
+        request_id TEXT,
+        origin     TEXT,
+        entry      JSONB NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS logs_ts_idx         ON logs (ts DESC);
+    CREATE INDEX IF NOT EXISTS logs_request_id_idx ON logs (request_id);
+    CREATE INDEX IF NOT EXISTS logs_origin_ts_idx  ON logs (origin, ts DESC);
+    CREATE INDEX IF NOT EXISTS logs_entry_gin_idx  ON logs USING GIN (entry jsonb_path_ops);
+
+    DO \$\$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'log_writer') THEN
+        CREATE ROLE log_writer LOGIN PASSWORD '$LOG_WRITER_PASSWORD';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'log_reader') THEN
+        CREATE ROLE log_reader LOGIN PASSWORD '$LOG_READER_PASSWORD';
+      END IF;
+    END
+    \$\$;
+
+    GRANT CONNECT ON DATABASE "$POSTGRES_DB" TO log_writer, log_reader;
+    GRANT USAGE ON SCHEMA public TO log_writer, log_reader;
+    GRANT INSERT ON logs TO log_writer;
+    GRANT USAGE, SELECT ON SEQUENCE logs_id_seq TO log_writer;
+    GRANT SELECT ON logs TO log_reader;
+    EOF
