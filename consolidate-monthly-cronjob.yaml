@@ -1,0 +1,114 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: logs-consolidate-monthly
+  labels:
+    app: logs-consolidate
+spec:
+  # 04:00 UTC on day 2 of every month — merges the just-closed month's daily
+  # Parquet files into consolidated/monthly/YYYY-MM.parquet, then deletes the
+  # daily inputs. Day 2 (not day 1) so the daily job for the 1st of the new
+  # month has already run and consolidated the final day of the previous month.
+  schedule: "0 4 2 * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          priorityClassName: opportunistic
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/pci-10de.present
+                        operator: NotIn
+                        values: ["true"]
+          containers:
+            - name: rollup
+              image: python:3.12-slim
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  pip install --quiet duckdb boto3
+                  python - <<'PY'
+                  import os, datetime, boto3, duckdb
+                  from botocore.client import Config
+
+                  BUCKET   = 'logs-open-llm-proxy'
+                  ENDPOINT = 'http://rook-ceph-rgw-nautiluss3.rook'
+
+                  s3 = boto3.client(
+                      's3',
+                      endpoint_url=ENDPOINT,
+                      aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+                      aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+                      config=Config(s3={'addressing_style': 'path'}),
+                  )
+
+                  # Previous completed month (UTC)
+                  today = datetime.datetime.utcnow().date()
+                  first_of_this_month = today.replace(day=1)
+                  prev_month_end  = first_of_this_month - datetime.timedelta(days=1)
+                  prev_month      = prev_month_end.strftime('%Y-%m')
+                  print(f"Rolling up month: {prev_month}")
+
+                  paginator = s3.get_paginator('list_objects_v2')
+
+                  # Daily files for that month
+                  daily_keys = []
+                  for page in paginator.paginate(Bucket=BUCKET, Prefix=f'consolidated/daily/{prev_month}-'):
+                      for obj in page.get('Contents', []):
+                          if obj['Key'].endswith('.parquet'):
+                              daily_keys.append(obj['Key'])
+                  print(f"Daily files found: {len(daily_keys)}")
+                  if not daily_keys:
+                      print("Nothing to roll up.")
+                      raise SystemExit(0)
+
+                  monthly_key = f'consolidated/monthly/{prev_month}.parquet'
+
+                  con = duckdb.connect()
+                  con.execute(f"""
+                      CREATE SECRET s3_logs (
+                          TYPE S3,
+                          KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
+                          SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
+                          ENDPOINT 'rook-ceph-rgw-nautiluss3.rook',
+                          USE_SSL false,
+                          URL_STYLE 'path'
+                      )
+                  """)
+                  con.execute(f"""
+                      COPY (
+                          SELECT * FROM read_parquet('s3://{BUCKET}/consolidated/daily/{prev_month}-*.parquet')
+                          ORDER BY ts
+                      ) TO 's3://{BUCKET}/{monthly_key}' (FORMAT PARQUET, COMPRESSION zstd)
+                  """)
+
+                  # Verify monthly file exists before deleting daily inputs
+                  s3.head_object(Bucket=BUCKET, Key=monthly_key)
+                  delete_batch = [{'Key': k} for k in daily_keys]
+                  for i in range(0, len(delete_batch), 1000):
+                      s3.delete_objects(Bucket=BUCKET, Delete={'Objects': delete_batch[i:i+1000]})
+                  print(f"✓ Rolled up {len(daily_keys)} daily files → {monthly_key}; daily files removed.")
+                  PY
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "500m"
+                  memory: "1Gi"

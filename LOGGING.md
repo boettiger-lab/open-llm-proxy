@@ -7,19 +7,41 @@ Logs are written to two places:
 1. **Pod stdout** — available immediately via `kubectl`, lost on pod restart
 2. **S3 bucket `logs-open-llm-proxy`** — flushed every 60 seconds (configurable via `FLUSH_INTERVAL` env var) as JSONL chunk files, persisted indefinitely
 
-### S3 layout
+### S3 layout (tiered rollup)
+
+Three tiers, each holding a different age of data. A daily CronJob rolls
+raw JSONL into daily Parquet; a monthly CronJob rolls completed months
+of daily Parquet into one monthly Parquet. At any moment:
 
 ```
 logs-open-llm-proxy/
-├── 2026-03-31/
-│   ├── 02-00-05-39.jsonl     # flush at 02:00:05 from worker PID 39
-│   ├── 02-05-07-39.jsonl
+├── 2026-04-17/                        ← today: raw JSONL (live debug tier)
+│   ├── 02-00-05-39.jsonl              # flush at 02:00:05 from worker PID 39
 │   └── ...
-├── 2026-04-01/
-│   └── ...
+├── consolidated/
+│   ├── daily/
+│   │   ├── 2026-04-15.parquet         # recent completed days
+│   │   └── 2026-04-16.parquet
+│   └── monthly/
+│       ├── 2026-02.parquet            # older completed months
+│       └── 2026-03.parquet
 ```
 
-Each file is newline-delimited JSON (one log entry per line, mix of request and response entries).
+| Tier | Format | When it gets written | When it gets deleted |
+|---|---|---|---|
+| Raw JSONL (`YYYY-MM-DD/*.jsonl`) | JSONL chunks | Proxy flushes every 60s | Next day's daily consolidation (03:00 UTC) |
+| Daily (`consolidated/daily/YYYY-MM-DD.parquet`) | Parquet (zstd) | Daily cron at 03:00 UTC | Monthly rollup on day 2 (04:00 UTC) |
+| Monthly (`consolidated/monthly/YYYY-MM.parquet`) | Parquet (zstd) | Monthly cron on day 2 | Never (long-term archive) |
+
+The **Parquet schema** (identical across daily and monthly tiers):
+
+| Column | Type | Notes |
+|---|---|---|
+| `ts` | `TIMESTAMPTZ` | Extracted from the `timestamp` field of the raw JSON |
+| `type` | `VARCHAR` | `'request'` or `'response'` |
+| `request_id` | `VARCHAR` | Correlates request ↔ response |
+| `origin` | `VARCHAR` | App the traffic came from |
+| `entry` | `VARCHAR` | The full original JSON record — parse with `entry::JSON` |
 
 ## Access pattern
 
@@ -32,23 +54,30 @@ duckdb -s "
 CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
   ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
 
--- All logs for a date
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true);
+-- Historical: all consolidated data in one read (daily + monthly Parquet)
+SELECT ts, entry::JSON->>'user_question' AS q
+FROM read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet')
+WHERE entry::JSON->>'origin' = 'https://tpl.nrp-nautilus.io'
+  AND ts > now() - INTERVAL 7 DAYS;
 
--- Filter to one app
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true)
-WHERE origin = 'https://padus.nrp-nautilus.io';
+-- Today's live data (raw JSONL — narrow the glob to an hour when possible)
+SELECT * FROM read_ndjson_auto(
+  's3://logs-open-llm-proxy/2026-04-17/*.jsonl', union_by_name=true);
 
--- Pair requests and responses
-SELECT req.user_question, req.timestamp, resp.tool_calls, resp.tokens
-FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true) req
-JOIN read_ndjson_auto('s3://logs-open-llm-proxy/2026-03-31/*.jsonl', union_by_name=true) resp
+-- Pair requests and responses from consolidated Parquet
+SELECT req.ts, req.entry::JSON->>'user_question' AS q,
+       resp.entry::JSON->'tool_calls' AS tools,
+       (resp.entry::JSON->>'latency_ms')::INT AS ms
+FROM read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet') req
+JOIN read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet') resp
   ON req.request_id = resp.request_id
 WHERE req.type = 'request' AND resp.type = 'response';
 "
 ```
 
-**Narrow the glob to the current hour** when looking at recent traffic — do NOT scan the whole day. Example: `2026-03-31/14-*.jsonl`. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files). If the queried window has zero error responses, `error` is absent from all files — omit it from JOIN queries or use `TRY(resp.error)`.
+For queries that span today + history, UNION raw JSONL and consolidated Parquet with a shared projection (cast JSONL rows' `timestamp` to `TIMESTAMPTZ` and wrap the full row back into JSON if needed).
+
+**Narrow the raw JSONL glob to the current hour** (e.g. `2026-04-17/14-*.jsonl`) — do NOT scan the whole day. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files). If the queried window has zero error responses, `error` is absent from all files — omit it from JOIN queries or use `TRY(resp.error)`.
 
 **Temporal filter:** `timestamp` is stored as VARCHAR (ISO8601). Cast to `TIMESTAMPTZ` (not `TIMESTAMP`) when comparing against `now()`:
 ```sql

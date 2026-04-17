@@ -1,0 +1,132 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: logs-consolidate-daily
+  labels:
+    app: logs-consolidate
+spec:
+  # 03:00 UTC every day — consolidates each completed YYYY-MM-DD/ directory
+  # of JSONL chunks into one consolidated/daily/YYYY-MM-DD.parquet and deletes
+  # the originals. Idempotent: skips days that already have a Parquet and
+  # always skips today (still being written).
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          priorityClassName: opportunistic
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/pci-10de.present
+                        operator: NotIn
+                        values: ["true"]
+          containers:
+            - name: consolidate
+              image: python:3.12-slim
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  pip install --quiet duckdb boto3
+                  python - <<'PY'
+                  import os, datetime, boto3, duckdb
+                  from botocore.client import Config
+
+                  BUCKET   = 'logs-open-llm-proxy'
+                  ENDPOINT = 'http://rook-ceph-rgw-nautiluss3.rook'
+
+                  s3 = boto3.client(
+                      's3',
+                      endpoint_url=ENDPOINT,
+                      aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+                      aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+                      config=Config(s3={'addressing_style': 'path'}),
+                  )
+
+                  today = datetime.datetime.utcnow().date().isoformat()
+                  paginator = s3.get_paginator('list_objects_v2')
+
+                  # Discover all YYYY-MM-DD/ prefixes at the bucket root
+                  date_prefixes = set()
+                  for page in paginator.paginate(Bucket=BUCKET, Delimiter='/'):
+                      for p in page.get('CommonPrefixes', []):
+                          pref = p['Prefix'].rstrip('/')
+                          try:
+                              datetime.date.fromisoformat(pref)
+                              date_prefixes.add(pref)
+                          except ValueError:
+                              pass
+
+                  # Existing consolidated daily Parquet files
+                  existing = set()
+                  for page in paginator.paginate(Bucket=BUCKET, Prefix='consolidated/daily/'):
+                      for obj in page.get('Contents', []):
+                          name = obj['Key'].split('/')[-1]
+                          if name.endswith('.parquet'):
+                              existing.add(name[:-len('.parquet')])
+
+                  to_do = sorted(d for d in date_prefixes if d != today and d not in existing)
+                  print(f"Days to consolidate ({len(to_do)}): {to_do}")
+                  if not to_do:
+                      print("Nothing to do.")
+                      raise SystemExit(0)
+
+                  con = duckdb.connect()
+                  con.execute(f"""
+                      CREATE SECRET s3_logs (
+                          TYPE S3,
+                          KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
+                          SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
+                          ENDPOINT 'rook-ceph-rgw-nautiluss3.rook',
+                          USE_SSL false,
+                          URL_STYLE 'path'
+                      )
+                  """)
+
+                  for day in to_do:
+                      print(f"→ {day}")
+                      con.execute(f"""
+                          COPY (
+                              SELECT (json->>'timestamp')::TIMESTAMPTZ AS ts,
+                                     json->>'type'       AS type,
+                                     json->>'request_id' AS request_id,
+                                     json->>'origin'     AS origin,
+                                     json::VARCHAR       AS entry
+                              FROM read_ndjson_objects('s3://{BUCKET}/{day}/*.jsonl')
+                              ORDER BY ts
+                          ) TO 's3://{BUCKET}/consolidated/daily/{day}.parquet'
+                            (FORMAT PARQUET, COMPRESSION zstd)
+                      """)
+                      # Verify Parquet exists before destroying inputs
+                      s3.head_object(Bucket=BUCKET, Key=f'consolidated/daily/{day}.parquet')
+                      to_delete = []
+                      for page in paginator.paginate(Bucket=BUCKET, Prefix=f'{day}/'):
+                          for obj in page.get('Contents', []):
+                              to_delete.append({'Key': obj['Key']})
+                      for i in range(0, len(to_delete), 1000):
+                          s3.delete_objects(Bucket=BUCKET, Delete={'Objects': to_delete[i:i+1000]})
+                      print(f"  ✓ {len(to_delete)} JSONL chunks removed")
+                  print("Done.")
+                  PY
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "500m"
+                  memory: "1Gi"
