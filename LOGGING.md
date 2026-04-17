@@ -87,6 +87,12 @@ Using `TIMESTAMP` causes a type mismatch binder error because `now()` returns `T
 
 **Log field truncation:** `tool_results_this_turn[N].content` and `content_preview` are truncated to ~200 chars in logs. A tool result that appears to contain only column names likely has full descriptions below the truncation point — verify using the STAC MCP tools directly rather than inferring from log previews.
 
+**Transient "malformed JSON" errors on raw JSONL:** Occasionally a `read_ndjson_auto` over today's directory will fail with `unexpected control character in string` at some byte offset. This is almost always a spurious partial byte-range read between DuckDB's httpfs extension and the Ceph gateway under high-parallelism scans — not actual bad data. The proxy writes with `json.dumps` (which escapes every control char) and S3 PUTs are atomic, so malformed lines on disk are not possible from the normal write path. Retry the query, or pass `ignore_errors=true` to `read_ndjson_auto` if you want a tolerant scan:
+```sql
+read_ndjson_auto('s3://.../YYYY-MM-DD/*.jsonl', union_by_name=true, ignore_errors=true)
+```
+Do not treat this as a proxy bug unless you can point at an actual byte with a raw control character in a file that's not being actively written.
+
 Inside NRP pods, use the internal endpoint instead (`rook-ceph-rgw-nautiluss3.rook`, `USE_SSL false`) — faster and no public-endpoint throttling.
 
 ### kubectl (live logs / last ~60s before next flush)
