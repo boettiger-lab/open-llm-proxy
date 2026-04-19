@@ -12,29 +12,30 @@ Logs land in three tiers by age (see [LOGGING.md](LOGGING.md) for the full spec)
 - **Historical**: Parquet at `s3://logs-open-llm-proxy/consolidated/**/*.parquet` — daily files roll up into monthly files on day 2 of the following month
 - **kubectl**: `kubectl -n biodiversity logs deployment/open-llm-proxy -f` for live tail of the last few seconds before the next S3 flush
 
-The bucket is private. `LOG_S3_KEY` and `LOG_S3_SECRET` are pre-set in the shell — use them via the Bash tool so shell expansion keeps the values out of chat. Do not hunt for credentials in rclone config or k8s secrets.
-
-**Parquet schema** (same for daily and monthly tiers): `(ts TIMESTAMPTZ, type, request_id, origin, entry VARCHAR)` — `entry` is the full original log record as JSON text. Access fields with `entry::JSON->>'field'`.
+**Default workflow: sync once, then query locally.** The bucket is private, but `rclone` is already configured with the `nrp` remote. Running `./sync-logs.sh` pulls the whole bucket (~a few MiB, ~1s) to `/tmp/open-llm-proxy-logs/`. Subsequent DuckDB queries read local files — no `CREATE SECRET`, no credential expansion in chat, no S3 round-trip per query. Re-run `./sync-logs.sh` any time you need fresher data; it only transfers what changed.
 
 ```bash
-# Historical: query the consolidated Parquet (this is the common case)
+# One-time per session (or whenever you want to refresh)
+./sync-logs.sh
+
+# Historical: consolidated Parquet (the common case)
 duckdb -s "
-CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
-  ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
 SELECT ts, entry::JSON->>'user_question' AS q, entry::JSON->'tool_calls' AS tools
-FROM read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet')
+FROM read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet')
 WHERE origin = 'https://tpl.nrp-nautilus.io' AND ts > now() - INTERVAL 7 DAYS
 ORDER BY ts DESC;
 "
 
 # Today: raw JSONL — narrow the glob to the current hour when possible
 duckdb -s "
-CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
-  ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
-SELECT * FROM read_ndjson_auto('s3://logs-open-llm-proxy/YYYY-MM-DD/*.jsonl',
+SELECT * FROM read_ndjson_auto('/tmp/open-llm-proxy-logs/YYYY-MM-DD/*.jsonl',
                                union_by_name=true);
 "
 ```
+
+**Parquet schema** (same for daily and monthly tiers): `(ts TIMESTAMPTZ, type, request_id, origin, entry VARCHAR)` — `entry` is the full original log record as JSON text. Access fields with `entry::JSON->>'field'`.
+
+For automation, one-shot CI queries, or queries that need sub-minute freshness without re-syncing, query S3 directly with `LOG_S3_KEY` / `LOG_S3_SECRET` from the shell — see [LOGGING.md](LOGGING.md#direct-s3-one-shot-queries-automation-or-inside-nrp-pods).
 
 Each LLM call produces a `request` row and a `response` row linked by `request_id`. Key fields inside `entry` (Parquet) or as top-level columns (JSONL):
 
