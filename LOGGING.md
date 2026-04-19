@@ -45,37 +45,60 @@ The **Parquet schema** (identical across daily and monthly tiers):
 
 ## Access pattern
 
-### S3 (preferred — no kubectl needed)
+### Local sync (recommended for interactive analysis)
 
-The bucket is **private**. Set `LOG_S3_KEY` and `LOG_S3_SECRET` in your shell (scoped keys for this bucket — distinct from your general NRP credentials) and let the shell expand them into DuckDB's `CREATE SECRET`. Agents should use the Bash tool so shell expansion keeps the secret values out of the conversation transcript.
+The bucket is **private**, but `rclone` already has credentials configured under the `nrp` remote. Sync the bucket to a local scratch dir once per session, then query the local files — no S3 secret, no shell-expanded credentials, and orders of magnitude faster iteration:
+
+```bash
+./sync-logs.sh                   # syncs to /tmp/open-llm-proxy-logs
+./sync-logs.sh ~/scratch/logs    # or pick your own path
+```
+
+The wrapper calls `rclone sync nrp:logs-open-llm-proxy <dest>`. Full sync of the whole bucket is ~1s (it's only a few MiB). Re-syncs during the same session are near-instant because rclone only transfers changed files.
+
+Then query the local path — no `CREATE SECRET` needed:
+
+```bash
+duckdb -s "
+-- Historical: all consolidated data in one read (daily + monthly Parquet)
+SELECT ts, entry::JSON->>'user_question' AS q
+FROM read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet')
+WHERE entry::JSON->>'origin' = 'https://tpl.nrp-nautilus.io'
+  AND ts > now() - INTERVAL 7 DAYS;
+
+-- Today's live data (raw JSONL — narrow the glob to an hour when possible)
+SELECT * FROM read_ndjson_auto(
+  '/tmp/open-llm-proxy-logs/2026-04-17/*.jsonl', union_by_name=true);
+
+-- Pair requests and responses from consolidated Parquet
+SELECT req.ts, req.entry::JSON->>'user_question' AS q,
+       resp.entry::JSON->'tool_calls' AS tools,
+       (resp.entry::JSON->>'latency_ms')::INT AS ms
+FROM read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet') req
+JOIN read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet') resp
+  ON req.request_id = resp.request_id
+WHERE req.type = 'request' AND resp.type = 'response';
+"
+```
+
+Live data caveat: raw JSONL for today is only as fresh as the last `./sync-logs.sh`. Re-run it before querying if you care about the last few minutes. For sub-minute freshness, use `kubectl` (below) or the direct-S3 path.
+
+For queries that span today + history, UNION raw JSONL and consolidated Parquet with a shared projection (cast JSONL rows' `timestamp` to `TIMESTAMPTZ` and wrap the full row back into JSON if needed).
+
+### Direct S3 (one-shot queries, automation, or inside NRP pods)
+
+When you don't want a local copy — e.g. a single CI query, a k8s job, or always-current reads inside a pod — query S3 directly with a DuckDB secret. Set `LOG_S3_KEY` and `LOG_S3_SECRET` in your shell (scoped keys for this bucket — distinct from your general NRP credentials) and let the shell expand them. Agents should use the Bash tool so shell expansion keeps the secret values out of the conversation transcript.
 
 ```bash
 duckdb -s "
 CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
   ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
 
--- Historical: all consolidated data in one read (daily + monthly Parquet)
 SELECT ts, entry::JSON->>'user_question' AS q
 FROM read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet')
-WHERE entry::JSON->>'origin' = 'https://tpl.nrp-nautilus.io'
-  AND ts > now() - INTERVAL 7 DAYS;
-
--- Today's live data (raw JSONL — narrow the glob to an hour when possible)
-SELECT * FROM read_ndjson_auto(
-  's3://logs-open-llm-proxy/2026-04-17/*.jsonl', union_by_name=true);
-
--- Pair requests and responses from consolidated Parquet
-SELECT req.ts, req.entry::JSON->>'user_question' AS q,
-       resp.entry::JSON->'tool_calls' AS tools,
-       (resp.entry::JSON->>'latency_ms')::INT AS ms
-FROM read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet') req
-JOIN read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet') resp
-  ON req.request_id = resp.request_id
-WHERE req.type = 'request' AND resp.type = 'response';
+WHERE ts > now() - INTERVAL 7 DAYS;
 "
 ```
-
-For queries that span today + history, UNION raw JSONL and consolidated Parquet with a shared projection (cast JSONL rows' `timestamp` to `TIMESTAMPTZ` and wrap the full row back into JSON if needed).
 
 **Narrow the raw JSONL glob to the current hour** (e.g. `2026-04-17/14-*.jsonl`) — do NOT scan the whole day. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files). If the queried window has zero error responses, `error` is absent from all files — omit it from JOIN queries or use `TRY(resp.error)`.
 
@@ -87,7 +110,7 @@ Using `TIMESTAMP` causes a type mismatch binder error because `now()` returns `T
 
 **Log field truncation:** `tool_results_this_turn[N].content` and `content_preview` are truncated to ~200 chars in logs. A tool result that appears to contain only column names likely has full descriptions below the truncation point — verify using the STAC MCP tools directly rather than inferring from log previews.
 
-**Transient "malformed JSON" errors on raw JSONL:** Occasionally a `read_ndjson_auto` over today's directory will fail with `unexpected control character in string` at some byte offset. This is almost always a spurious partial byte-range read between DuckDB's httpfs extension and the Ceph gateway under high-parallelism scans — not actual bad data. The proxy writes with `json.dumps` (which escapes every control char) and S3 PUTs are atomic, so malformed lines on disk are not possible from the normal write path. Retry the query, or pass `ignore_errors=true` to `read_ndjson_auto` if you want a tolerant scan:
+**Transient "malformed JSON" errors on raw JSONL:** Occasionally a `read_ndjson_auto` over today's directory will fail with `unexpected control character in string` at some byte offset. This is almost always a spurious partial byte-range read between DuckDB's httpfs extension and the Ceph gateway under high-parallelism scans — not actual bad data. The proxy writes with `json.dumps` (which escapes every control char) and S3 PUTs are atomic, so malformed lines on disk are not possible from the normal write path. The local-sync workflow avoids this entirely (it's only observed against `s3://` reads). If you're on the direct-S3 path: retry the query, or pass `ignore_errors=true` to `read_ndjson_auto` if you want a tolerant scan:
 ```sql
 read_ndjson_auto('s3://.../YYYY-MM-DD/*.jsonl', union_by_name=true, ignore_errors=true)
 ```
