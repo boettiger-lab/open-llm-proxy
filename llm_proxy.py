@@ -232,7 +232,9 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
             message = response_data["choices"][0].get("message", {})
             log_entry["has_content"] = bool(message.get("content"))
             log_entry["has_tool_calls"] = bool(message.get("tool_calls"))
+            log_entry["has_reasoning_content"] = bool(message.get("reasoning_content"))
             log_entry["content_preview"] = (message.get("content") or "")[:200]
+            log_entry["reasoning_content_preview"] = (message.get("reasoning_content") or "")[:200]
             
             if message.get("tool_calls"):
                 log_entry["tool_calls"] = [

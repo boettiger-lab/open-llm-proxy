@@ -173,7 +173,9 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `latency_ms` | End-to-end latency in milliseconds |
 | `has_content` | Whether the LLM returned text content |
 | `has_tool_calls` | Whether the LLM made tool calls |
+| `has_reasoning_content` | Whether the LLM returned a separate `reasoning_content` field (qwen3 thinking-mode and similar). A response with `has_content=false` and `has_reasoning_content=true` means the model spent its budget reasoning but never emitted a final answer — diagnostic for degenerate-200 cases. |
 | `content_preview` | First 200 chars of text response |
+| `reasoning_content_preview` | First 200 chars of `reasoning_content` (empty for non-thinking models) |
 | `tool_calls` | Array of `{name, arguments}` — full tool call arguments including SQL query strings |
 | `tokens` | Token usage object from the provider (`prompt_tokens`, `completion_tokens`, `total_tokens`) |
 | `error` | Error detail string (only present on failed requests) |
