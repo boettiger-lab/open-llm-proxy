@@ -1,0 +1,17 @@
+{
+  "name": "open-llm-proxy-headless",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Headless JS runner that reproduces the geo-agent browser tool-use loop for scripted model comparisons.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "run": "node run.js",
+    "check-drift": "bash check-drift.sh"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.12.0"
+  }
+}
