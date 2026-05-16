@@ -130,25 +130,25 @@ Push changes to `main` (or your fork), then:
 kubectl rollout restart deployment/open-llm-proxy -n <your-namespace>
 ```
 
-## Testing with agent_runner.py
+## Headless agent runner
 
-`agent_runner.py` replays a geo-agent-style session from the command line: it connects to an MCP server for tools, sends requests through the proxy, and drives the tool-use loop to completion. Unlike calling MCP tools directly, this exercises the full proxy pipeline and generates real log entries.
+`headless/run.js` replays a geo-agent session from the command line: it loads the app's STAC catalog, connects to the MCP server, assembles the exact system prompt the browser sees, and drives the tool-use loop through the proxy. Unlike calling MCP tools directly, this exercises the full proxy pipeline and writes real log entries — useful for scripted model comparisons or reproducing failures.
+
+The runner imports the live framework modules (`Agent`, `DatasetCatalog`, `ToolRegistry`, `createMapTools`) directly from a sibling `boettiger-lab/geo-agent` checkout rather than reimplementing them, so it stays in sync with production behavior by construction. Map tools are stubbed (no live map); everything else — prompt catalog injection, `get_schema`, `<tool_call>` XML parsing, context trimming, tool-result truncation — matches the browser.
 
 ```bash
-pip install openai mcp httpx
+cd headless
+npm install
 
-# Basic query using defaults (nemotron model, canonical proxy + MCP endpoints)
-export OPENAI_API_KEY='your-proxy-key'
-python agent_runner.py "Rank states by fraction that is GAP 1+2"
-
-# Reproduce a specific app's behavior with its system prompt
-python agent_runner.py "How many MPAs have IUCN category II?" \
-    --model anthropic/claude-sonnet-4-5 \
-    --origin https://bosl-high-seas.nrp-nautilus.io \
-    --system-prompt ~/repos/bosl-high-seas/system-prompt.md
+PROXY_KEY='your-proxy-key' node run.js "Which New Jersey municipalities have passed conservation ballot measures?" \
+    --config        ../../tpl/layers-input.json \
+    --system-prompt ../../tpl/system-prompt.md \
+    --model         qwen3 \
+    --origin        https://tpl.nrp-nautilus.io/agent_runner \
+    --transcript    runs/tpl-q3-qwen3.json
 ```
 
-Use `--origin` to tag the log entries with a specific app, and `--system-prompt` to load the actual app's system prompt (path or URL) so the model behaves the same way it would in production.
+Use `--origin` with a distinctive suffix (e.g. `.../agent_runner`) so experimental runs are filterable apart from production user traffic. See `headless/README.md` for all flags and the list of fidelity caveats.
 
 ## Health check
 

@@ -49,3 +49,51 @@ Each LLM call produces a `request` row and a `response` row linked by `request_i
 See [LOGGING.md](LOGGING.md) for full field reference, SQL patterns, kubectl access, session reconstruction examples, and the CronJob details.
 
 When analyzing geo-agent app behavior (tool-call counts, query failures, session reconstructions), invoke the `geo-agent-training` skill — it provides the full step-by-step diagnostic workflow.
+
+## Reproducing geo-agent sessions from the CLI
+
+`headless/run.js` replays a full geo-agent session (catalog load, MCP connect, prompt assembly, tool-use loop) through the proxy for scripted model comparisons and failure repros. It imports `Agent`, `DatasetCatalog`, `ToolRegistry`, and `createMapTools` directly from a sibling `boettiger-lab/geo-agent` checkout, so prompt catalog injection, `get_schema`, `<tool_call>` XML parsing, and context/result trimming match the browser by construction. Three pieces are local: `stub-map-manager.js` (stubs MapLibre), a `fetch` wrapper in `run.js` (adds the `Origin` header), and `mcp-client.js` (vendored byte-for-byte from `geo-agent/app/mcp-client.js` so the `@modelcontextprotocol/sdk` bare specifier resolves against this package's `node_modules`).
+
+The vendored MCP client is the one thing prone to silent drift. Whenever geo-agent ships an MCP transport change (e.g. a `callTool` timeout bump, a new reconnect hook), re-vendor:
+
+```bash
+cd headless
+npm run check-drift   # fails non-zero if mcp-client.js has drifted from upstream;
+                      # error message prints the exact re-vendor command
+```
+
+```bash
+cd headless && npm install          # one-time
+
+PROXY_KEY=... node run.js "QUESTION" \
+    --config        ../../tpl/layers-input.json \
+    --system-prompt ../../tpl/system-prompt.md \
+    --model qwen3 \
+    --origin https://tpl.nrp-nautilus.io/agent_runner \
+    --transcript runs/tpl-q1-qwen3.json
+```
+
+Tag experimental runs with a distinctive `--origin` suffix (e.g. `…/agent_runner`) so they're filterable apart from real user traffic when you later query the logs. See `headless/README.md` for all flags.
+
+### Matrix runs (model × question grids)
+
+`headless/run_matrix.sh APP_DIR` runs every (model × question × trial) cell, writes a transcript per cell to `runs/<APP_NAME>/`, and emits a `summary.tsv`. Defaults: questions from `APP_DIR/layers-input.json` welcome.examples, models from `APP_DIR/k8s/configmap.yaml`, 2 trials, origin `https://<APP_NAME>.nrp-nautilus.io/agent_runner`.
+
+**Use this — do not write a bespoke driver script per request.** Both inputs are env-overridable, so any ad-hoc matrix is a one-liner:
+
+```bash
+# Custom question list (one per line, blank lines and # comments OK):
+cat > /tmp/log-qs.txt <<'EOF'
+How much has the Land and Water Conservation Fund invested in Senate District 2?
+how many miles of river have been protected by TPL projects within Tahoe National Forest
+EOF
+
+MODELS="qwen3 qwen3-small glm-5 nemotron gemma" \
+QUESTIONS_FILE=/tmp/log-qs.txt \
+TRIALS=1 \
+ORIGIN=https://tpl-ca.nrp-nautilus.io/agent_runner_logqs \
+RUNS_DIR=runs/tpl-ca-logqs \
+  ./headless/run_matrix.sh ../tpl-ca
+```
+
+When asked to "test these questions across these models," reach for this — populate `QUESTIONS_FILE` from the log questions, set `MODELS` from the user's list, pick an `ORIGIN` suffix that says what the run is for (so future log queries can grep it apart from production traffic and apart from other matrix runs), and launch.
