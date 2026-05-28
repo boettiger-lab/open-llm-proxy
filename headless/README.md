@@ -25,20 +25,66 @@ Three pieces are intentionally local:
 3. **`fetch` wrapper inside `run.js`** — injects the `Origin` header so proxy
    logs can tag headless runs. Node's `fetch` omits `Origin` by default.
 
-## Requirements
+## Matrix testing: run on the cluster, not locally
 
-- Node 20+
+For any (model × question × trial) sweep, use **`run-matrix-k8s.sh`**. It
+launches a one-shot Kubernetes Job that pulls `PROXY_KEY` from the
+`open-llm-proxy-secrets` Secret already in the `biodiversity` namespace — no
+local credential handling, no `/tmp/proxy_key` dance, no laptop sleep
+interrupting a 20-minute run.
+
+```bash
+# 1. Write the questions to a file (one per line).
+cat > runs/trails-q.txt <<'EOF'
+which state has the most federal trail miles
+EOF
+
+# 2. Launch.
+TAG=trails-matrix QUESTIONS_FILE=runs/trails-q.txt \
+  ./run-matrix-k8s.sh boettiger-lab/geo-agent-template
+
+# 3. Follow + analyze.
+kubectl -n biodiversity logs -f job/<JOB_NAME>     # printed by step 2
+./sync-logs.sh && duckdb -s "...WHERE origin='<ORIGIN>'..."  # filter the proxy logs
+```
+
+The Job clones `open-llm-proxy`, `geo-agent`, and the app repo in the
+sibling layout the runner expects, `npm ci`s, and delegates to
+`run_matrix.sh`. The per-cell JSON transcripts and `summary.tsv` are dumped
+to the pod's stdout at the end, so `kubectl logs job/<JOB_NAME>` is
+self-sufficient. Proxy logs (filtered by ORIGIN) carry the full
+request/response pairs.
+
+### Required env / flags
+
+| Var | Notes |
+|---|---|
+| `APP_REPO` (positional) | `org/repo` of the geo-agent app (e.g. `boettiger-lab/geo-agent-template`) |
+| `QUESTIONS_FILE` | Local file, one question per line. Read once and base64'd into the Job env. |
+| `TAG` | `[a-z0-9-]+` identifier — becomes `JOB_NAME` suffix and `ORIGIN` query tag |
+| `MODELS` | Optional override. Default: read from the app's `k8s/configmap.yaml` inside the pod |
+| `TRIALS` / `MAX_TURNS` / `APP_BRANCH` / `NAMESPACE` | Optional; sensible defaults |
+
+## Local single-run usage (ad-hoc debugging only)
+
+For iterating on the runner code itself, or reproducing one specific failure
+once, you can run `run.js` directly against the proxy. **Do not use this for
+matrix testing — use the k8s Job above.**
+
+### Requirements
+
+- Node 22+ (24 LTS recommended; the cluster Job uses 24)
 - `boettiger-lab/geo-agent` cloned as a sibling (`../../geo-agent/`)
-- A valid proxy key (same one the app uses), via `PROXY_KEY` env var or `--api-key`
+- A valid proxy key, via `PROXY_KEY` env var or `--api-key`
 
-## Install
+### Install
 
 ```bash
 cd headless
 npm install
 ```
 
-## Usage
+### Run one question
 
 ```bash
 PROXY_KEY=... node run.js "Which New Jersey municipalities have passed conservation ballot measures?" \
