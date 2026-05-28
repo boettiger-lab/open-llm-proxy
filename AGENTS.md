@@ -75,25 +75,29 @@ PROXY_KEY=... node run.js "QUESTION" \
 
 Tag experimental runs with a distinctive `--origin` suffix (e.g. `…/agent_runner`) so they're filterable apart from real user traffic when you later query the logs. See `headless/README.md` for all flags.
 
-### Matrix runs (model × question grids)
+### Matrix runs (model × question grids) — run on the cluster
 
-`headless/run_matrix.sh APP_DIR` runs every (model × question × trial) cell, writes a transcript per cell to `runs/<APP_NAME>/`, and emits a `summary.tsv`. Defaults: questions from `APP_DIR/layers-input.json` welcome.examples, models from `APP_DIR/k8s/configmap.yaml`, 2 trials, origin `https://<APP_NAME>.nrp-nautilus.io/agent_runner`.
+**Always run matrix sweeps as a Kubernetes Job, not locally.** `PROXY_KEY` lives in the `open-llm-proxy-secrets` Secret in the `biodiversity` namespace; on-cluster runs mount it directly, avoiding the local credential dance (stale `/tmp/proxy_key`, 401 sprees, laptop sleep killing a 20-minute matrix mid-run).
 
-**Use this — do not write a bespoke driver script per request.** Both inputs are env-overridable, so any ad-hoc matrix is a one-liner:
+`headless/run-matrix-k8s.sh APP_REPO` templates `headless/k8s/matrix-job.yaml` and `kubectl create`s a one-shot Job. The Job clones `open-llm-proxy` + `geo-agent` + the app repo in the sibling layout the runner expects, `npm ci`s, runs `run_matrix.sh`, and dumps per-cell transcripts + `summary.tsv` to pod stdout. Proxy logs (filtered by `ORIGIN`) carry the full request/response pairs.
 
 ```bash
-# Custom question list (one per line, blank lines and # comments OK):
-cat > /tmp/log-qs.txt <<'EOF'
+# 1. Write questions to a file (one per line, blank/#-comment lines ignored).
+cat > headless/runs/log-qs.txt <<'EOF'
 How much has the Land and Water Conservation Fund invested in Senate District 2?
 how many miles of river have been protected by TPL projects within Tahoe National Forest
 EOF
 
+# 2. Launch. APP_REPO is org/repo; QUESTIONS_FILE is local; TAG must be [a-z0-9-]+.
+TAG=logqs \
+QUESTIONS_FILE=headless/runs/log-qs.txt \
 MODELS="qwen3 qwen3-small glm-5 nemotron gemma" \
-QUESTIONS_FILE=/tmp/log-qs.txt \
 TRIALS=1 \
-ORIGIN=https://tpl-ca.nrp-nautilus.io/agent_runner_logqs \
-RUNS_DIR=runs/tpl-ca-logqs \
-  ./headless/run_matrix.sh ../tpl-ca
+  ./headless/run-matrix-k8s.sh boettiger-lab/tpl-ca
+
+# 3. Follow + analyze (commands printed by step 2).
+kubectl -n biodiversity logs -f job/<JOB_NAME>
+./sync-logs.sh && duckdb -s "... WHERE origin='<ORIGIN>' ..."
 ```
 
-When asked to "test these questions across these models," reach for this — populate `QUESTIONS_FILE` from the log questions, set `MODELS` from the user's list, pick an `ORIGIN` suffix that says what the run is for (so future log queries can grep it apart from production traffic and apart from other matrix runs), and launch.
+When asked to "test these questions across these models," reach for this — **do not** fall back to running `run_matrix.sh` locally and **do not** write a bespoke driver script per request. The local `run_matrix.sh` still exists, called by the Job; it is no longer a recommended user-facing entrypoint for matrix work.

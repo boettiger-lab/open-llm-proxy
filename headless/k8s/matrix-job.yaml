@@ -1,0 +1,123 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  labels:
+    app: headless-matrix
+    matrix-tag: ${TAG}
+    matrix-app: ${APP_NAME}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: headless-matrix
+        matrix-tag: ${TAG}
+        matrix-app: ${APP_NAME}
+    spec:
+      priorityClassName: opportunistic
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: feature.node.kubernetes.io/pci-10de.present
+                    operator: NotIn
+                    values: ["true"]
+      containers:
+        - name: matrix
+          image: node:24-bookworm-slim
+          env:
+            - name: PROXY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: open-llm-proxy-secrets
+                  key: proxy-key
+            - name: APP_REPO
+              value: "${APP_REPO}"
+            - name: APP_BRANCH
+              value: "${APP_BRANCH}"
+            - name: APP_NAME
+              value: "${APP_NAME}"
+            - name: ORIGIN
+              value: "${ORIGIN}"
+            - name: TRIALS
+              value: "${TRIALS}"
+            - name: MAX_TURNS
+              value: "${MAX_TURNS}"
+            - name: MODELS
+              value: "${MODELS}"
+            - name: QUESTIONS_B64
+              value: "${QUESTIONS_B64}"
+            - name: JOB_NAME
+              value: "${JOB_NAME}"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "=== headless matrix job: $JOB_NAME ==="
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                  git ca-certificates python3 python3-yaml >/dev/null
+
+              # Clone repos into the sibling layout the headless runner expects:
+              #   /work/open-llm-proxy   /work/geo-agent   /work/<APP_NAME>
+              mkdir -p /work && cd /work
+              git clone --depth 1 https://github.com/boettiger-lab/open-llm-proxy.git
+              git clone --depth 1 https://github.com/boettiger-lab/geo-agent.git
+              git clone --depth 1 --branch "$APP_BRANCH" \
+                  "https://github.com/$APP_REPO.git" "$APP_NAME"
+
+              cd /work/open-llm-proxy/headless
+              npm ci --no-audit --no-fund
+
+              # PROXY_KEY → /tmp/proxy_key (run_matrix.sh reads from this path)
+              printf %s "$PROXY_KEY" > /tmp/proxy_key
+
+              # QUESTIONS_FILE: decode base64 blob from wrapper
+              QFILE=/tmp/questions.txt
+              echo "$QUESTIONS_B64" | base64 -d > "$QFILE"
+
+              echo "--- questions ---"
+              cat "$QFILE"
+              echo "--- models override: ${MODELS:-<from configmap>} ---"
+              echo
+
+              # Delegate to the existing matrix script. RUNS_DIR is pod-local;
+              # transcripts are dumped to stdout below so kubectl logs captures them.
+              RUNS_DIR_REL="runs/$JOB_NAME"
+              rc=0
+              QUESTIONS_FILE="$QFILE" \
+              ORIGIN="$ORIGIN" \
+              TRIALS="$TRIALS" \
+              MAX_TURNS="$MAX_TURNS" \
+              MODELS="$MODELS" \
+              RUNS_DIR="$RUNS_DIR_REL" \
+                  ./run_matrix.sh "/work/$APP_NAME" || rc=$?
+
+              echo
+              echo "=== per-cell transcripts (json) ==="
+              for f in "$RUNS_DIR_REL"/*.json; do
+                  [ -f "$f" ] || continue
+                  echo "----- $(basename "$f") -----"
+                  cat "$f"
+                  echo
+              done
+
+              echo "=== summary.tsv ==="
+              cat "$RUNS_DIR_REL/summary.tsv" 2>/dev/null || echo "(no summary written)"
+
+              echo
+              echo "=== filter proxy logs by origin: $ORIGIN ==="
+              exit "$rc"
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+              ephemeral-storage: "5Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+              ephemeral-storage: "5Gi"
