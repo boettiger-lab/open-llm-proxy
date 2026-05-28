@@ -18,12 +18,19 @@
 #                   ORIGIN. Must match [a-z0-9-]+ (e.g. trails-mileage).
 #
 # Optional env:
-#   MODELS          space-separated model override (default: read from
-#                   APP_REPO/k8s/configmap.yaml inside the pod)
-#   TRIALS          trials per (model, question) (default 2)
-#   MAX_TURNS       agent maxToolCalls (default 20)
-#   APP_BRANCH      app repo branch to clone (default main)
-#   NAMESPACE       k8s namespace (default biodiversity)
+#   MODELS                 space-separated model override (default: read from
+#                          APP_REPO/k8s/configmap.yaml inside the pod)
+#   TRIALS                 trials per (model, question) (default 2)
+#   MAX_TURNS              agent maxToolCalls (default 20)
+#   APP_BRANCH             app repo branch to clone (default main)
+#   NAMESPACE              k8s namespace (default biodiversity)
+#   SYSTEM_PROMPT_APPEND_FILE
+#                          path to a local file whose contents are appended to
+#                          the app's system-prompt.md before the matrix runs.
+#                          Use this to A/B-test guidance variants without
+#                          forking the app repo or building a custom MCP image.
+#                          The original system-prompt.md is left intact in the
+#                          pod, with the variant text concatenated on the end.
 #
 # After applying, the script prints the JOB_NAME and the kubectl/duckdb
 # follow-up commands. The Job logs (kubectl logs job/$JOB_NAME) include the
@@ -63,12 +70,19 @@ ORIGIN="https://${APP_NAME}.nrp-nautilus.io/agent_runner_${TAG//-/_}"
 
 QUESTIONS_B64="$(base64 -w0 < "$QUESTIONS_FILE")"
 
-export APP_REPO APP_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS QUESTIONS_B64
+SYSTEM_PROMPT_APPEND_B64=""
+if [ -n "${SYSTEM_PROMPT_APPEND_FILE:-}" ]; then
+    [ -s "$SYSTEM_PROMPT_APPEND_FILE" ] || { echo "ERROR: SYSTEM_PROMPT_APPEND_FILE=$SYSTEM_PROMPT_APPEND_FILE missing or empty" >&2; exit 2; }
+    SYSTEM_PROMPT_APPEND_B64="$(base64 -w0 < "$SYSTEM_PROMPT_APPEND_FILE")"
+fi
+
+export APP_REPO APP_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
+    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64}' \
+envsubst '${APP_REPO} ${APP_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64}' \
     < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF

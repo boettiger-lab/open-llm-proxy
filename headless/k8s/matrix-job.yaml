@@ -51,6 +51,8 @@ spec:
               value: "${MODELS}"
             - name: QUESTIONS_B64
               value: "${QUESTIONS_B64}"
+            - name: SYSTEM_PROMPT_APPEND_B64
+              value: "${SYSTEM_PROMPT_APPEND_B64}"
             - name: JOB_NAME
               value: "${JOB_NAME}"
           command: ["/bin/bash", "-c"]
@@ -79,6 +81,18 @@ spec:
               # QUESTIONS_FILE: decode base64 blob from wrapper
               QFILE=/tmp/questions.txt
               echo "$QUESTIONS_B64" | base64 -d > "$QFILE"
+
+              # SYSTEM_PROMPT_APPEND_B64: optional overlay for A/B-testing
+              # guidance variants. Appended to the cloned app's system-prompt.md
+              # so the original app-specific text stays in place.
+              if [ -n "${SYSTEM_PROMPT_APPEND_B64:-}" ]; then
+                  SP="/work/$APP_NAME/system-prompt.md"
+                  echo "" >> "$SP"
+                  echo "$SYSTEM_PROMPT_APPEND_B64" | base64 -d >> "$SP"
+                  echo "--- system-prompt overlay applied (last 30 lines) ---"
+                  tail -30 "$SP"
+                  echo "----------------------------------------------------"
+              fi
 
               echo "--- questions ---"
               cat "$QFILE"
