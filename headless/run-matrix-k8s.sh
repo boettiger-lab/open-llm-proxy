@@ -65,7 +65,11 @@ QUESTIONS_B64="$(base64 -w0 < "$QUESTIONS_FILE")"
 
 export APP_REPO APP_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS QUESTIONS_B64
 
-envsubst < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
+# Allowlist: only these placeholders are substituted. Without this, envsubst
+# also replaces every $VAR reference in the bash script body (e.g. $QFILE,
+# $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
+envsubst '${APP_REPO} ${APP_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64}' \
+    < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF
 
