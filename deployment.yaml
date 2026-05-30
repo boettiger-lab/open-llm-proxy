@@ -59,6 +59,11 @@ spec:
             secretKeyRef:
               name: nimbus-api-key
               key: NIMBUS_API_KEY
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: anthropic-api-key
+              key: ANTHROPIC_API_KEY
         - name: CACHE_SALT
           valueFrom:
             secretKeyRef:
