@@ -137,7 +137,13 @@ async def _flush_to_s3():
     entries, _log_buffer[:] = list(_log_buffer), []
     body = "\n".join(json.dumps(e) for e in entries) + "\n"
     now = datetime.utcnow()
-    key = f"{now.strftime('%Y-%m-%d')}/{now.strftime('%H-%M-%S')}-{os.getpid()}.jsonl"
+    # Key must be unique per writer AND per flush. PID alone is NOT enough across
+    # replicas: each pod has its own PID namespace, so two pods can share a PID
+    # and overwrite each other's chunk. Include the pod hostname and a per-flush
+    # UUID so any number of replicas/workers can flush concurrently without loss.
+    host = os.getenv("HOSTNAME", "nohost")
+    key = (f"{now.strftime('%Y-%m-%d')}/{now.strftime('%H-%M-%S')}"
+           f"-{host}-{os.getpid()}-{uuid.uuid4().hex[:8]}.jsonl")
     try:
         import boto3
         client = boto3.client(

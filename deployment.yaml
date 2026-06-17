@@ -5,11 +5,14 @@ metadata:
   labels:
     app: open-llm-proxy
 spec:
-  replicas: 1
+  replicas: 3
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      # Never drop below the desired ready count during a rollout: bring a new
+      # pod up (surge) and only retire an old one once the new one is Ready.
+      # (maxUnavailable:1 on a single replica previously caused a full outage.)
+      maxUnavailable: 0
       maxSurge: 1
   selector:
     matchLabels:
@@ -19,6 +22,26 @@ spec:
       labels:
         app: open-llm-proxy
     spec:
+      affinity:
+        # Spread replicas across nodes so one stuck/unhealthy node can't take
+        # the whole service down.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: open-llm-proxy
+                topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          # TEMPORARY: gp-argo.usd.edu is stuck pulling images (2026-06-17).
+          # Remove this term once the node is healthy/cordoned.
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: ["gp-argo.usd.edu"]
       initContainers:
       - name: git-sync
         image: alpine/git:latest
