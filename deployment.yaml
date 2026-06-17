@@ -22,6 +22,24 @@ spec:
       labels:
         app: open-llm-proxy
     spec:
+      # DNS tuning to curb intermittent upstream "Temporary failure in name
+      # resolution" (EAI_AGAIN) → 502s. See issue #28.
+      #  - ndots:2 — the provider host `ellm.nrp-nautilus.io` has 2 dots, so the
+      #    default ndots:5 appends every search domain FIRST (4 guaranteed-
+      #    NXDOMAIN queries before the real one), 5x-ing CoreDNS load and the
+      #    chance of a transient miss. ndots:2 queries it absolute first (1
+      #    query) while still letting in-cluster short names like
+      #    `rook-ceph-rgw-nautiluss3.rook` (1 dot, for the S3 flush) use search.
+      #  - attempts:3 / timeout:2 — let the resolver re-query a transient miss
+      #    before the app ever sees an error.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+          - name: attempts
+            value: "3"
+          - name: timeout
+            value: "2"
       affinity:
         # Spread replicas across nodes so one stuck/unhealthy node can't take
         # the whole service down.
