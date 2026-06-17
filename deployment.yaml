@@ -34,14 +34,19 @@ spec:
                     app: open-llm-proxy
                 topologyKey: kubernetes.io/hostname
         nodeAffinity:
-          # TEMPORARY: gp-argo.usd.edu is stuck pulling images (2026-06-17).
-          # Remove this term once the node is healthy/cordoned.
+          # TEMPORARY: these nodes are stuck/failing image pulls (2026-06-17),
+          # which the scheduler otherwise keeps selecting. Remove entries as the
+          # nodes are healed/cordoned.
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
               - matchExpressions:
                   - key: kubernetes.io/hostname
                     operator: NotIn
-                    values: ["gp-argo.usd.edu"]
+                    values:
+                      - gp-argo.usd.edu
+                      - cph-blade01.humboldt.edu
+                      - cph-blade03.humboldt.edu
+                      - cph-blade05.humboldt.edu
       initContainers:
       - name: git-sync
         image: alpine/git:latest
