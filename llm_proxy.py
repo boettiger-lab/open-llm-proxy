@@ -11,9 +11,11 @@ from fastapi import FastAPI, HTTPException, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
+import hashlib
 import httpx
 import os
 import json
+import re
 import time
 import uuid
 from typing import List, Dict, Any, Optional
@@ -27,9 +29,106 @@ _S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "http://rook-ceph-rgw-nautiluss3
 _S3_ENABLED = bool(os.getenv("AWS_ACCESS_KEY_ID"))
 _FLUSH_INTERVAL = int(os.getenv("FLUSH_INTERVAL", "60"))
 
+# --- Logging fidelity --------------------------------------------------------
+# Capture mode controls how much of each turn is logged (see LOGGING.md):
+#   "summary" (default) — full response content + generously-capped inputs,
+#                         but only this-turn tool results (not the whole prompt)
+#   "full"              — additionally logs the entire (scrubbed) `messages`
+#                         array per request for training-grade fidelity, with
+#                         the large system prompt de-duplicated by hash.
+_CAPTURE_MODE = os.getenv("LOG_CAPTURE_MODE", "summary").lower()
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+# Per-field length caps. 0 (or negative) means "no cap" — log the full string.
+# Defaults are generous relative to the old hard-coded 200/500 limits. The final
+# answer (`content`) and tool-call arguments are kept in full by default; the
+# bulky reasoning trace is capped separately so you can keep full decisions/answers
+# without the verbose thinking (a `*_preview` of 200 chars is always retained).
+_CONTENT_MAX       = _int_env("LOG_CONTENT_MAX", 0)        # response final-answer content
+_REASONING_MAX     = _int_env("LOG_REASONING_MAX", 4000)   # response reasoning_content trace
+_TOOL_RESULT_MAX   = _int_env("LOG_TOOL_RESULT_MAX", 20000)
+_USER_QUESTION_MAX = _int_env("LOG_USER_QUESTION_MAX", 4000)
+
+# Per-field cap for the *stdout* (kubectl) copy only — keeps pod logs readable
+# and bounds I/O while the full record still goes to S3. The full prompt
+# (`messages`, full mode) is dropped from stdout entirely (message_count covers
+# it). Stdout falls back to the full record only when S3 is disabled (then
+# stdout is the sole sink). See LOGGING.md.
+_STDOUT_MAX_FIELD = _int_env("LOG_STDOUT_MAX_FIELD", 200)
+
+def _cap(s: Optional[str], limit: int) -> str:
+    """Truncate `s` to `limit` chars; limit <= 0 means no truncation."""
+    s = s or ""
+    if limit and limit > 0 and len(s) > limit:
+        return s[:limit]
+    return s
+
+# --- Credential scrubbing ----------------------------------------------------
+# Credentials reach the logs because the geo-agent `query` MCP tool accepts
+# s3_key/s3_secret in its arguments, which flow through `tool_calls`, tool
+# results and the `messages` array. Scrub before anything is logged. This is
+# always on, independent of capture mode — observability logs leak secrets too.
+# Implementation lives in scrub.py so the live path and the historical scrub
+# job (scrub-historical-logs.py) share one source of truth and never diverge.
+from scrub import scrub as _scrub, scrub_text as _scrub_text, REDACTED as _REDACTED
+
 def _emit(log_entry: dict):
     """Print log entry and add to S3 buffer."""
     _log_buffer.append(log_entry)
+
+def _stdout_view(entry: dict) -> dict:
+    """Compact copy of a log entry for kubectl/pod-stdout.
+
+    Bounds every string field to `_STDOUT_MAX_FIELD` and drops the full
+    `messages` array (full mode) — the durable, untruncated record is what gets
+    buffered to S3. When S3 is disabled, callers print the full entry instead.
+    """
+    def shrink(v):
+        if isinstance(v, str) and len(v) > _STDOUT_MAX_FIELD:
+            return f"{v[:_STDOUT_MAX_FIELD]}…(+{len(v) - _STDOUT_MAX_FIELD} chars)"
+        if isinstance(v, list):
+            return [shrink(x) for x in v]
+        if isinstance(v, dict):
+            return {k: shrink(x) for k, x in v.items()}
+        return v
+    return {k: shrink(v) for k, v in entry.items() if k != "messages"}
+
+# Hashes of system prompts already logged in full this process. The system
+# prompt (~22k tokens, identical every turn) dominates message size, so we log
+# it once and reference it by hash thereafter. Resets on restart (re-logs once).
+_seen_system_hashes: set = set()
+
+def _dedup_messages(messages: List[Dict], origin: str = None) -> List[Dict]:
+    """Scrub `messages` and replace large system prompts with a hash reference.
+
+    The first time a given system-prompt body is seen, it is emitted as a
+    standalone `type: "system_prompt"` log entry; subsequent turns reference it
+    by `system_sha256` so the corpus stays reconstructable without re-storing it.
+    """
+    out = []
+    for m in messages:
+        if m.get("role") == "system" and isinstance(m.get("content"), str):
+            body = m["content"]
+            h = hashlib.sha256(body.encode("utf-8")).hexdigest()
+            if h not in _seen_system_hashes:
+                _seen_system_hashes.add(h)
+                _emit({
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "type": "system_prompt",
+                    "origin": origin,
+                    "system_sha256": h,
+                    "content": _scrub_text(body),
+                })
+            out.append({"role": "system", "system_sha256": h,
+                        "content_len": len(body), "_dedup": True})
+        else:
+            out.append(_scrub(m))
+    return out
 
 async def _flush_to_s3():
     """Write buffered log entries to S3 as a JSONL chunk file."""
@@ -176,6 +275,25 @@ def get_provider_for_model(model: str) -> tuple[str, dict]:
     print(f"⚠️  Unknown model '{model}', defaulting to NRP")
     return "nrp", PROVIDERS["nrp"]
 
+def _never_raises(fn):
+    """Logging must never break request serving.
+
+    `log_request` runs before the upstream call, so an exception here (e.g. a
+    scrubbing or json.dumps edge case) would 500 the client and drop the request.
+    Swallow logging errors, recording a breadcrumb instead.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"⚠️  {fn.__name__} failed (request still served): "
+                  f"{type(e).__name__}: {e}", flush=True)
+    return wrapper
+
+@_never_raises
 def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
@@ -190,7 +308,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         if m.get("role") == "tool":
             tool_results.append({
                 "tool_call_id": m.get("tool_call_id"),
-                "content": (m.get("content") or "")[:500]
+                "content": _scrub_text(_cap(m.get("content"), _TOOL_RESULT_MAX)),
             })
         elif m.get("role") == "assistant":
             break  # stop at the previous assistant turn
@@ -205,12 +323,17 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "origin": origin,
         "message_count": len(messages),
         "tools_count": tools_count,
-        "user_question": user_question[:500],
+        "user_question": _scrub_text(_cap(user_question, _USER_QUESTION_MAX)),
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
     }
-    print(f"📥 REQUEST: {json.dumps(log_entry)}", flush=True)
+    # Training-grade fidelity: capture the entire (scrubbed, system-deduped)
+    # prompt so (messages -> completion) pairs can be reconstructed by request_id.
+    if _CAPTURE_MODE == "full":
+        log_entry["messages"] = _dedup_messages(messages, origin=origin)
+    print(f"📥 REQUEST: {json.dumps(log_entry if not _S3_ENABLED else _stdout_view(log_entry))}", flush=True)
     _emit(log_entry)
 
+@_never_raises
 def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None):
     """Log response in structured JSON format"""
     log_entry = {
@@ -230,15 +353,22 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         # Extract response details
         if "choices" in response_data and len(response_data["choices"]) > 0:
             message = response_data["choices"][0].get("message", {})
+            content = _scrub_text(message.get("content") or "")
+            reasoning = _scrub_text(message.get("reasoning_content") or "")
             log_entry["has_content"] = bool(message.get("content"))
             log_entry["has_tool_calls"] = bool(message.get("tool_calls"))
             log_entry["has_reasoning_content"] = bool(message.get("reasoning_content"))
-            log_entry["content_preview"] = (message.get("content") or "")[:200]
-            log_entry["reasoning_content_preview"] = (message.get("reasoning_content") or "")[:200]
-            
+            # Full (scrubbed) response — this is the training target, no longer
+            # truncated. *_preview kept for cheap kubectl/SQL scans (back-compat).
+            log_entry["content"] = _cap(content, _CONTENT_MAX)
+            log_entry["reasoning_content"] = _cap(reasoning, _REASONING_MAX)
+            log_entry["content_preview"] = content[:200]
+            log_entry["reasoning_content_preview"] = reasoning[:200]
+
             if message.get("tool_calls"):
                 log_entry["tool_calls"] = [
-                    {"name": tc["function"]["name"], "arguments": tc["function"].get("arguments", "")}
+                    {"name": tc["function"]["name"],
+                     "arguments": _scrub(tc["function"].get("arguments", ""), _key="arguments")}
                     for tc in message["tool_calls"]
                 ]
         
@@ -247,7 +377,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
             log_entry["tokens"] = response_data["usage"]
     
     status = "✗" if error else "✓"
-    print(f"{status} RESPONSE: {json.dumps(log_entry)}", flush=True)
+    print(f"{status} RESPONSE: {json.dumps(log_entry if not _S3_ENABLED else _stdout_view(log_entry))}", flush=True)
     _emit(log_entry)
 
 class ChatRequest(BaseModel):

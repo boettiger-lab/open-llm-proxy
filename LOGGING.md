@@ -108,7 +108,7 @@ CAST(req.timestamp AS TIMESTAMPTZ) >= now() - INTERVAL 20 MINUTES
 ```
 Using `TIMESTAMP` causes a type mismatch binder error because `now()` returns `TIMESTAMPTZ`.
 
-**Log field truncation:** `tool_results_this_turn[N].content` and `content_preview` are truncated to ~200 chars in logs. A tool result that appears to contain only column names likely has full descriptions below the truncation point — verify using the STAC MCP tools directly rather than inferring from log previews.
+**Log field truncation:** As of the training-grade logging change, the response `content`/`reasoning_content` are captured **in full** (use them, not the 200-char `*_preview` fields), and `tool_results_this_turn[N].content` is capped at 20000 chars (`LOG_TOOL_RESULT_MAX`). **Records written before that change** still have only a 200-char `content_preview` and 500-char tool results — for those, a tool result that appears to contain only column names likely has full descriptions below the truncation point; verify using the STAC MCP tools directly rather than inferring from old previews.
 
 **Transient "malformed JSON" errors on raw JSONL:** Occasionally a `read_ndjson_auto` over today's directory will fail with `unexpected control character in string` at some byte offset. This is almost always a spurious partial byte-range read between DuckDB's httpfs extension and the Ceph gateway under high-parallelism scans — not actual bad data. The proxy writes with `json.dumps` (which escapes every control char) and S3 PUTs are atomic, so malformed lines on disk are not possible from the normal write path. The local-sync workflow avoids this entirely (it's only observed against `s3://` reads). If you're on the direct-S3 path: retry the query, or pass `ignore_errors=true` to `read_ndjson_auto` if you want a tolerant scan:
 ```sql
@@ -119,6 +119,14 @@ Do not treat this as a proxy bug unless you can point at an actual byte with a r
 Inside NRP pods, use the internal endpoint instead (`rook-ceph-rgw-nautiluss3.rook`, `USE_SSL false`) — faster and no public-endpoint throttling.
 
 ### kubectl (live logs / last ~60s before next flush)
+
+Pod stdout is **compacted**: each field is bounded to ~200 chars
+(`LOG_STDOUT_MAX_FIELD`) and the full `messages` array (full mode) is omitted —
+so `kubectl logs` stays readable and isn't flooded by large prompts/responses.
+The **complete, untruncated** record is in S3; use that for anything beyond a
+live glance. (When S3 is disabled, stdout falls back to the full record since
+it's then the only sink.) `origin`/`request_id`/`type` are never shrunk, so the
+grep filters below still work.
 
 ```bash
 # Live tail
@@ -131,6 +139,52 @@ kubectl -n biodiversity logs deployment/open-llm-proxy --tail=500
 kubectl -n biodiversity logs deployment/open-llm-proxy --tail=1000 \
   | grep '"origin":"https://padus.nrp-nautilus.io"'
 ```
+
+## Logging fidelity & credential scrubbing
+
+The proxy logs are used as an evaluation/training corpus (see the `agent_runner_*`
+origins), so capture is **training-grade**, controlled by `LOG_CAPTURE_MODE`:
+
+| Mode | What's captured | Use |
+|---|---|---|
+| `summary` (default) | Full response `content`/`reasoning_content`, generously-capped `user_question` and tool results, full `tool_calls`. **No** raw prompt. | Observability + most analysis; the response target is faithful. |
+| `full` | Everything in `summary`, **plus** the entire `messages` array per request (system prompt de-duplicated by hash). | Reconstructing exact `(messages → completion)` training pairs. |
+
+Caps are tunable per field via env vars (`0` = uncapped): `LOG_CONTENT_MAX`
+(final answer, default 0), `LOG_REASONING_MAX` (thinking trace, default 4000),
+`LOG_TOOL_RESULT_MAX` (default 20000), `LOG_USER_QUESTION_MAX` (default 4000).
+Capture mode and per-field caps are **orthogonal**: capture mode controls how
+much of the *prompt* (`messages`) is kept; caps bound each *output field*.
+`tool_calls` arguments (the SQL the model wrote) are always kept in full. The
+default config therefore keeps full tool calls + full final answer but bounds
+the bulky reasoning trace — set `LOG_REASONING_MAX=0` to capture it in full.
+
+Logging is wrapped so a failure (e.g. a scrubbing/serialisation edge case) can
+never break request serving — it logs a `⚠️ … failed (request still served)`
+breadcrumb to stdout and the upstream call proceeds normally.
+
+**Credential scrubbing is always on, in both modes.** The geo-agent `query` MCP
+tool takes `s3_key`/`s3_secret` in its arguments, which flow through `tool_calls`,
+tool results, and (in `full` mode) `messages`. Before anything is logged the proxy
+redacts: values under credential-looking keys (`s3_secret`, `s3_key`, `api_key`,
+`password`, `token`, …), DuckDB `KEY_ID '…'` / `SECRET '…'` literals, and
+`Authorization: Bearer …` tokens — replacing them with `[REDACTED]`. This is
+exercised by `test_logging.py`. **Note:** the live scrubber only protects records
+written *after* this change; older Parquet still contains leaked secrets. The
+one-off **`scrub-historical-logs.py`** job (manifest: `scrub-historical-logs-job.yaml`)
+rewrites those historical S3 objects in place using the *same* `scrub.py` logic,
+so the corpus is safe to share. It is idempotent (re-runs are no-ops), preserves
+JSON semantics (only the `entry` `tool_calls`/tool-result fields change), and
+rewrites Parquet via a temp key + row-count check + atomic copy. Run `--dry-run`
+first, then `--verify` for the real pass. Validated against the current bucket:
+184 leaking rows → 0, with zero data loss on the rest.
+
+**Size note:** `summary` mode is comparable to the old format (a few MiB/year; the
+extra full-content bytes compress well under Parquet zstd). `full` mode is far
+larger — each turn carries the whole conversation (~23k prompt tokens avg), so the
+system-prompt dedup (which removes the dominant repeated ~22k-token blob) is what
+keeps it tractable. With multiple uvicorn workers the dedup set is per-process, so
+each distinct system prompt is logged once per worker.
 
 ## Log format
 
@@ -152,8 +206,9 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `origin` | Origin or Referer header — identifies which app sent the request |
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
-| `user_question` | First `role: user` message in the conversation — the human's original question, stable across all turns of a tool-use loop |
-| `tool_results_this_turn` | Array of `{tool_call_id, content}` for any `role: tool` messages appended since the last assistant turn. Captures results from both local geo-agent tools (e.g. `list_datasets`, `get_dataset_details`) and remote MCP tools (e.g. `query`). `null` on the first turn. |
+| `user_question` | First `role: user` message in the conversation — the human's original question, stable across all turns of a tool-use loop. Capped at `LOG_USER_QUESTION_MAX` chars (default 4000). |
+| `tool_results_this_turn` | Array of `{tool_call_id, content}` for any `role: tool` messages appended since the last assistant turn. Captures results from both local geo-agent tools (e.g. `list_datasets`, `get_dataset_details`) and remote MCP tools (e.g. `query`). Each `content` is capped at `LOG_TOOL_RESULT_MAX` chars (default 20000). `null` on the first turn. |
+| `messages` | **Only when `LOG_CAPTURE_MODE=full`.** The entire scrubbed `messages` array sent to the provider — training-grade fidelity. The large system prompt is de-duplicated: each `role: system` message is replaced by `{role, system_sha256, content_len, _dedup: true}` and the full body is emitted once (per worker) as a separate `type: "system_prompt"` entry. Join `messages[].system_sha256` → the `system_prompt` entry to rehydrate. |
 
 ### RESPONSE entry
 
@@ -174,9 +229,11 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `has_content` | Whether the LLM returned text content |
 | `has_tool_calls` | Whether the LLM made tool calls |
 | `has_reasoning_content` | Whether the LLM returned a separate `reasoning_content` field (qwen3 thinking-mode and similar). A response with `has_content=false` and `has_reasoning_content=true` means the model spent its budget reasoning but never emitted a final answer — diagnostic for degenerate-200 cases. |
-| `content_preview` | First 200 chars of text response |
-| `reasoning_content_preview` | First 200 chars of `reasoning_content` (empty for non-thinking models) |
-| `tool_calls` | Array of `{name, arguments}` — full tool call arguments including SQL query strings |
+| `content` | **Full** text response (the training target), scrubbed of credentials. Capped only if `LOG_CONTENT_MAX > 0` (default 0 = uncapped). |
+| `reasoning_content` | **Full** `reasoning_content` (qwen3 thinking-mode etc.), scrubbed. Empty for non-thinking models. |
+| `content_preview` | First 200 chars of `content` — kept for cheap kubectl/SQL scans. |
+| `reasoning_content_preview` | First 200 chars of `reasoning_content`. |
+| `tool_calls` | Array of `{name, arguments}` — full tool call arguments including SQL query strings. Credential args (`s3_key`/`s3_secret`/…) are redacted. |
 | `tokens` | Token usage object from the provider (`prompt_tokens`, `completion_tokens`, `total_tokens`) |
 | `error` | Error detail string (only present on failed requests) |
 
