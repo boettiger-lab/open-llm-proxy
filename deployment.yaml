@@ -69,6 +69,12 @@ spec:
             secretKeyRef:
               name: open-llm-proxy-secrets
               key: cache-salt
+        # Logging fidelity (see LOGGING.md). Credentials are always scrubbed.
+        # "summary" (default): full response content + generously-capped inputs.
+        # "full": additionally log the entire scrubbed `messages` array per turn
+        #         (training-grade), with the system prompt de-duplicated by hash.
+        - name: LOG_CAPTURE_MODE
+          value: "summary"
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID }
