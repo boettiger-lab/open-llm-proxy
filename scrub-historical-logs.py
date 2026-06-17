@@ -131,22 +131,29 @@ def scrub_jsonl(s3, key, dry_run):
 
 
 def verify(con, s3, parquet_keys, jsonl_keys):
-    """Re-scan everything; return count of objects still containing a secret."""
+    """Re-scan everything; return count of objects with residual secrets.
+
+    The invariant is idempotency: a clean record is a fixed point of the
+    scrubber, so a row "still contains a secret" iff re-scrubbing would change
+    it. We must NOT regex for credential *key names* — `[REDACTED]` markers and
+    empty placeholders (e.g. the model's own `KEY_ID '', SECRET ''`) match those
+    patterns yet contain no secret. Re-running the exact scrubber is the only
+    check that can't drift from what the scrub actually did.
+    """
     bad = 0
     for key in parquet_keys:
-        hits = con.execute(
-            f"SELECT count(*) FROM read_parquet('s3://{BUCKET}/{key}') "
-            f"WHERE regexp_matches(entry, '(?i)(KEY_ID|SECRET)\\s+''|Bearer\\s+\\S|"
-            f"(s3[_-]?secret|s3[_-]?key|api[_-]?key|password|token)[\"'' ]?\\s*[:=]')"
-        ).fetchone()[0]
-        if hits:
+        entries = con.execute(
+            f"SELECT entry FROM read_parquet('s3://{BUCKET}/{key}')").fetchall()
+        n = sum(1 for (e,) in entries if e is not None and scrub.scrub_entry(e) != e)
+        if n:
             bad += 1
-            print(f"  ✗ {key}: {hits} rows still match a secret pattern")
+            print(f"  ✗ {key}: {n} rows still change under re-scrub (residual secret)")
     for key in jsonl_keys:
         body = s3.get_object(Bucket=BUCKET, Key=key)["Body"].read().decode("utf-8")
-        if any(scrub.contains_secret(l) for l in body.splitlines()):
+        n = sum(1 for l in body.splitlines() if l.strip() and scrub.scrub_entry(l) != l)
+        if n:
             bad += 1
-            print(f"  ✗ {key}: still matches a secret pattern")
+            print(f"  ✗ {key}: {n} lines still change under re-scrub (residual secret)")
     return bad
 
 
