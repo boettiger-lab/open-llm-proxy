@@ -169,6 +169,24 @@ def test_logging_never_raises_on_bad_input():
     assert p.log_request("nrp", "qwen3", Boom()) is None
 
 
+def test_scrub_entry_idempotent_and_detectable():
+    # Powers the historical scrub job; must be lossless-idempotent + verifiable.
+    import scrub
+    leak = json.dumps({
+        "type": "response",
+        "tool_calls": [{"name": "query", "arguments": json.dumps({
+            "sql": "SELECT 1", "s3_key": "NRQCS0986HNYNB0HFC50",
+            "s3_secret": "7cGPYdNwp24S_IyUks8HVHydA5rwMu89UjEFQ_Am"})}],
+    })
+    assert scrub.contains_secret(leak)
+    once = scrub.scrub_entry(leak)
+    assert "7cGPYdNwp24S" not in once and "NRQCS0986HNYNB0HFC50" not in once
+    assert scrub.scrub_entry(once) == once          # idempotent
+    # A clean record round-trips with no semantic change.
+    clean = json.dumps({"type": "request", "user_question": "How many acres?"})
+    assert json.loads(scrub.scrub_entry(clean)) == json.loads(clean)
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

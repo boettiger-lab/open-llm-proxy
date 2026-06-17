@@ -73,60 +73,9 @@ def _cap(s: Optional[str], limit: int) -> str:
 # s3_key/s3_secret in its arguments, which flow through `tool_calls`, tool
 # results and the `messages` array. Scrub before anything is logged. This is
 # always on, independent of capture mode — observability logs leak secrets too.
-_REDACTED = "[REDACTED]"
-
-# Redact the *value* of any dict key whose name looks credential-bearing.
-_SENSITIVE_KEY_RE = re.compile(
-    r"(?i)(s3[_-]?secret|s3[_-]?key|secret[_-]?access[_-]?key|access[_-]?key[_-]?id"
-    r"|aws[_-]?secret|aws[_-]?access|api[_-]?key|apikey|secret|password|passwd"
-    r"|token|authorization|auth[_-]?token|bearer)"
-)
-
-# Catch secrets embedded in free text (SQL the model wrote, JSON-in-a-string
-# tool arguments, DuckDB CREATE SECRET statements, Authorization headers).
-_TEXT_PATTERNS = [
-    # key: "value" / key='value' / "s3_secret": "..." / s3_secret: bareval
-    # (handles \" escaping and unquoted values; quote-optional on both sides)
-    (re.compile(
-        r"""(?ix)(\\?["']?(?:s3[_-]?secret|s3[_-]?key|secret[_-]?access[_-]?key
-        |access[_-]?key[_-]?id|aws[_-]?secret|aws[_-]?access|api[_-]?key|apikey
-        |secret|password|token)\\?["']?\s*[:=]\s*\\?["']?)([^"'\s\\,}]+)"""),
-     r"\1" + _REDACTED),
-    # DuckDB: KEY_ID '...'  /  SECRET '...'
-    (re.compile(r"(?i)\b(KEY_ID|SECRET)\s+'([^']+)'"), r"\1 '" + _REDACTED + "'"),
-    # Authorization: Bearer <token>
-    (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._\-]+"), r"\1" + _REDACTED),
-]
-
-def _scrub_text(s: str) -> str:
-    for pat, repl in _TEXT_PATTERNS:
-        s = pat.sub(repl, s)
-    return s
-
-def _scrub(obj: Any, _key: Optional[str] = None) -> Any:
-    """Recursively redact credentials from a JSON-serialisable structure.
-
-    - Any dict value under a sensitive-looking key is fully redacted.
-    - Remaining strings are regex-scrubbed for embedded secrets.
-    - OpenAI tool-call `arguments` are a JSON *string*; parse, scrub, re-dump
-      so nested s3_key/s3_secret args get key-based redaction too.
-    """
-    if isinstance(obj, dict):
-        return {k: _scrub(v, _key=k) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_scrub(v, _key=_key) for v in obj]
-    if isinstance(obj, str):
-        if _key and _SENSITIVE_KEY_RE.fullmatch(_key):
-            return _REDACTED
-        # Stringified JSON (e.g. tool_call arguments): scrub structurally.
-        stripped = obj.strip()
-        if stripped[:1] in ("{", "[") and _key in ("arguments", "content"):
-            try:
-                return json.dumps(_scrub(json.loads(obj)))
-            except (json.JSONDecodeError, ValueError):
-                pass
-        return _scrub_text(obj)
-    return obj
+# Implementation lives in scrub.py so the live path and the historical scrub
+# job (scrub-historical-logs.py) share one source of truth and never diverge.
+from scrub import scrub as _scrub, scrub_text as _scrub_text, REDACTED as _REDACTED
 
 def _emit(log_entry: dict):
     """Print log entry and add to S3 buffer."""

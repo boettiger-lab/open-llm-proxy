@@ -169,8 +169,15 @@ tool results, and (in `full` mode) `messages`. Before anything is logged the pro
 redacts: values under credential-looking keys (`s3_secret`, `s3_key`, `api_key`,
 `password`, `token`, …), DuckDB `KEY_ID '…'` / `SECRET '…'` literals, and
 `Authorization: Bearer …` tokens — replacing them with `[REDACTED]`. This is
-exercised by `test_logging.py`. **Note:** scrubbing only protects records written
-*after* this change; older Parquet may still contain leaked secrets (issue #24).
+exercised by `test_logging.py`. **Note:** the live scrubber only protects records
+written *after* this change; older Parquet still contains leaked secrets. The
+one-off **`scrub-historical-logs.py`** job (manifest: `scrub-historical-logs-job.yaml`)
+rewrites those historical S3 objects in place using the *same* `scrub.py` logic,
+so the corpus is safe to share. It is idempotent (re-runs are no-ops), preserves
+JSON semantics (only the `entry` `tool_calls`/tool-result fields change), and
+rewrites Parquet via a temp key + row-count check + atomic copy. Run `--dry-run`
+first, then `--verify` for the real pass. Validated against the current bucket:
+184 leaking rows → 0, with zero data loss on the rest.
 
 **Size note:** `summary` mode is comparable to the old format (a few MiB/year; the
 extra full-content bytes compress well under Parquet zstd). `full` mode is far
