@@ -3,6 +3,18 @@ kind: Ingress
 metadata:
   name: open-llm-proxy-ingress
   annotations:
+    # CORS IS ENFORCED HERE, not in the app. The FastAPI CORSMiddleware in
+    # llm_proxy.py is effectively dead config — this haproxy ingress answers the
+    # browser preflight and wins. `cors-allow-headers` is an EXPLICIT list (it
+    # does not reflect requested headers), so any custom request header a browser
+    # client sends MUST be added below or the preflight fails and the ENTIRE
+    # request is blocked (not just that header). e.g. to let geo-agent send an
+    # X-Client version header, append `,X-Client` to cors-allow-headers and
+    # deploy this BEFORE the client starts sending it. Verify with:
+    #   curl -i -X OPTIONS https://open-llm-proxy.nrp-nautilus.io/v1/chat/completions \
+    #     -H "Origin: https://tpl.nrp-nautilus.io" \
+    #     -H "Access-Control-Request-Method: POST" \
+    #     -H "Access-Control-Request-Headers: authorization,content-type,x-client"
     haproxy-ingress.github.io/cors-enable: "true"
     haproxy-ingress.github.io/cors-allow-origin: "*"
     haproxy-ingress.github.io/cors-allow-methods: "GET, POST, OPTIONS"

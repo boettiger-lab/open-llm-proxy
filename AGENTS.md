@@ -4,6 +4,8 @@
 
 This is an LLM proxy service that routes chat completion requests to NRP, OpenRouter, or Nimbus providers and logs every request/response pair. The primary analysis task for agents is evaluating those logs.
 
+> **CORS gotcha:** browser CORS is enforced by the **haproxy ingress** (`ingress.yaml` annotations), *not* the app's `CORSMiddleware` (which is effectively dead config). `cors-allow-headers` is an explicit list — a new custom request header (e.g. `X-Client`) must be added there or the browser preflight blocks the whole request. See the comment in `ingress.yaml`.
+
 ## Evaluating Logs
 
 Logs land in three tiers by age (see [LOGGING.md](LOGGING.md) for the full spec):
