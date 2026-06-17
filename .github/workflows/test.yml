@@ -1,0 +1,24 @@
+name: test
+
+# Guards the logging contract: credential scrubbing (issue #24) and the
+# no-truncation / capture-mode behaviour. Runs the lightweight standalone
+# suite in test_logging.py on every push and PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runtime deps (llm_proxy imports these at module load)
+        run: pip install -r requirements.txt
+      - name: Run logging/scrubbing tests
+        run: python test_logging.py
+      - name: Syntax-check the historical scrub job
+        run: python -m py_compile scrub.py scrub-historical-logs.py
