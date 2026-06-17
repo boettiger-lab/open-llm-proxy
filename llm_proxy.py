@@ -45,10 +45,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 # Per-field length caps. 0 (or negative) means "no cap" — log the full string.
-# Defaults are generous relative to the old hard-coded 200/500 limits; the
-# response target (`content`/`reasoning_content`) is uncapped by default.
-_CONTENT_MAX      = _int_env("LOG_CONTENT_MAX", 0)        # response content/reasoning
-_TOOL_RESULT_MAX  = _int_env("LOG_TOOL_RESULT_MAX", 20000)
+# Defaults are generous relative to the old hard-coded 200/500 limits. The final
+# answer (`content`) and tool-call arguments are kept in full by default; the
+# bulky reasoning trace is capped separately so you can keep full decisions/answers
+# without the verbose thinking (a `*_preview` of 200 chars is always retained).
+_CONTENT_MAX       = _int_env("LOG_CONTENT_MAX", 0)        # response final-answer content
+_REASONING_MAX     = _int_env("LOG_REASONING_MAX", 4000)   # response reasoning_content trace
+_TOOL_RESULT_MAX   = _int_env("LOG_TOOL_RESULT_MAX", 20000)
 _USER_QUESTION_MAX = _int_env("LOG_USER_QUESTION_MAX", 4000)
 
 def _cap(s: Optional[str], limit: int) -> str:
@@ -299,6 +302,25 @@ def get_provider_for_model(model: str) -> tuple[str, dict]:
     print(f"⚠️  Unknown model '{model}', defaulting to NRP")
     return "nrp", PROVIDERS["nrp"]
 
+def _never_raises(fn):
+    """Logging must never break request serving.
+
+    `log_request` runs before the upstream call, so an exception here (e.g. a
+    scrubbing or json.dumps edge case) would 500 the client and drop the request.
+    Swallow logging errors, recording a breadcrumb instead.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"⚠️  {fn.__name__} failed (request still served): "
+                  f"{type(e).__name__}: {e}", flush=True)
+    return wrapper
+
+@_never_raises
 def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
@@ -338,6 +360,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     print(f"📥 REQUEST: {json.dumps(log_entry)}", flush=True)
     _emit(log_entry)
 
+@_never_raises
 def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None):
     """Log response in structured JSON format"""
     log_entry = {
@@ -365,7 +388,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
             # Full (scrubbed) response — this is the training target, no longer
             # truncated. *_preview kept for cheap kubectl/SQL scans (back-compat).
             log_entry["content"] = _cap(content, _CONTENT_MAX)
-            log_entry["reasoning_content"] = _cap(reasoning, _CONTENT_MAX)
+            log_entry["reasoning_content"] = _cap(reasoning, _REASONING_MAX)
             log_entry["content_preview"] = content[:200]
             log_entry["reasoning_content_preview"] = reasoning[:200]
 

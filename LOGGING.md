@@ -142,8 +142,18 @@ origins), so capture is **training-grade**, controlled by `LOG_CAPTURE_MODE`:
 | `summary` (default) | Full response `content`/`reasoning_content`, generously-capped `user_question` and tool results, full `tool_calls`. **No** raw prompt. | Observability + most analysis; the response target is faithful. |
 | `full` | Everything in `summary`, **plus** the entire `messages` array per request (system prompt de-duplicated by hash). | Reconstructing exact `(messages → completion)` training pairs. |
 
-Caps are tunable via env vars (`0` = uncapped): `LOG_CONTENT_MAX` (default 0),
+Caps are tunable per field via env vars (`0` = uncapped): `LOG_CONTENT_MAX`
+(final answer, default 0), `LOG_REASONING_MAX` (thinking trace, default 4000),
 `LOG_TOOL_RESULT_MAX` (default 20000), `LOG_USER_QUESTION_MAX` (default 4000).
+Capture mode and per-field caps are **orthogonal**: capture mode controls how
+much of the *prompt* (`messages`) is kept; caps bound each *output field*.
+`tool_calls` arguments (the SQL the model wrote) are always kept in full. The
+default config therefore keeps full tool calls + full final answer but bounds
+the bulky reasoning trace — set `LOG_REASONING_MAX=0` to capture it in full.
+
+Logging is wrapped so a failure (e.g. a scrubbing/serialisation edge case) can
+never break request serving — it logs a `⚠️ … failed (request still served)`
+breadcrumb to stdout and the upstream call proceeds normally.
 
 **Credential scrubbing is always on, in both modes.** The geo-agent `query` MCP
 tool takes `s3_key`/`s3_secret` in its arguments, which flow through `tool_calls`,
