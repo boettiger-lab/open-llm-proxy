@@ -120,6 +120,14 @@ Inside NRP pods, use the internal endpoint instead (`rook-ceph-rgw-nautiluss3.ro
 
 ### kubectl (live logs / last ~60s before next flush)
 
+Pod stdout is **compacted**: each field is bounded to ~200 chars
+(`LOG_STDOUT_MAX_FIELD`) and the full `messages` array (full mode) is omitted —
+so `kubectl logs` stays readable and isn't flooded by large prompts/responses.
+The **complete, untruncated** record is in S3; use that for anything beyond a
+live glance. (When S3 is disabled, stdout falls back to the full record since
+it's then the only sink.) `origin`/`request_id`/`type` are never shrunk, so the
+grep filters below still work.
+
 ```bash
 # Live tail
 kubectl -n biodiversity logs deployment/open-llm-proxy -f

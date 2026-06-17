@@ -54,6 +54,13 @@ _REASONING_MAX     = _int_env("LOG_REASONING_MAX", 4000)   # response reasoning_
 _TOOL_RESULT_MAX   = _int_env("LOG_TOOL_RESULT_MAX", 20000)
 _USER_QUESTION_MAX = _int_env("LOG_USER_QUESTION_MAX", 4000)
 
+# Per-field cap for the *stdout* (kubectl) copy only — keeps pod logs readable
+# and bounds I/O while the full record still goes to S3. The full prompt
+# (`messages`, full mode) is dropped from stdout entirely (message_count covers
+# it). Stdout falls back to the full record only when S3 is disabled (then
+# stdout is the sole sink). See LOGGING.md.
+_STDOUT_MAX_FIELD = _int_env("LOG_STDOUT_MAX_FIELD", 200)
+
 def _cap(s: Optional[str], limit: int) -> str:
     """Truncate `s` to `limit` chars; limit <= 0 means no truncation."""
     s = s or ""
@@ -124,6 +131,23 @@ def _scrub(obj: Any, _key: Optional[str] = None) -> Any:
 def _emit(log_entry: dict):
     """Print log entry and add to S3 buffer."""
     _log_buffer.append(log_entry)
+
+def _stdout_view(entry: dict) -> dict:
+    """Compact copy of a log entry for kubectl/pod-stdout.
+
+    Bounds every string field to `_STDOUT_MAX_FIELD` and drops the full
+    `messages` array (full mode) — the durable, untruncated record is what gets
+    buffered to S3. When S3 is disabled, callers print the full entry instead.
+    """
+    def shrink(v):
+        if isinstance(v, str) and len(v) > _STDOUT_MAX_FIELD:
+            return f"{v[:_STDOUT_MAX_FIELD]}…(+{len(v) - _STDOUT_MAX_FIELD} chars)"
+        if isinstance(v, list):
+            return [shrink(x) for x in v]
+        if isinstance(v, dict):
+            return {k: shrink(x) for k, x in v.items()}
+        return v
+    return {k: shrink(v) for k, v in entry.items() if k != "messages"}
 
 # Hashes of system prompts already logged in full this process. The system
 # prompt (~22k tokens, identical every turn) dominates message size, so we log
@@ -357,7 +381,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     # prompt so (messages -> completion) pairs can be reconstructed by request_id.
     if _CAPTURE_MODE == "full":
         log_entry["messages"] = _dedup_messages(messages, origin=origin)
-    print(f"📥 REQUEST: {json.dumps(log_entry)}", flush=True)
+    print(f"📥 REQUEST: {json.dumps(log_entry if not _S3_ENABLED else _stdout_view(log_entry))}", flush=True)
     _emit(log_entry)
 
 @_never_raises
@@ -404,7 +428,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
             log_entry["tokens"] = response_data["usage"]
     
     status = "✗" if error else "✓"
-    print(f"{status} RESPONSE: {json.dumps(log_entry)}", flush=True)
+    print(f"{status} RESPONSE: {json.dumps(log_entry if not _S3_ENABLED else _stdout_view(log_entry))}", flush=True)
     _emit(log_entry)
 
 class ChatRequest(BaseModel):

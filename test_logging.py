@@ -118,6 +118,44 @@ def test_full_mode_captures_and_dedups_system_prompt():
     assert len([e for e in p._log_buffer if e["type"] == "system_prompt"]) == 1
 
 
+def test_stdout_compacted_while_s3_record_stays_full(capsys=None):
+    # #2: kubectl/stdout must stay readable; full fidelity goes to the S3 buffer.
+    p = _reload(LOG_CAPTURE_MODE="full")
+    p._S3_ENABLED = True            # pretend S3 is the durable sink
+    p._log_buffer.clear()
+    p._seen_system_hashes.clear()
+    import io
+    from contextlib import redirect_stdout
+    msgs = [
+        {"role": "system", "content": "SYS " * 5000},
+        {"role": "user", "content": "Q " * 3000},
+    ]
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        p.log_request("nrp", "qwen3", msgs, request_id="r1")
+    printed = buf.getvalue()
+    # stdout line is small and omits the full messages array...
+    req_line = [l for l in printed.splitlines() if l.startswith("📥 REQUEST")][0]
+    assert '"messages"' not in req_line
+    assert len(req_line) < 2000
+    # ...but the buffered record (-> S3) keeps the full messages array.
+    req = [e for e in p._log_buffer if e["type"] == "request"][-1]
+    assert "messages" in req and len(req["messages"]) == 2
+
+
+def test_stdout_full_when_s3_disabled():
+    p = _reload(LOG_CAPTURE_MODE="summary")
+    p._S3_ENABLED = False           # stdout is the only sink -> must be complete
+    p._log_buffer.clear()
+    import io
+    from contextlib import redirect_stdout
+    resp = {"choices": [{"message": {"content": "Z" * 1000}}]}
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        p.log_response("nrp", "qwen3", resp, 10, request_id="r1")
+    assert "Z" * 1000 in buf.getvalue()   # full content present on stdout
+
+
 def test_logging_never_raises_on_bad_input():
     # A logging failure must never propagate into request serving (#1).
     p = importlib.reload(llm_proxy)
