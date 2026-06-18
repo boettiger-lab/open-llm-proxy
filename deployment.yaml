@@ -22,17 +22,31 @@ spec:
       labels:
         app: open-llm-proxy
     spec:
-      # DNS tuning to curb intermittent upstream "Temporary failure in name
+      # DNS resilience for intermittent upstream "Temporary failure in name
       # resolution" (EAI_AGAIN) → 502s. See issue #28.
-      #  - ndots:2 — the provider host `ellm.nrp-nautilus.io` has 2 dots, so the
-      #    default ndots:5 appends every search domain FIRST (4 guaranteed-
-      #    NXDOMAIN queries before the real one), 5x-ing CoreDNS load and the
-      #    chance of a transient miss. ndots:2 queries it absolute first (1
-      #    query) while still letting in-cluster short names like
-      #    `rook-ceph-rgw-nautiluss3.rook` (1 dot, for the S3 flush) use search.
-      #  - attempts:3 / timeout:2 — let the resolver re-query a transient miss
-      #    before the app ever sees an error.
+      #
+      # Resolution goes through the per-pod `dns-cache` CoreDNS sidecar on
+      # 127.0.0.1, which forwards to cluster CoreDNS and CACHES with serve_stale
+      # — so when cluster CoreDNS blips, the sidecar keeps serving the last-good
+      # answer instead of failing. Cluster CoreDNS (10.96.0.10) is kept as a
+      # FALLBACK nameserver: if the sidecar is unreachable, resolution degrades
+      # to today's direct-to-CoreDNS behavior (never worse than before).
+      #
+      # dnsPolicy: None is required to put 127.0.0.1 first (ClusterFirst would
+      # prepend 10.96.0.10). We therefore specify searches explicitly; the
+      # node-specific search domain is intentionally dropped (app only resolves
+      # in-cluster services + external FQDNs). ndots:2 keeps external FQDNs to a
+      # single query while short names like rook-ceph-rgw-nautiluss3.rook (S3
+      # flush) still resolve via the search list.
+      dnsPolicy: None
       dnsConfig:
+        nameservers:
+          - 127.0.0.1
+          - 10.96.0.10
+        searches:
+          - biodiversity.svc.cluster.local
+          - svc.cluster.local
+          - cluster.local
         options:
           - name: ndots
             value: "2"
@@ -78,6 +92,29 @@ spec:
         - name: app-code
           mountPath: /app
       containers:
+      # Per-pod caching DNS resolver (see dns-cache-configmap.yaml + #28). The
+      # app points at 127.0.0.1; this forwards to cluster CoreDNS and serves
+      # stale entries through upstream blips. Falls back are handled by the
+      # second nameserver in dnsConfig if this container is unavailable.
+      - name: dns-cache
+        image: registry.k8s.io/coredns/coredns:v1.11.3
+        args: ["-conf", "/etc/coredns/Corefile"]
+        securityContext:
+          capabilities:
+            add: ["NET_BIND_SERVICE"]   # bind :53
+        livenessProbe:
+          httpGet: { path: /health, port: 8080 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet: { path: /ready, port: 8181 }
+          periodSeconds: 5
+        resources:
+          requests: { cpu: "10m", memory: "32Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
+        volumeMounts:
+        - name: dns-config
+          mountPath: /etc/coredns
       - name: open-llm-proxy
         image: astral/uv:python3.12-bookworm-slim
         command: ["uvx", "--from", "uvicorn", "--with", "fastapi", "--with", "httpx", "--with", "pydantic", "--with", "boto3", "uvicorn", "llm_proxy:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
@@ -173,3 +210,6 @@ spec:
       volumes:
       - name: app-code
         emptyDir: {}
+      - name: dns-config
+        configMap:
+          name: open-llm-proxy-dns-cache

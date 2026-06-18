@@ -1,0 +1,25 @@
+# Corefile for the per-pod CoreDNS caching sidecar (see deployment.yaml + #28).
+# The app resolves via this sidecar (127.0.0.1); it forwards to cluster CoreDNS
+# and CACHES. The key feature is `serve_stale`: when the upstream cluster CoreDNS
+# is intermittently unreachable (the EAI_AGAIN bursts), the sidecar keeps serving
+# the last-known-good answer instead of failing — riding through the blip.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: open-llm-proxy-dns-cache
+  labels:
+    app: open-llm-proxy
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health :8080
+        ready :8181
+        cache {
+            success 9984 300 30
+            denial 1024 30 5
+            serve_stale 1h immediate
+        }
+        forward . 10.96.0.10
+        reload
+    }
