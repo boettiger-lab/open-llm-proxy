@@ -391,7 +391,7 @@ class ChatRequest(BaseModel):
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[str] = "auto"
     model: Optional[str] = "gpt-4"
-    temperature: Optional[float] = 0.7
+    temperature: Optional[float] = 0.0
     enable_thinking: Optional[bool] = None  # None = use model default; True/False to override
 
 @app.post("/v1/chat/completions")
