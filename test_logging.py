@@ -187,6 +187,50 @@ def test_scrub_entry_idempotent_and_detectable():
     assert json.loads(scrub.scrub_entry(clean)) == json.loads(clean)
 
 
+def test_flush_failure_requeues_batch():
+    """A failed S3 write must re-queue the batch, not drop it (issue #27)."""
+    import asyncio
+    p = _reload(AWS_ACCESS_KEY_ID="x", AWS_SECRET_ACCESS_KEY="y")
+    p._log_buffer[:] = [{"type": "request", "n": i} for i in range(3)]
+
+    class _Boom:
+        def put_object(self, **kw):
+            raise RuntimeError("simulated S3 5xx")
+
+    import boto3
+    orig = boto3.client
+    boto3.client = lambda *a, **k: _Boom()
+    try:
+        asyncio.run(p._flush_to_s3())
+    finally:
+        boto3.client = orig
+
+    # Entries must survive the failed flush for retry, in original order.
+    assert [e["n"] for e in p._log_buffer] == [0, 1, 2]
+
+
+def test_flush_failure_caps_buffer_dropping_oldest():
+    """A prolonged outage must bound the buffer, dropping oldest (issue #27)."""
+    import asyncio
+    p = _reload(AWS_ACCESS_KEY_ID="x", AWS_SECRET_ACCESS_KEY="y", LOG_MAX_BUFFER="5")
+    p._log_buffer[:] = [{"type": "request", "n": i} for i in range(8)]
+
+    class _Boom:
+        def put_object(self, **kw):
+            raise RuntimeError("simulated S3 outage")
+
+    import boto3
+    orig = boto3.client
+    boto3.client = lambda *a, **k: _Boom()
+    try:
+        asyncio.run(p._flush_to_s3())
+    finally:
+        boto3.client = orig
+
+    # Capped to 5: oldest (0,1,2) dropped, newest retained.
+    assert [e["n"] for e in p._log_buffer] == [3, 4, 5, 6, 7]
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

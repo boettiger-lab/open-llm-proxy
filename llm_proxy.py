@@ -28,6 +28,9 @@ _LOG_BUCKET = os.getenv("LOG_BUCKET", "logs-open-llm-proxy")
 _S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "http://rook-ceph-rgw-nautiluss3.rook")
 _S3_ENABLED = bool(os.getenv("AWS_ACCESS_KEY_ID"))
 _FLUSH_INTERVAL = int(os.getenv("FLUSH_INTERVAL", "60"))
+# Cap the in-memory buffer so a prolonged S3 outage (entries re-queued on each
+# failed flush) can't grow it without bound. Drop-oldest when exceeded, logged.
+_MAX_BUFFER = int(os.getenv("LOG_MAX_BUFFER", "50000"))
 
 # --- Logging fidelity --------------------------------------------------------
 # Capture mode controls how much of each turn is logged (see LOGGING.md):
@@ -159,7 +162,17 @@ async def _flush_to_s3():
         )
         print(f"✓ Flushed {len(entries)} log entries to s3://{_LOG_BUCKET}/{key}", flush=True)
     except Exception as e:
-        print(f"⚠️  S3 flush failed: {e} — entries remain in pod logs only", flush=True)
+        # Re-queue the batch instead of dropping it, so a transient S3 error
+        # (timeout, 5xx, throttle) doesn't permanently lose log records. New
+        # entries may have arrived during the await; prepend the failed batch
+        # ahead of them — we sort by ts downstream, so ordering is fine.
+        _log_buffer[:0] = entries
+        if len(_log_buffer) > _MAX_BUFFER:
+            dropped = len(_log_buffer) - _MAX_BUFFER
+            del _log_buffer[:dropped]  # drop oldest, never silently
+            print(f"⚠️  Log buffer exceeded {_MAX_BUFFER} entries during outage; "
+                  f"dropped {dropped} oldest", flush=True)
+        print(f"⚠️  S3 flush failed: {e} — {len(entries)} entries re-queued for retry", flush=True)
 
 async def _flush_loop():
     while True:
