@@ -24,8 +24,14 @@ See [Releases](README.md#releases) for how a release is cut.
   session views for already-consolidated days that lack one; the monthly rollup
   rebuilds the view over the whole month (correct cross-midnight `turn_idx`) and
   reads daily files with `union_by_name=true` so a month mixing legacy
-  (entry-only) and flattened daily files merges cleanly. `LOGGING.md` / `AGENTS.md`
-  document both schemas and the `sessions/**` ⟂ `consolidated/**` glob split.
+  (entry-only) and flattened daily files merges cleanly. Both jobs also run a
+  **self-healing schema-upgrade pass** that re-flattens any legacy 5-column
+  consolidated file in place from its preserved `entry` blob (lossless,
+  idempotent), so the whole `consolidated/**` corpus converges to one schema and
+  old logs gain the flat columns too — no mixed-schema barrier for analysts.
+  Existing `entry`-based queries were never at risk (DuckDB name-matches common
+  columns across a mixed glob). `LOGGING.md` / `AGENTS.md` document both schemas,
+  the `sessions/**` ⟂ `consolidated/**` glob split, and the mixed-glob caveat.
 
 ### Fixed
 - **Response logging restored (#37).** Since the #26 (X-Client) deploy, the

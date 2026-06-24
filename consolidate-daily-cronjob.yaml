@@ -91,9 +91,9 @@ spec:
                   backfill_sessions = sorted(existing - existing_sessions - set(to_do))
                   print(f"Days to consolidate ({len(to_do)}): {to_do}")
                   print(f"Session views to backfill ({len(backfill_sessions)}): {backfill_sessions}")
-                  if not to_do and not backfill_sessions:
-                      print("Nothing to do.")
-                      raise SystemExit(0)
+                  # Note: we always continue to the schema-upgrade pass below, which
+                  # re-flattens any legacy consolidated daily file — it must run even on
+                  # days with nothing new to consolidate or backfill.
 
                   con = duckdb.connect()
                   con.execute(f"""
@@ -166,6 +166,44 @@ spec:
                           ) TO '{dest}' (FORMAT PARQUET, COMPRESSION zstd)
                       """)
 
+                  # Upgrade a legacy (entry-only, 5-column) consolidated Parquet file
+                  # to the flattened wide schema in place, reconstructing the typed
+                  # columns from its own `entry` blob. Lossless (`entry` is preserved
+                  # verbatim) and idempotent: a no-op once the file already has the
+                  # wide schema. Keeps the whole consolidated/** corpus on one schema so
+                  # legacy and new files compose in a single glob without union_by_name
+                  # and without the "column not found" gap on the new flat columns.
+                  # Materializes to a TEMP table first so the read completes before the
+                  # COPY overwrites the source key.
+                  def reflatten(path):
+                      cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
+                      if 'model' in cols:
+                          return False
+                      con.execute(f"""
+                          CREATE OR REPLACE TEMP TABLE _wide AS
+                          SELECT ts, type, request_id,
+                                 json_extract_string(entry,'$.session_id')    AS session_id,
+                                 origin,
+                                 json_extract_string(entry,'$.client')        AS client,
+                                 json_extract_string(entry,'$.provider')      AS provider,
+                                 json_extract_string(entry,'$.model')         AS model,
+                                 TRY_CAST(json_extract_string(entry,'$.message_count') AS INTEGER) AS message_count,
+                                 TRY_CAST(json_extract_string(entry,'$.tools_count')   AS INTEGER) AS tools_count,
+                                 json_extract_string(entry,'$.user_question') AS user_question,
+                                 TRY_CAST(json_extract_string(entry,'$.latency_ms') AS BIGINT) AS latency_ms,
+                                 TRY_CAST(json_extract_string(entry,'$.has_tool_calls') AS BOOLEAN) AS has_tool_calls,
+                                 TRY_CAST(json_extract_string(entry,'$.has_content')   AS BOOLEAN) AS has_content,
+                                 json_extract(entry, '$.tool_calls')             AS tool_calls,
+                                 json_extract(entry, '$.tool_results_this_turn')  AS tool_results,
+                                 json_extract(entry, '$.tokens')                  AS tokens,
+                                 json_extract_string(entry,'$.error')         AS error,
+                                 entry
+                          FROM read_parquet('{path}')
+                          ORDER BY ts
+                      """)
+                      con.execute(f"COPY _wide TO '{path}' (FORMAT PARQUET, COMPRESSION zstd)")
+                      return True
+
                   for day in to_do:
                       print(f"→ {day}")
                       # Flatten the hot fields to typed columns alongside the raw
@@ -215,6 +253,16 @@ spec:
                       print(f"↺ backfill session view: {day}")
                       build_session_view(f's3://{BUCKET}/consolidated/daily/{day}.parquet',
                                          f's3://{BUCKET}/sessions/daily/{day}.parquet')
+
+                  # Schema-upgrade pass: bring any legacy-schema consolidated daily file
+                  # (current month — older months live in monthly files, upgraded by the
+                  # monthly job) up to the wide schema. Self-healing no-op once uniform.
+                  upgraded = 0
+                  for day in sorted(_parquet_days('consolidated/daily/')):
+                      if reflatten(f's3://{BUCKET}/consolidated/daily/{day}.parquet'):
+                          upgraded += 1
+                          print(f"  ⬆ re-flattened {day} to wide schema")
+                  print(f"Legacy daily files upgraded to wide schema: {upgraded}")
                   print("Done.")
                   PY
               resources:

@@ -74,9 +74,8 @@ spec:
                           if obj['Key'].endswith('.parquet'):
                               daily_keys.append(obj['Key'])
                   print(f"Daily files found: {len(daily_keys)}")
-                  if not daily_keys:
-                      print("Nothing to roll up.")
-                      raise SystemExit(0)
+                  # No early exit when there are no daily files to roll up: the schema
+                  # upgrade + session-view backfill passes below still need to run.
 
                   # Daily session-view files for that month (deleted after rollup)
                   session_daily_keys = []
@@ -155,37 +154,68 @@ spec:
                           ) TO '{dest}' (FORMAT PARQUET, COMPRESSION zstd)
                       """)
 
-                  con.execute(f"""
-                      COPY (
-                          -- union_by_name tolerates a mixed month: daily files written
-                          -- before the flatten landed have the legacy 5-column schema;
-                          -- matching by name back-fills the new columns as NULL instead
-                          -- of mis-mapping by position.
-                          SELECT * FROM read_parquet('s3://{BUCKET}/consolidated/daily/{prev_month}-*.parquet',
-                                                     union_by_name=true)
+                  # Upgrade a legacy (entry-only, 5-column) consolidated Parquet file to
+                  # the flattened wide schema in place, from its own `entry` blob.
+                  # Lossless and idempotent (no-op once it already has the wide schema).
+                  # Mirrors the daily job; here it upgrades monthly files.
+                  def reflatten(path):
+                      cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
+                      if 'model' in cols:
+                          return False
+                      con.execute(f"""
+                          CREATE OR REPLACE TEMP TABLE _wide AS
+                          SELECT ts, type, request_id,
+                                 json_extract_string(entry,'$.session_id')    AS session_id,
+                                 origin,
+                                 json_extract_string(entry,'$.client')        AS client,
+                                 json_extract_string(entry,'$.provider')      AS provider,
+                                 json_extract_string(entry,'$.model')         AS model,
+                                 TRY_CAST(json_extract_string(entry,'$.message_count') AS INTEGER) AS message_count,
+                                 TRY_CAST(json_extract_string(entry,'$.tools_count')   AS INTEGER) AS tools_count,
+                                 json_extract_string(entry,'$.user_question') AS user_question,
+                                 TRY_CAST(json_extract_string(entry,'$.latency_ms') AS BIGINT) AS latency_ms,
+                                 TRY_CAST(json_extract_string(entry,'$.has_tool_calls') AS BOOLEAN) AS has_tool_calls,
+                                 TRY_CAST(json_extract_string(entry,'$.has_content')   AS BOOLEAN) AS has_content,
+                                 json_extract(entry, '$.tool_calls')             AS tool_calls,
+                                 json_extract(entry, '$.tool_results_this_turn')  AS tool_results,
+                                 json_extract(entry, '$.tokens')                  AS tokens,
+                                 json_extract_string(entry,'$.error')         AS error,
+                                 entry
+                          FROM read_parquet('{path}')
                           ORDER BY ts
-                      ) TO 's3://{BUCKET}/{monthly_key}' (FORMAT PARQUET, COMPRESSION zstd)
-                  """)
+                      """)
+                      con.execute(f"COPY _wide TO '{path}' (FORMAT PARQUET, COMPRESSION zstd)")
+                      return True
 
-                  # Verify monthly file exists before deleting daily inputs
-                  s3.head_object(Bucket=BUCKET, Key=monthly_key)
+                  if daily_keys:
+                      con.execute(f"""
+                          COPY (
+                              -- union_by_name tolerates a mixed month: daily files written
+                              -- before the flatten landed have the legacy 5-column schema;
+                              -- matching by name back-fills the new columns as NULL instead
+                              -- of mis-mapping by position.
+                              SELECT * FROM read_parquet('s3://{BUCKET}/consolidated/daily/{prev_month}-*.parquet',
+                                                         union_by_name=true)
+                              ORDER BY ts
+                          ) TO 's3://{BUCKET}/{monthly_key}' (FORMAT PARQUET, COMPRESSION zstd)
+                      """)
+                      # Verify monthly file exists before deleting daily inputs
+                      s3.head_object(Bucket=BUCKET, Key=monthly_key)
 
-                  # Rebuild the session view over the whole month from the monthly
-                  # consolidated Parquet, so turn_idx is correct across day boundaries
-                  # (the daily views index within-day).
-                  build_session_view(f's3://{BUCKET}/{monthly_key}',
-                                     f's3://{BUCKET}/{session_monthly_key}')
-                  s3.head_object(Bucket=BUCKET, Key=session_monthly_key)
+                      # Rebuild the session view over the whole month from the monthly
+                      # consolidated Parquet, so turn_idx is correct across day boundaries
+                      # (the daily views index within-day).
+                      build_session_view(f's3://{BUCKET}/{monthly_key}',
+                                         f's3://{BUCKET}/{session_monthly_key}')
+                      s3.head_object(Bucket=BUCKET, Key=session_monthly_key)
 
-                  delete_batch = [{'Key': k} for k in daily_keys + session_daily_keys]
-                  for i in range(0, len(delete_batch), 1000):
-                      s3.delete_objects(Bucket=BUCKET, Delete={'Objects': delete_batch[i:i+1000]})
-                  print(f"✓ Rolled up {len(daily_keys)} daily files → {monthly_key}; "
-                        f"session view → {session_monthly_key}; "
-                        f"{len(daily_keys) + len(session_daily_keys)} daily files removed.")
+                      delete_batch = [{'Key': k} for k in daily_keys + session_daily_keys]
+                      for i in range(0, len(delete_batch), 1000):
+                          s3.delete_objects(Bucket=BUCKET, Delete={'Objects': delete_batch[i:i+1000]})
+                      print(f"✓ Rolled up {len(daily_keys)} daily files → {monthly_key}; "
+                            f"session view → {session_monthly_key}; "
+                            f"{len(daily_keys) + len(session_daily_keys)} daily files removed.")
 
-                  # Backfill: any monthly consolidated file lacking a monthly session
-                  # view (e.g. months rolled up before the session view existed).
                   def _months(prefix):
                       out = set()
                       for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
@@ -194,11 +224,25 @@ spec:
                               if name.endswith('.parquet'):
                                   out.add(name[:-len('.parquet')])
                       return out
+
+                  # Schema-upgrade pass: bring any legacy-schema monthly consolidated file
+                  # up to the wide schema (lossless, idempotent), so consolidated/** is
+                  # uniform across daily + monthly tiers.
+                  upgraded = 0
+                  for m in sorted(_months('consolidated/monthly/')):
+                      if reflatten(f's3://{BUCKET}/consolidated/monthly/{m}.parquet'):
+                          upgraded += 1
+                          print(f"  ⬆ re-flattened {m} to wide schema")
+                  print(f"Legacy monthly files upgraded to wide schema: {upgraded}")
+
+                  # Backfill: any monthly consolidated file lacking a monthly session
+                  # view (e.g. months rolled up before the session view existed).
                   backfill = sorted(_months('consolidated/monthly/') - _months('sessions/monthly/'))
                   print(f"Monthly session views to backfill ({len(backfill)}): {backfill}")
                   for m in backfill:
                       build_session_view(f's3://{BUCKET}/consolidated/monthly/{m}.parquet',
                                          f's3://{BUCKET}/sessions/monthly/{m}.parquet')
+                  print("Done.")
                   PY
               resources:
                 requests:

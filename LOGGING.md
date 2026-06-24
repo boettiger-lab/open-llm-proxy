@@ -68,10 +68,17 @@ for fidelity, so old `entry::JSON->>'…'` / `json_extract_string` queries still
 | `entry` | `VARCHAR` | The full original JSON record — parse with `json_extract_string`/`json_extract` |
 
 Columns not applicable to a row's `type` are `null` (e.g. `latency_ms` on a request).
-Files written before the flatten landed carry only the legacy 5 columns
-(`ts`/`type`/`request_id`/`origin`/`entry`); the monthly rollup reads daily files
-with `union_by_name=true` so a mixed month merges cleanly (legacy rows get `null`
-for the new columns).
+Files written before the flatten landed carried only the legacy 5 columns
+(`ts`/`type`/`request_id`/`origin`/`entry`); both cron jobs run a **self-healing
+schema-upgrade pass** that re-flattens any such file in place from its preserved
+`entry` blob (lossless, idempotent), so the whole `consolidated/**` corpus converges
+to one schema. Two safety nets cover the transient window before that completes:
+existing `entry`-based queries are unaffected (DuckDB name-matches the common
+columns across a mixed glob — no corruption), and the monthly rollup reads daily
+files with `union_by_name=true`. The one mixed-glob gotcha: selecting a *new* flat
+column (e.g. `model`) over a glob that still contains a legacy file raises
+`column not found` — add `union_by_name=true` to `read_parquet(...)`, or just wait
+for the upgrade pass.
 
 The **session Parquet schema** (`sessions/**`) — one row per turn, request already
 joined to its response, so "show me every turn of session X in order, with tool
