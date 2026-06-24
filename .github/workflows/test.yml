@@ -23,7 +23,9 @@ jobs:
       - name: Syntax-check the historical scrub job
         run: python -m py_compile scrub.py scrub-historical-logs.py
       - name: Install consolidation deps (duckdb; jobs pip-install these at runtime)
-        run: pip install duckdb
+        # pytz is only needed to materialize TIMESTAMPTZ into Python in the tests'
+        # fetchall; the actual jobs stream SQL -> Parquet and don't require it.
+        run: pip install duckdb pytz
       - name: Run consolidation schema tests (issue #31)
         run: python test_consolidate.py
       - name: Syntax-check the consolidation module
