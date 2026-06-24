@@ -408,6 +408,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = "gpt-4"
     temperature: Optional[float] = 0.0
     enable_thinking: Optional[bool] = None  # None = use model default; True/False to override
+    user: Optional[str] = None  # OpenAI end-user id; geo-agent sets it to its per-session UUID. Logged as session_id (not forwarded upstream).
 
 @app.post("/v1/chat/completions")
 @app.post("/chat")  # Keep for backward compatibility
@@ -444,7 +445,9 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     # Log incoming request
     request_id = uuid.uuid4().hex[:8]
     origin = http_request.headers.get("origin") or http_request.headers.get("referer")
-    session_id = http_request.headers.get("x-session-id")
+    # Session id: prefer the OpenAI `user` body field (geo-agent already sends its
+    # per-session UUID there); fall back to the X-Session-Id header for other clients.
+    session_id = request.user or http_request.headers.get("x-session-id")
     client = http_request.headers.get("x-client")   # e.g. "geo-agent/v3.13.1"; null until clients send it
     log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client)
     

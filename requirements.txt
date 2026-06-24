@@ -2,3 +2,4 @@ fastapi==0.115.0
 uvicorn==0.32.0
 httpx==0.27.0
 pydantic==2.10.4
+boto3==1.43.0  # S3 log flush (llm_proxy.py) + flush-failure tests; matches deployment's `uvx --with boto3`

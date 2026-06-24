@@ -205,9 +205,10 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `model` | Model name as sent by the client |
 | `origin` | Origin or Referer header — identifies which app sent the request |
 | `client` | `X-Client` header — client app + version, e.g. `geo-agent/v3.13.1`. `null` until the client sends it. Correlates logged behavior with a specific release. |
+| `session_id` | Stable per-browser-session id that ties together every turn **and every follow-up question** of one user session. Sourced from the request body's OpenAI `user` field (geo-agent already sends its per-session UUID there), falling back to the `X-Session-Id` header. **`null` in records written before this was wired up** (see wiring note below) — for those, fall back to the `(origin, user_question)` heuristic and mind the `user_question` caveat. |
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
-| `user_question` | First `role: user` message in the conversation — the human's original question, stable across all turns of a tool-use loop. Capped at `LOG_USER_QUESTION_MAX` chars (default 4000). |
+| `user_question` | First `role: user` message in the conversation. ⚠️ **First-message-only — this is a trap.** It is the human's *original* opening question and is stable across all turns of a tool-use loop, but it does **not** update when the user asks a follow-up in the same session. A session where the user opens with "Tell me about datasets" and later asks "now map the hardwood woodland" logs **both** turns under `user_question = "Tell me about datasets"`; the follow-up text lives only inside the `messages` array (`full` mode) and is invisible to any `user_question` filter. To find follow-ups, full-text-search the whole record or capture `session_id`. Capped at `LOG_USER_QUESTION_MAX` chars (default 4000). |
 | `tool_results_this_turn` | Array of `{tool_call_id, content}` for any `role: tool` messages appended since the last assistant turn. Captures results from both local geo-agent tools (e.g. `list_datasets`, `get_dataset_details`) and remote MCP tools (e.g. `query`). Each `content` is capped at `LOG_TOOL_RESULT_MAX` chars (default 20000). `null` on the first turn. |
 | `messages` | **Only when `LOG_CAPTURE_MODE=full`.** The entire scrubbed `messages` array sent to the provider — training-grade fidelity. The large system prompt is de-duplicated: each `role: system` message is replaced by `{role, system_sha256, content_len, _dedup: true}` and the full body is emitted once (per worker) as a separate `type: "system_prompt"` entry. Join `messages[].system_sha256` → the `system_prompt` entry to rehydrate. |
 
@@ -227,6 +228,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `model` | Model used |
 | `origin` | Same as request — identifies which app |
 | `client` | Same as request — `X-Client` header (client app + version), `null` until sent |
+| `session_id` | Same as request — per-session id from the `user` body field / `X-Session-Id` header |
 | `latency_ms` | End-to-end latency in milliseconds |
 | `has_content` | Whether the LLM returned text content |
 | `has_tool_calls` | Whether the LLM made tool calls |
@@ -239,6 +241,27 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `tokens` | Token usage object from the provider (`prompt_tokens`, `completion_tokens`, `total_tokens`) |
 | `error` | Error detail string (only present on failed requests) |
 
+### Wiring up `session_id`
+
+`session_id` is populated server-side from two sources, in priority order:
+
+1. **The OpenAI `user` request-body field (primary).** geo-agent's `Agent` mints
+   one `crypto.randomUUID()` per instance (`this.sessionId`) and already sends it
+   as `user` on every `/chat/completions` POST. The proxy reads `request.user`
+   into `session_id` (`llm_proxy.py`) and logs it — but does **not** forward `user`
+   upstream, so provider-side caching/abuse-monitoring is unaffected. This required
+   no client change and lights up all existing geo-agent traffic.
+2. **The `X-Session-Id` header (fallback).** For non-geo-agent clients that prefer
+   a header. It is in the ingress `cors-allow-headers` allow-list (`ingress.yaml`);
+   CORS is enforced at the ingress, not the app, so any custom header must be
+   listed there or the browser preflight blocks the whole request (same gotcha as
+   `X-Client` in #26).
+
+Records written before this wiring have `session_id = null`; group those by the
+`(origin, user_question)` heuristic instead. For newer records, group by
+`session_id` for exact session reconstruction — it is immune to the
+`user_question` first-message-only trap and survives follow-up questions.
+
 ## Reconstructing a conversation
 
 Each POST to `/v1/chat/completions` is one LLM turn. A single user session produces multiple request/response pairs. To reconstruct a session:
@@ -249,6 +272,10 @@ Each POST to `/v1/chat/completions` is one LLM turn. A single user session produ
 4. Interleave: each request's `tool_results_this_turn` shows what the previous turn's tool calls returned; each response's `tool_calls` shows what the LLM decided to call next
 
 Use `request_id` to pair each request with its response when log lines are interleaved under concurrent load.
+
+> ⚠️ **`user_question` groups by *opening* question, not by session.** Step 2 is a heuristic with two failure modes: (a) two different users who happen to open with the same question collapse into one apparent session, and (b) a single user's **follow-up questions never get their own group** — they stay pinned to the opening `user_question` (see the field note above). When `session_id` is populated, group by it instead — it is exact and survives follow-ups. Until then, treat a single `user_question` group as "one opening question and everything that followed it," not "one atomic question."
+
+> 📋 **Brittle-JSON caveat (consolidated Parquet).** `entry::JSON->>'field'` intermittently throws `Conversion Error: Failed to cast value to numerical` — DuckDB mis-infers an all-`null` or numeric-looking JSON path and tries to cast the whole `entry` blob. It is load-bearing-flaky: the same expression works in a bare `SELECT` but fails inside a `GROUP BY`/aggregate. Use `json_extract_string(entry, '$.field')` (for text) and `json_extract(entry, '$.field')` (for JSON) instead — they never throw.
 
 ## Example session reconstruction
 

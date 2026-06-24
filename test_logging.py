@@ -231,6 +231,21 @@ def test_flush_failure_caps_buffer_dropping_oldest():
     assert [e["n"] for e in p._log_buffer] == [3, 4, 5, 6, 7]
 
 
+def test_chat_request_parses_user_as_session_id_source():
+    """The OpenAI `user` body field must survive pydantic parsing — geo-agent
+    sends its per-session UUID there and the endpoint logs it as session_id."""
+    p = importlib.reload(llm_proxy)
+    req = p.ChatRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model="qwen3",
+        user="b1c2d3e4-0000-4444-8888-abcdef012345",
+    )
+    assert req.user == "b1c2d3e4-0000-4444-8888-abcdef012345"
+    # session_id resolution precedence: body `user` wins, header is the fallback.
+    assert (req.user or "from-header") == "b1c2d3e4-0000-4444-8888-abcdef012345"
+    assert (p.ChatRequest(messages=[], model="qwen3").user or "from-header") == "from-header"
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
