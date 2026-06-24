@@ -4,6 +4,10 @@
 
 This is an LLM proxy service that routes chat completion requests to NRP, OpenRouter, or Nimbus providers and logs every request/response pair. The primary analysis task for agents is evaluating those logs.
 
+> **HARD BOUNDARY — edit only this repo.** Make code edits *only* within `open-llm-proxy`. The agent runner and analysis workflows reference sibling checkouts (e.g. `boettiger-lab/geo-agent`) for context, but you must **never edit another repo's code**. When a fix belongs in a sibling repo, open a GitHub issue on that repo (for its own agents/maintainers to action) and, where relevant, handle the corresponding change on this side. Reading sibling repos and their git history for diagnosis is fine and encouraged; editing them is not.
+
+> **Track changes.** Behavior/config/ops changes should add a [CHANGELOG.md](CHANGELOG.md) entry under `## [Unreleased]`; see [README → Releases](README.md#releases) for the (SemVer) release process.
+
 > **CORS gotcha:** browser CORS is enforced by the **haproxy ingress** (`ingress.yaml` annotations), *not* the app's `CORSMiddleware` (which is effectively dead config). `cors-allow-headers` is an explicit list — a new custom request header (e.g. `X-Client`) must be added there or the browser preflight blocks the whole request. See the comment in `ingress.yaml`.
 
 ## Evaluating Logs
