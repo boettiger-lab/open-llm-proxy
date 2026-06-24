@@ -485,10 +485,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         else:
             print(f"ℹ️  enable_thinking requested for '{request.model}' but no thinking_key configured — ignoring")
     
-    # Make request to LLM provider
-    async with httpx.AsyncClient(timeout=600.0) as client:
+    # Make request to LLM provider. NB: name this `http_client`, NOT `client` —
+    # `client` is the X-Client header value passed to log_response() below; an
+    # `as client` here shadowed it with the AsyncClient object, so json.dumps in
+    # log_response raised and every response was silently dropped from S3 (#37).
+    async with httpx.AsyncClient(timeout=600.0) as http_client:
         try:
-            response = await client.post(endpoint, json=payload, headers=headers)
+            response = await http_client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             result = response.json()
             
