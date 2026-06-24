@@ -8,6 +8,17 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Fixed
+- **Response logging restored (#37).** Since the #26 (X-Client) deploy, the
+  `async with httpx.AsyncClient(...) as client` block shadowed the `client`
+  X-Client header parameter, so `log_response(..., client=client)` passed the
+  httpx client object; `json.dumps` then raised inside the `@_never_raises`
+  wrapper and **every response was silently dropped from S3** (requests were
+  unaffected — they log before the block). Renamed the context var to
+  `http_client`. Added a handler-level regression test that drives `proxy_chat`
+  with a mocked upstream and asserts a serializable `type: "response"` entry
+  lands in the buffer.
+
 ## [0.1.0] - 2026-06-24
 
 First tagged release. The proxy has run in production (`biodiversity` namespace,

@@ -246,6 +246,60 @@ def test_chat_request_parses_user_as_session_id_source():
     assert (p.ChatRequest(messages=[], model="qwen3").user or "from-header") == "from-header"
 
 
+def test_handler_emits_response_to_buffer_with_serializable_client():
+    """Regression for #37: a successful turn must enqueue a `type: "response"`
+    entry to the S3 buffer, and its `client` must be the X-Client *string* — not
+    the httpx AsyncClient. The bug was `async with httpx.AsyncClient() as client`
+    shadowing the `client` header param, so json.dumps blew up inside the
+    `@_never_raises`-wrapped log_response and every response was silently dropped.
+
+    Driving the handler (not log_response directly) is what catches it — the
+    defect was at the call site, not in the function. The mocked AsyncClient is
+    itself non-serializable, so pre-fix this test fails (no response buffered);
+    post-fix `client` stays the header string and the entry is serializable."""
+    import asyncio
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {
+                        "content": "hello",
+                        "tool_calls": [{"function": {"name": "query", "arguments": "{}"}}]}}],
+                    "usage": {"total_tokens": 5}}
+
+    class _FakeAsyncClient:  # non-serializable on purpose (mirrors httpx.AsyncClient)
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **k):
+            return _FakeResp()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app", "x-client": "geo-agent/v9.9.9"}
+
+    req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}], user="sess-1")
+    with patch.object(p, "get_provider_for_model",
+                      return_value=("nrp", {"endpoint": "http://upstream", "api_key": "k"})), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+        result = asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+
+    assert result["choices"][0]["message"]["content"] == "hello"
+    responses = [e for e in p._log_buffer if e.get("type") == "response"]
+    assert len(responses) == 1, "response was dropped from the S3 buffer (#37)"
+    assert responses[0]["client"] == "geo-agent/v9.9.9"   # the header string, not an AsyncClient
+    assert responses[0]["session_id"] == "sess-1"
+    assert responses[0]["has_tool_calls"] is True
+    json.dumps(responses[0])   # must be JSON-serializable — the crux of the bug
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
