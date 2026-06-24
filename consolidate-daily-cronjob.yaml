@@ -96,6 +96,13 @@ spec:
                   # days with nothing new to consolidate or backfill.
 
                   con = duckdb.connect()
+                  # In a container DuckDB sees every node core and spawns that many
+                  # worker threads — each with its own buffers — while CPU is throttled
+                  # to the pod request, so memory balloons and OOMs the pod. Pin a small
+                  # thread count and drop insertion-order buffering to keep COPY/sort
+                  # memory bounded (the data is re-sorted by ts on read anyway).
+                  con.execute("SET threads=2")
+                  con.execute("SET preserve_insertion_order=false")
                   con.execute(f"""
                       CREATE SECRET s3_logs (
                           TYPE S3,
