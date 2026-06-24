@@ -78,7 +78,15 @@ spec:
                       print("Nothing to roll up.")
                       raise SystemExit(0)
 
-                  monthly_key = f'consolidated/monthly/{prev_month}.parquet'
+                  # Daily session-view files for that month (deleted after rollup)
+                  session_daily_keys = []
+                  for page in paginator.paginate(Bucket=BUCKET, Prefix=f'sessions/daily/{prev_month}-'):
+                      for obj in page.get('Contents', []):
+                          if obj['Key'].endswith('.parquet'):
+                              session_daily_keys.append(obj['Key'])
+
+                  monthly_key         = f'consolidated/monthly/{prev_month}.parquet'
+                  session_monthly_key = f'sessions/monthly/{prev_month}.parquet'
 
                   con = duckdb.connect()
                   con.execute(f"""
@@ -91,19 +99,106 @@ spec:
                           URL_STYLE 'path'
                       )
                   """)
+
+                  # Materialize the per-turn session view (one row per request_id,
+                  # request joined to its response) from a consolidated Parquet glob.
+                  # Reads only the raw `entry` JSON via cast-safe json_extract_string /
+                  # json_extract, so it works on legacy (entry-only) and flattened files
+                  # alike. Mirrors the daily job's builder; here `src` is a whole month,
+                  # so turn_idx is correct across day boundaries.
+                  def build_session_view(src, dest):
+                      con.execute(f"""
+                          COPY (
+                              WITH base AS (
+                                  SELECT ts, type, request_id, origin,
+                                      json_extract_string(entry,'$.session_id')    AS session_id,
+                                      json_extract_string(entry,'$.client')        AS client,
+                                      json_extract_string(entry,'$.provider')      AS provider,
+                                      json_extract_string(entry,'$.model')         AS model,
+                                      TRY_CAST(json_extract_string(entry,'$.message_count') AS INTEGER) AS message_count,
+                                      json_extract_string(entry,'$.user_question') AS user_question,
+                                      json_extract(entry,'$.tool_results_this_turn') AS tool_results,
+                                      TRY_CAST(json_extract_string(entry,'$.latency_ms') AS BIGINT) AS latency_ms,
+                                      TRY_CAST(json_extract_string(entry,'$.has_tool_calls') AS BOOLEAN) AS has_tool_calls,
+                                      TRY_CAST(json_extract_string(entry,'$.has_content')   AS BOOLEAN) AS has_content,
+                                      json_extract(entry,'$.tool_calls')           AS tool_calls,
+                                      json_extract(entry,'$.tokens')               AS tokens,
+                                      json_extract_string(entry,'$.content')       AS assistant_content,
+                                      json_extract_string(entry,'$.reasoning_content') AS reasoning_content,
+                                      json_extract_string(entry,'$.error')         AS error
+                                  FROM read_parquet('{src}')
+                              ),
+                              keyed AS (
+                                  SELECT *, COALESCE(session_id,
+                                      'anon:' || md5(COALESCE(origin,'') || '|' || COALESCE(user_question,''))) AS session_key
+                                  FROM base WHERE type='request'
+                              ),
+                              req AS (
+                                  SELECT session_key, session_id, request_id, ts, origin, client, provider, model,
+                                         user_question, message_count, tool_results,
+                                         ROW_NUMBER() OVER (PARTITION BY session_key ORDER BY ts, request_id) AS turn_idx
+                                  FROM keyed
+                              ),
+                              resp AS (
+                                  SELECT request_id, ts AS response_ts, latency_ms, has_tool_calls, has_content,
+                                         tool_calls, tokens, assistant_content, reasoning_content, error
+                                  FROM base WHERE type='response'
+                              )
+                              SELECT req.session_key, req.session_id, req.turn_idx,
+                                     req.ts AS request_ts, resp.response_ts, req.request_id,
+                                     req.origin, req.client, req.provider, req.model,
+                                     req.user_question, req.message_count, req.tool_results,
+                                     resp.assistant_content, resp.reasoning_content, resp.tool_calls,
+                                     resp.has_tool_calls, resp.has_content, resp.latency_ms, resp.tokens, resp.error
+                              FROM req LEFT JOIN resp USING (request_id)
+                              ORDER BY req.session_key, req.turn_idx
+                          ) TO '{dest}' (FORMAT PARQUET, COMPRESSION zstd)
+                      """)
+
                   con.execute(f"""
                       COPY (
-                          SELECT * FROM read_parquet('s3://{BUCKET}/consolidated/daily/{prev_month}-*.parquet')
+                          -- union_by_name tolerates a mixed month: daily files written
+                          -- before the flatten landed have the legacy 5-column schema;
+                          -- matching by name back-fills the new columns as NULL instead
+                          -- of mis-mapping by position.
+                          SELECT * FROM read_parquet('s3://{BUCKET}/consolidated/daily/{prev_month}-*.parquet',
+                                                     union_by_name=true)
                           ORDER BY ts
                       ) TO 's3://{BUCKET}/{monthly_key}' (FORMAT PARQUET, COMPRESSION zstd)
                   """)
 
                   # Verify monthly file exists before deleting daily inputs
                   s3.head_object(Bucket=BUCKET, Key=monthly_key)
-                  delete_batch = [{'Key': k} for k in daily_keys]
+
+                  # Rebuild the session view over the whole month from the monthly
+                  # consolidated Parquet, so turn_idx is correct across day boundaries
+                  # (the daily views index within-day).
+                  build_session_view(f's3://{BUCKET}/{monthly_key}',
+                                     f's3://{BUCKET}/{session_monthly_key}')
+                  s3.head_object(Bucket=BUCKET, Key=session_monthly_key)
+
+                  delete_batch = [{'Key': k} for k in daily_keys + session_daily_keys]
                   for i in range(0, len(delete_batch), 1000):
                       s3.delete_objects(Bucket=BUCKET, Delete={'Objects': delete_batch[i:i+1000]})
-                  print(f"✓ Rolled up {len(daily_keys)} daily files → {monthly_key}; daily files removed.")
+                  print(f"✓ Rolled up {len(daily_keys)} daily files → {monthly_key}; "
+                        f"session view → {session_monthly_key}; "
+                        f"{len(daily_keys) + len(session_daily_keys)} daily files removed.")
+
+                  # Backfill: any monthly consolidated file lacking a monthly session
+                  # view (e.g. months rolled up before the session view existed).
+                  def _months(prefix):
+                      out = set()
+                      for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+                          for obj in page.get('Contents', []):
+                              name = obj['Key'].split('/')[-1]
+                              if name.endswith('.parquet'):
+                                  out.add(name[:-len('.parquet')])
+                      return out
+                  backfill = sorted(_months('consolidated/monthly/') - _months('sessions/monthly/'))
+                  print(f"Monthly session views to backfill ({len(backfill)}): {backfill}")
+                  for m in backfill:
+                      build_session_view(f's3://{BUCKET}/consolidated/monthly/{m}.parquet',
+                                         f's3://{BUCKET}/sessions/monthly/{m}.parquet')
                   PY
               resources:
                 requests:

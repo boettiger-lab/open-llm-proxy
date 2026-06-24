@@ -18,12 +18,18 @@ logs-open-llm-proxy/
 ├── 2026-04-17/                        ← today: raw JSONL (live debug tier)
 │   ├── 02-00-05-39.jsonl              # flush at 02:00:05 from worker PID 39
 │   └── ...
-├── consolidated/
+├── consolidated/                      ← one row per log entry (request OR response)
 │   ├── daily/
 │   │   ├── 2026-04-15.parquet         # recent completed days
 │   │   └── 2026-04-16.parquet
 │   └── monthly/
 │       ├── 2026-02.parquet            # older completed months
+│       └── 2026-03.parquet
+├── sessions/                          ← one row per *turn* (request joined to its response)
+│   ├── daily/
+│   │   ├── 2026-04-15.parquet
+│   │   └── 2026-04-16.parquet
+│   └── monthly/
 │       └── 2026-03.parquet
 ```
 
@@ -32,16 +38,65 @@ logs-open-llm-proxy/
 | Raw JSONL (`YYYY-MM-DD/*.jsonl`) | JSONL chunks | Proxy flushes every 60s | Next day's daily consolidation (03:00 UTC) |
 | Daily (`consolidated/daily/YYYY-MM-DD.parquet`) | Parquet (zstd) | Daily cron at 03:00 UTC | Monthly rollup on day 2 (04:00 UTC) |
 | Monthly (`consolidated/monthly/YYYY-MM.parquet`) | Parquet (zstd) | Monthly cron on day 2 | Never (long-term archive) |
+| Session daily (`sessions/daily/YYYY-MM-DD.parquet`) | Parquet (zstd) | Daily cron, derived from that day's consolidated file | Monthly rollup on day 2 |
+| Session monthly (`sessions/monthly/YYYY-MM.parquet`) | Parquet (zstd) | Monthly cron on day 2 | Never |
 
-The **Parquet schema** (identical across daily and monthly tiers):
+The **consolidated Parquet schema** (identical across daily and monthly tiers). The
+hot fields are flattened to typed columns; the raw JSON is kept verbatim in `entry`
+for fidelity, so old `entry::JSON->>'…'` / `json_extract_string` queries still work:
 
 | Column | Type | Notes |
 |---|---|---|
 | `ts` | `TIMESTAMPTZ` | Extracted from the `timestamp` field of the raw JSON |
 | `type` | `VARCHAR` | `'request'` or `'response'` |
 | `request_id` | `VARCHAR` | Correlates request ↔ response |
+| `session_id` | `VARCHAR` | Per-session id (see field note); `null` in pre-wiring records |
 | `origin` | `VARCHAR` | App the traffic came from |
-| `entry` | `VARCHAR` | The full original JSON record — parse with `entry::JSON` |
+| `client` | `VARCHAR` | e.g. `geo-agent/v3.13.1`; `null` until clients send `X-Client` |
+| `provider` | `VARCHAR` | `nrp` / `openrouter` / `nimbus` |
+| `model` | `VARCHAR` | Model id |
+| `message_count` | `INTEGER` | Request only — messages in the prompt |
+| `tools_count` | `INTEGER` | Request only — tools offered |
+| `user_question` | `VARCHAR` | Request only — **first** user message (see trap below) |
+| `latency_ms` | `BIGINT` | Response only |
+| `has_tool_calls` | `BOOLEAN` | Response only |
+| `has_content` | `BOOLEAN` | Response only |
+| `tool_calls` | `JSON` | Response only — `[{name, arguments}]` |
+| `tool_results` | `JSON` | Request only — `tool_results_this_turn` (prior turn's tool outputs) |
+| `tokens` | `JSON` | Response only — usage object |
+| `error` | `VARCHAR` | Response only — set on failures |
+| `entry` | `VARCHAR` | The full original JSON record — parse with `json_extract_string`/`json_extract` |
+
+Columns not applicable to a row's `type` are `null` (e.g. `latency_ms` on a request).
+Files written before the flatten landed carry only the legacy 5 columns
+(`ts`/`type`/`request_id`/`origin`/`entry`); the monthly rollup reads daily files
+with `union_by_name=true` so a mixed month merges cleanly (legacy rows get `null`
+for the new columns).
+
+The **session Parquet schema** (`sessions/**`) — one row per turn, request already
+joined to its response, so "show me every turn of session X in order, with tool
+calls and results" is a single flat `SELECT` with no JSON gymnastics and no manual
+request/response interleaving:
+
+| Column | Type | Notes |
+|---|---|---|
+| `session_key` | `VARCHAR` | `session_id` when present, else `anon:<md5(origin\|user_question)>` so every turn still groups |
+| `session_id` | `VARCHAR` | Raw id (`null` if the heuristic key was used) |
+| `turn_idx` | `BIGINT` | 1-based turn order within the session. **Daily files index within-day** (a session crossing UTC midnight restarts at 1 in the next day's file); the monthly view recomputes it over the whole month. Ordering by `request_ts` is always correct regardless. |
+| `request_ts` / `response_ts` | `TIMESTAMPTZ` | Turn start / completion |
+| `request_id` | `VARCHAR` | |
+| `origin`, `client`, `provider`, `model` | `VARCHAR` | |
+| `user_question` | `VARCHAR` | Opening question (same first-message-only caveat) |
+| `message_count` | `INTEGER` | |
+| `tool_results` | `JSON` | Tool outputs that came *into* this turn |
+| `assistant_content` / `reasoning_content` | `VARCHAR` | The model's reply this turn |
+| `tool_calls` | `JSON` | Tools the model called *out* this turn |
+| `has_tool_calls`, `has_content` | `BOOLEAN` | |
+| `latency_ms`, `tokens`, `error` | `BIGINT`/`JSON`/`VARCHAR` | |
+
+> Note: the `consolidated/**` and `sessions/**` globs are disjoint top-level
+> prefixes — a `read_parquet('…/consolidated/**/*.parquet')` never picks up session
+> rows, so existing queries are unaffected.
 
 ## Access pattern
 
@@ -263,6 +318,25 @@ Records written before this wiring have `session_id = null`; group those by the
 `user_question` first-message-only trap and survives follow-up questions.
 
 ## Reconstructing a conversation
+
+> ✅ **Easiest path: the session view (`sessions/**`).** For completed days/months,
+> the turn-level reconstruction below is already materialized — one row per turn with
+> request and response joined, `tool_results` (in) and `tool_calls` (out) interleaved,
+> ordered by `turn_idx`. No manual pairing, no JSON casting:
+>
+> ```sql
+> SELECT turn_idx, model, user_question,
+>        json_array_length(tool_results) AS results_in,
+>        json_array_length(tool_calls)   AS calls_out,
+>        assistant_content, latency_ms
+> FROM read_parquet('/tmp/open-llm-proxy-logs/sessions/**/*.parquet')
+> WHERE session_key = '…'          -- session_id, or anon:<hash> for pre-wiring rows
+> ORDER BY turn_idx;
+> ```
+>
+> Find a `session_key` by filtering on `origin`/`user_question`/`ts` first. The manual
+> recipe below still applies to **today's** raw JSONL (not yet consolidated) and is
+> what the session view itself is built from.
 
 Each POST to `/v1/chat/completions` is one LLM turn. A single user session produces multiple request/response pairs. To reconstruct a session:
 

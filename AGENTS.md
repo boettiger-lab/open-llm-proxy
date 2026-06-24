@@ -39,7 +39,9 @@ SELECT * FROM read_ndjson_auto('/tmp/open-llm-proxy-logs/YYYY-MM-DD/*.jsonl',
 "
 ```
 
-**Parquet schema** (same for daily and monthly tiers): `(ts TIMESTAMPTZ, type, request_id, origin, entry VARCHAR)` — `entry` is the full original log record as JSON text. Access fields with `entry::JSON->>'field'`.
+**Parquet schema** (same for daily and monthly tiers): the hot fields are flattened to typed columns — `ts, type, request_id, session_id, origin, client, provider, model, message_count, tools_count, user_question, latency_ms, has_tool_calls, has_content, tool_calls, tool_results, tokens, error` — plus `entry VARCHAR`, the full original log record as JSON text (kept for fidelity). Prefer the flat columns; for fields not promoted, use `json_extract_string(entry,'$.field')` / `json_extract(entry,'$.field')` (the `entry::JSON->>` form intermittently throws a cast error in aggregates). Legacy files predating the flatten carry only `ts/type/request_id/origin/entry`.
+
+**Session view** (`s3://logs-open-llm-proxy/sessions/**/*.parquet`): one row per *turn*, request already joined to its response, ordered by `turn_idx` within `session_key`. This is the query-ready artifact — "show me every turn of session X in order, with tool calls and results" is one flat `SELECT`, no manual interleaving. Disjoint from the `consolidated/**` glob. See [LOGGING.md](LOGGING.md#reconstructing-a-conversation).
 
 For automation, one-shot CI queries, or queries that need sub-minute freshness without re-syncing, query S3 directly with `LOG_S3_KEY` / `LOG_S3_SECRET` from the shell — see [LOGGING.md](LOGGING.md#direct-s3-one-shot-queries-automation-or-inside-nrp-pods).
 
@@ -48,7 +50,7 @@ Each LLM call produces a `request` row and a `response` row linked by `request_i
 - **Request**: `user_question`, `tool_results_this_turn`, `model`, `origin`, `message_count`
 - **Response**: `tool_calls`, `content_preview`, `tokens`, `latency_ms`, `error` (only on failures)
 
-**Reconstructing a conversation**: group by `user_question`, filter by `origin`, sort by `ts` (Parquet) / `timestamp` (JSONL). The `tool_results_this_turn` on each request shows what the previous turn's tool calls returned; `tool_calls` on each response shows what the LLM called next.
+**Reconstructing a conversation**: for completed days, just query the **session view** (`sessions/**`) by `session_key` and order by `turn_idx` — the interleaving is already done. To reconstruct by hand (e.g. today's raw JSONL): group by `session_id` (exact; falls back to `user_question` for pre-wiring records), filter by `origin`, sort by `ts` (Parquet) / `timestamp` (JSONL). The `tool_results_this_turn` on each request shows what the previous turn's tool calls returned; `tool_calls` on each response shows what the LLM called next.
 
 **Midnight crossover caveat**: flush-time (not entry `ts`) determines the source file path. An entry with `ts = 23:59:58` may live in the next UTC day's file if it was buffered past midnight. Always filter on `ts`, not on file path, when you care about a calendar day.
 
