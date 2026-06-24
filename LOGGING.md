@@ -204,6 +204,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `provider` | `"nrp"`, `"openrouter"`, or `"nimbus"` |
 | `model` | Model name as sent by the client |
 | `origin` | Origin or Referer header — identifies which app sent the request |
+| `client` | `X-Client` header — client app + version, e.g. `geo-agent/v3.13.1`. `null` until the client sends it. Correlates logged behavior with a specific release. |
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
 | `user_question` | First `role: user` message in the conversation — the human's original question, stable across all turns of a tool-use loop. Capped at `LOG_USER_QUESTION_MAX` chars (default 4000). |
@@ -225,6 +226,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `provider` | Provider that handled the request |
 | `model` | Model used |
 | `origin` | Same as request — identifies which app |
+| `client` | Same as request — `X-Client` header (client app + version), `null` until sent |
 | `latency_ms` | End-to-end latency in milliseconds |
 | `has_content` | Whether the LLM returned text content |
 | `has_tool_calls` | Whether the LLM made tool calls |

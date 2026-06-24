@@ -18,7 +18,7 @@ metadata:
     haproxy-ingress.github.io/cors-enable: "true"
     haproxy-ingress.github.io/cors-allow-origin: "*"
     haproxy-ingress.github.io/cors-allow-methods: "GET, POST, OPTIONS"
-    haproxy-ingress.github.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Accept,Accept-Encoding,Accept-Language,Connection,Host,Origin,Referer,Sec-Fetch-Dest,Sec-Fetch-Mode,Sec-Fetch-Site,Priority,Authorization"
+    haproxy-ingress.github.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Accept,Accept-Encoding,Accept-Language,Connection,Host,Origin,Referer,Sec-Fetch-Dest,Sec-Fetch-Mode,Sec-Fetch-Site,Priority,Authorization,X-Client"
     haproxy-ingress.github.io/cors-allow-credentials: "false"
     haproxy-ingress.github.io/cors-max-age: "600"
     haproxy-ingress.github.io/timeout-server: "600s"

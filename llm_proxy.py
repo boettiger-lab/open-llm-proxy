@@ -313,7 +313,7 @@ def _never_raises(fn):
     return wrapper
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -337,6 +337,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "type": "request",
         "request_id": request_id,
         "session_id": session_id,
+        "client": client,           # e.g. "geo-agent/v3.13.1"; null until clients send X-Client
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -353,13 +354,14 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _emit(log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "type": "response",
         "request_id": request_id,
         "session_id": session_id,
+        "client": client,
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -443,7 +445,8 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     request_id = uuid.uuid4().hex[:8]
     origin = http_request.headers.get("origin") or http_request.headers.get("referer")
     session_id = http_request.headers.get("x-session-id")
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id)
+    client = http_request.headers.get("x-client")   # e.g. "geo-agent/v3.13.1"; null until clients send it
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client)
     
     # Prepare request to LLM provider
     headers = {
@@ -488,20 +491,20 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             
             # Log successful response
             latency_ms = int((time.time() - start_time) * 1000)
-            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id)
+            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client)
 
             return result
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
             raise HTTPException(status_code=504, detail=error_detail)
 
         except httpx.HTTPStatusError as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Provider returned {e.response.status_code}: {e.response.text[:1000]}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
@@ -514,7 +517,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors

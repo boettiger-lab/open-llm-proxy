@@ -85,7 +85,7 @@ for pod in $(kubectl -n biodiversity get pods -l app=llm-proxy -o name); do
 done | sort
 ```
 
-Request log fields: `timestamp`, `type`, `provider`, `model`, `origin`, `message_count`, `tools_count`, `user_message`
+Request log fields: `timestamp`, `type`, `provider`, `model`, `origin`, `client` (`X-Client` app+version, e.g. `geo-agent/v3.13.1`; `null` until the client sends it — filter on it to correlate behavior with a release), `message_count`, `tools_count`, `user_message`
 
 Response log format: `✓ RESPONSE: {...}` with `latency_ms`, `has_tool_calls`, `tool_calls`, `tokens`
 
