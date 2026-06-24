@@ -131,6 +131,28 @@ Push changes to `main` (or your fork), then:
 kubectl rollout restart deployment/open-llm-proxy -n <your-namespace>
 ```
 
+## Releases
+
+Notable changes are tracked in [CHANGELOG.md](CHANGELOG.md)
+([Keep a Changelog](https://keepachangelog.com/) format) and the repo follows
+[Semantic Versioning](https://semver.org/) (`vMAJOR.MINOR.PATCH`). Every PR that
+changes behavior, config, or ops should add an entry under `## [Unreleased]`.
+
+To cut a release once `main` is green:
+
+```bash
+VERSION=0.1.0            # bump per semver
+
+# 1. Move the [Unreleased] entries into a new dated section in CHANGELOG.md,
+#    update the compare/tag links at the bottom, and commit (or merge a PR).
+# 2. Tag and create the GitHub release with notes from the changelog section:
+git tag -a "v$VERSION" -m "v$VERSION"
+git push origin "v$VERSION"
+gh release create "v$VERSION" --title "v$VERSION" --notes "<changelog section>"
+```
+
+Tags are descriptive only — deployment still tracks `main` (see [Update](#update)).
+
 ## Headless agent runner
 
 `headless/run.js` replays a geo-agent session from the command line: it loads the app's STAC catalog, connects to the MCP server, assembles the exact system prompt the browser sees, and drives the tool-use loop through the proxy. Unlike calling MCP tools directly, this exercises the full proxy pipeline and writes real log entries — useful for scripted model comparisons or reproducing failures.
