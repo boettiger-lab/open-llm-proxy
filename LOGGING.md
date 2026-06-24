@@ -18,30 +18,89 @@ logs-open-llm-proxy/
 ├── 2026-04-17/                        ← today: raw JSONL (live debug tier)
 │   ├── 02-00-05-39.jsonl              # flush at 02:00:05 from worker PID 39
 │   └── ...
-├── consolidated/
+├── consolidated/                      ← one row per log entry (flat schema)
 │   ├── daily/
 │   │   ├── 2026-04-15.parquet         # recent completed days
 │   │   └── 2026-04-16.parquet
 │   └── monthly/
 │       ├── 2026-02.parquet            # older completed months
 │       └── 2026-03.parquet
+└── sessions/                          ← one row per turn (interleaved session view)
+    ├── daily/
+    │   └── 2026-04-16.parquet
+    └── monthly/
+        └── 2026-03.parquet
 ```
 
 | Tier | Format | When it gets written | When it gets deleted |
 |---|---|---|---|
 | Raw JSONL (`YYYY-MM-DD/*.jsonl`) | JSONL chunks | Proxy flushes every 60s | Next day's daily consolidation (03:00 UTC) |
-| Daily (`consolidated/daily/YYYY-MM-DD.parquet`) | Parquet (zstd) | Daily cron at 03:00 UTC | Monthly rollup on day 2 (04:00 UTC) |
-| Monthly (`consolidated/monthly/YYYY-MM.parquet`) | Parquet (zstd) | Monthly cron on day 2 | Never (long-term archive) |
+| Daily (`consolidated/daily/…` + `sessions/daily/…`) | Parquet (zstd) | Daily cron at 03:00 UTC | Monthly rollup on day 2 (04:00 UTC) |
+| Monthly (`consolidated/monthly/…` + `sessions/monthly/…`) | Parquet (zstd) | Monthly cron on day 2 | Never (long-term archive) |
 
-The **Parquet schema** (identical across daily and monthly tiers):
+Consolidation logic is a single source of truth in **`consolidate.py`** (`daily` /
+`monthly` / `backfill` subcommands), git-cloned by the CronJobs — so the daily
+job, the monthly rollup, and the one-off backfill can't drift apart.
+
+### `consolidated/` — flat entry schema
+
+One row per log entry (`request` **or** `response`). Hot fields are promoted to
+typed columns; the full original record is kept verbatim in `entry` for fidelity.
+**Prefer the typed columns** — they sidestep the `entry::JSON->>` casting traps
+below. Identical across daily and monthly tiers. Glob: `consolidated/**/*.parquet`.
 
 | Column | Type | Notes |
 |---|---|---|
-| `ts` | `TIMESTAMPTZ` | Extracted from the `timestamp` field of the raw JSON |
+| `ts` | `TIMESTAMPTZ` | From the `timestamp` field |
 | `type` | `VARCHAR` | `'request'` or `'response'` |
 | `request_id` | `VARCHAR` | Correlates request ↔ response |
 | `origin` | `VARCHAR` | App the traffic came from |
+| `session_id` | `VARCHAR` | Exact per-session key (`null` in pre-#34 records) |
+| `client` | `VARCHAR` | `X-Client` header, e.g. `geo-agent/v3.13.1` (`null` until sent) |
+| `model` | `VARCHAR` | |
+| `provider` | `VARCHAR` | `nrp` / `openrouter` / `nimbus` |
+| `message_count` | `INTEGER` | Request rows |
+| `tools_count` | `INTEGER` | Request rows |
+| `user_question` | `VARCHAR` | Request rows — ⚠️ **first-message-only**, see the trap below |
+| `latency_ms` | `INTEGER` | Response rows |
+| `has_content` / `has_tool_calls` / `has_reasoning_content` | `BOOLEAN` | Response rows |
+| `total_tokens` | `INTEGER` | Response rows (from `tokens.total_tokens`) |
+| `tool_calls` | `JSON` | Response rows — `[{name, arguments}]` |
+| `tool_results` | `JSON` | Request rows — `tool_results_this_turn`, what the *previous* turn's calls returned |
+| `tokens` | `JSON` | Response rows — `{prompt_tokens, completion_tokens, total_tokens}` |
+| `error` | `VARCHAR` | Response rows, failures only |
 | `entry` | `VARCHAR` | The full original JSON record — parse with `entry::JSON` |
+
+### `sessions/` — per-turn session view
+
+One row per **turn** (a request paired with its response by `request_id`), already
+interleaved and ordered, so reconstructing a conversation is a single flat
+`SELECT … ORDER BY turn_idx` — no manual request/response matching. Keyed on
+`session_id` (exact), falling back to the `(origin, user_question)` heuristic for
+pre-#34 rows where `session_id` is null. Glob: `sessions/**/*.parquet`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `session_key` | `VARCHAR` | `session_id` when present, else `origin \| user_question`. Group/partition on this. |
+| `session_id` | `VARCHAR` | Raw id (`null` for pre-#34 turns) |
+| `turn_idx` | `BIGINT` | 1-based turn number within the session, ordered by `ts` |
+| `ts` | `TIMESTAMPTZ` | Request timestamp of the turn |
+| `origin`, `model`, `provider`, `client` | `VARCHAR` | |
+| `message_count` | `INTEGER` | |
+| `user_question` | `VARCHAR` | Opening question (first-message-only — see trap) |
+| `latest_user_message` | `VARCHAR` | The turn's *latest* `role:user` message. Populated only in `full` capture mode (needs the `messages` array); **`null` in summary mode** — use `session_id` to follow up-questions instead. |
+| `assistant_text` | `VARCHAR` | Response `content` (full), falling back to `content_preview` |
+| `tool_calls` | `JSON` | What the LLM called this turn |
+| `tool_results` | `JSON` | What the previous turn's calls returned (fed into this request) |
+| `has_content`, `has_tool_calls` | `BOOLEAN` | |
+| `latency_ms`, `total_tokens` | `INTEGER` | |
+| `error` | `VARCHAR` | |
+| `request_id` | `VARCHAR` | |
+
+The daily tier computes `turn_idx` within the day; the monthly rollup rebuilds the
+view from the merged month so `turn_idx` is correct for sessions that span days.
+A session that crosses a midnight UTC boundary is split across two daily session
+files until the monthly rollup merges them.
 
 ## Access pattern
 
@@ -60,26 +119,37 @@ Then query the local path — no `CREATE SECRET` needed:
 
 ```bash
 duckdb -s "
--- Historical: all consolidated data in one read (daily + monthly Parquet)
-SELECT ts, entry::JSON->>'user_question' AS q
+-- Historical: all consolidated data in one read (daily + monthly Parquet).
+-- Use the typed columns — no entry::JSON gymnastics needed.
+SELECT ts, model, user_question
 FROM read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet')
-WHERE entry::JSON->>'origin' = 'https://tpl.nrp-nautilus.io'
+WHERE origin = 'https://tpl.nrp-nautilus.io'
   AND ts > now() - INTERVAL 7 DAYS;
+
+-- Every turn of one session in order, with tool calls + results, no manual
+-- interleaving — this is what the sessions/ view is for (issue #31).
+SELECT turn_idx, user_question, assistant_text, tool_calls, tool_results
+FROM read_parquet('/tmp/open-llm-proxy-logs/sessions/**/*.parquet')
+WHERE session_key = '<session_id-or-origin|question>'
+ORDER BY turn_idx;
 
 -- Today's live data (raw JSONL — narrow the glob to an hour when possible)
 SELECT * FROM read_ndjson_auto(
   '/tmp/open-llm-proxy-logs/2026-04-17/*.jsonl', union_by_name=true);
 
--- Pair requests and responses from consolidated Parquet
-SELECT req.ts, req.entry::JSON->>'user_question' AS q,
-       resp.entry::JSON->'tool_calls' AS tools,
-       (resp.entry::JSON->>'latency_ms')::INT AS ms
+-- Pair requests and responses from the flat consolidated Parquet
+SELECT req.ts, req.user_question, resp.tool_calls, resp.latency_ms
 FROM read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet') req
 JOIN read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet') resp
   ON req.request_id = resp.request_id
 WHERE req.type = 'request' AND resp.type = 'response';
 "
 ```
+
+> The flat typed columns and the `sessions/` view exist for consolidated Parquet
+> written **after** issue #31. The one-off `flatten-historical-logs-job.yaml`
+> backfills both onto older consolidated files in place. Today's raw JSONL is
+> still nested JSON — flatten it at read time or wait for daily consolidation.
 
 Live data caveat: raw JSONL for today is only as fresh as the last `./sync-logs.sh`. Re-run it before querying if you care about the last few minutes. For sub-minute freshness, use `kubectl` (below) or the direct-S3 path.
 
@@ -264,7 +334,13 @@ Records written before this wiring have `session_id = null`; group those by the
 
 ## Reconstructing a conversation
 
-Each POST to `/v1/chat/completions` is one LLM turn. A single user session produces multiple request/response pairs. To reconstruct a session:
+**The easy way (consolidated data):** query the `sessions/**/*.parquet` view —
+one row per turn, already interleaved and ordered by `turn_idx`, keyed on
+`session_key`. `SELECT … WHERE session_key = ? ORDER BY turn_idx` gives the whole
+conversation with no manual matching. The steps below are the underlying mechanics
+(still needed for today's raw JSONL, or to understand what the view materializes).
+
+Each POST to `/v1/chat/completions` is one LLM turn. A single user session produces multiple request/response pairs. To reconstruct a session by hand:
 
 1. Match by `origin` to isolate one app
 2. Group turns by `user_question` (same question = same session)

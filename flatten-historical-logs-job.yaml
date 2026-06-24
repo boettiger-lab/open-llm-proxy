@@ -1,0 +1,66 @@
+# One-shot Job: backfill the flat schema + session views onto historical logs
+# already consolidated under the OLD (ts, type, request_id, origin, entry) schema
+# (issue #31).
+#
+# The daily/monthly CronJobs only emit the flattened schema going forward; the
+# consolidated Parquet written before this change has just the 5 original columns
+# and no session view. This Job rewrites every existing consolidated/{daily,
+# monthly}/*.parquet in place to the flat schema and materializes the matching
+# sessions/{daily,monthly}/*.parquet — using the SAME consolidate.py as the live
+# CronJobs, so the two can't diverge.
+#
+#   kubectl -n biodiversity create -f flatten-historical-logs-job.yaml
+#   kubectl -n biodiversity logs -f job/flatten-historical-logs
+#
+# Idempotent: re-running on already-flat files re-derives the same columns. Each
+# entry rewrite goes via a temp key + row-count check + atomic copy, so a partial
+# read can never truncate the corpus. Run AFTER this PR is merged (clones main).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flatten-historical-logs
+  labels:
+    app: logs-consolidate
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 604800
+  template:
+    spec:
+      priorityClassName: opportunistic
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: feature.node.kubernetes.io/pci-10de.present
+                    operator: NotIn
+                    values: ["true"]
+      initContainers:
+        - name: git-sync
+          image: alpine/git:latest
+          command: ["sh", "-c", "git clone --depth 1 https://github.com/boettiger-lab/open-llm-proxy.git /repo"]
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: backfill
+          image: python:3.12-slim
+          workingDir: /repo
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              pip install --quiet duckdb boto3
+              python consolidate.py backfill
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "1000m", memory: "2Gi" }
+      volumes:
+        - name: repo
+          emptyDir: {}

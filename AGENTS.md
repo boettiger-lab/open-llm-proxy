@@ -24,12 +24,20 @@ Logs land in three tiers by age (see [LOGGING.md](LOGGING.md) for the full spec)
 # One-time per session (or whenever you want to refresh)
 ./sync-logs.sh
 
-# Historical: consolidated Parquet (the common case)
+# Historical: consolidated Parquet (the common case). Hot fields are flat typed
+# columns (model, user_question, latency_ms, tool_calls, …) — no entry::JSON needed.
 duckdb -s "
-SELECT ts, entry::JSON->>'user_question' AS q, entry::JSON->'tool_calls' AS tools
+SELECT ts, model, user_question, tool_calls
 FROM read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet')
 WHERE origin = 'https://tpl.nrp-nautilus.io' AND ts > now() - INTERVAL 7 DAYS
 ORDER BY ts DESC;
+"
+
+# Reconstruct a whole session in order — sessions/ view, one row per turn (#31)
+duckdb -s "
+SELECT turn_idx, user_question, assistant_text, tool_calls, tool_results
+FROM read_parquet('/tmp/open-llm-proxy-logs/sessions/**/*.parquet')
+WHERE session_key = 'SESSION' ORDER BY turn_idx;
 "
 
 # Today: raw JSONL — narrow the glob to the current hour when possible
@@ -39,7 +47,7 @@ SELECT * FROM read_ndjson_auto('/tmp/open-llm-proxy-logs/YYYY-MM-DD/*.jsonl',
 "
 ```
 
-**Parquet schema** (same for daily and monthly tiers): `(ts TIMESTAMPTZ, type, request_id, origin, entry VARCHAR)` — `entry` is the full original log record as JSON text. Access fields with `entry::JSON->>'field'`.
+**Parquet schema** (`consolidated/**`, same for daily and monthly): hot fields are promoted to typed columns — `ts, type, request_id, origin, session_id, client, model, provider, message_count, tools_count, user_question, latency_ms, has_content, has_tool_calls, has_reasoning_content, total_tokens, tool_calls (JSON), tool_results (JSON), tokens (JSON), error` — plus the full original record in `entry VARCHAR`. Prefer the typed columns; fall back to `entry::JSON->>'field'` for anything not promoted. A separate `sessions/**` view holds one interleaved row per turn (`session_key, turn_idx, user_question, latest_user_message, assistant_text, tool_calls, tool_results, …`) — reconstruct a conversation with `WHERE session_key = ? ORDER BY turn_idx`, no manual interleaving. See [LOGGING.md](LOGGING.md) for both full schemas. *(Flat columns + session view land at consolidation time per #31; older files are backfilled by `flatten-historical-logs-job.yaml`.)*
 
 For automation, one-shot CI queries, or queries that need sub-minute freshness without re-syncing, query S3 directly with `LOG_S3_KEY` / `LOG_S3_SECRET` from the shell — see [LOGGING.md](LOGGING.md#direct-s3-one-shot-queries-automation-or-inside-nrp-pods).
 
@@ -48,7 +56,7 @@ Each LLM call produces a `request` row and a `response` row linked by `request_i
 - **Request**: `user_question`, `tool_results_this_turn`, `model`, `origin`, `message_count`
 - **Response**: `tool_calls`, `content_preview`, `tokens`, `latency_ms`, `error` (only on failures)
 
-**Reconstructing a conversation**: group by `user_question`, filter by `origin`, sort by `ts` (Parquet) / `timestamp` (JSONL). The `tool_results_this_turn` on each request shows what the previous turn's tool calls returned; `tool_calls` on each response shows what the LLM called next.
+**Reconstructing a conversation**: for consolidated data, just query the `sessions/**` view — one row per turn, ordered by `turn_idx`, keyed on `session_key`. For raw JSONL (today) or by hand: group by `session_id` (exact; falls back to `(origin, user_question)` for pre-#34 rows), sort by `ts` (Parquet) / `timestamp` (JSONL). The `tool_results_this_turn` on each request shows what the previous turn's tool calls returned; `tool_calls` on each response shows what the LLM called next.
 
 **Midnight crossover caveat**: flush-time (not entry `ts`) determines the source file path. An entry with `ts = 23:59:58` may live in the next UTC day's file if it was buffered past midnight. Always filter on `ts`, not on file path, when you care about a calendar day.
 

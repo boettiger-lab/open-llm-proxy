@@ -22,3 +22,9 @@ jobs:
         run: python test_logging.py
       - name: Syntax-check the historical scrub job
         run: python -m py_compile scrub.py scrub-historical-logs.py
+      - name: Install consolidation deps (duckdb; jobs pip-install these at runtime)
+        run: pip install duckdb
+      - name: Run consolidation schema tests (issue #31)
+        run: python test_consolidate.py
+      - name: Syntax-check the consolidation module
+        run: python -m py_compile consolidate.py

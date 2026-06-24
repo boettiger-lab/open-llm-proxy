@@ -8,6 +8,27 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **Flat consolidated log schema + materialized session view (#31).** Daily/monthly
+  consolidation now promotes hot fields (`model`, `provider`, `session_id`,
+  `client`, `message_count`, `user_question`, `latency_ms`, `has_*`,
+  `total_tokens`, `tool_calls`/`tool_results`/`tokens` as JSON, `error`) to typed
+  columns alongside the raw `entry` blob — no more `entry::JSON->>` casting traps.
+  A new `sessions/**` Parquet tree holds one interleaved row per turn keyed on
+  `session_id` (heuristic fallback for pre-#34 nulls), so a whole conversation is
+  `SELECT … WHERE session_key = ? ORDER BY turn_idx` with no manual request/response
+  matching. Consolidation logic is now a single source of truth in `consolidate.py`
+  (`daily`/`monthly`/`backfill`), git-cloned by the CronJobs.
+- One-off `flatten-historical-logs-job.yaml` to backfill the flat schema + session
+  views onto pre-#31 consolidated Parquet in place (idempotent, row-count-checked).
+- `test_consolidate.py` pins the flatten/session-view SQL (schema, turn pairing,
+  ordering, heuristic key fallback, full-mode `latest_user_message`).
+
+### Changed
+- Consolidation CronJobs (`consolidate-{daily,monthly}-cronjob.yaml`) switched from
+  inline-heredoc Python to git-cloning the repo and running `consolidate.py`,
+  matching the scrub job — keeps the flatten SQL from drifting across entrypoints.
+
 ## [0.1.0] - 2026-06-24
 
 First tagged release. The proxy has run in production (`biodiversity` namespace,
