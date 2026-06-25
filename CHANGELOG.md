@@ -8,6 +8,31 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **Query-ready consolidated logs: flattened columns + a materialized session
+  view (#31).** The daily consolidation now promotes the hot fields
+  (`session_id`, `client`, `provider`, `model`, `message_count`, `tools_count`,
+  `user_question`, `latency_ms`, `has_tool_calls`, `has_content`, `tool_calls`,
+  `tool_results`, `tokens`, `error`) to typed columns alongside the verbatim
+  `entry` blob, removing the `entry::JSON->>` cast traps for common queries while
+  staying backward-compatible (existing `entry`-based queries still work). A new
+  `sessions/{daily,monthly}/` tier materializes one row per **turn** — request
+  joined to its response, keyed on `session_key` (`session_id`, or an
+  `anon:<hash>` fallback) and ordered by `turn_idx` — so reconstructing a session
+  ("every turn of X in order, with tool calls and results") is a single flat
+  `SELECT` with no manual request/response interleaving. The daily job backfills
+  session views for already-consolidated days that lack one; the monthly rollup
+  rebuilds the view over the whole month (correct cross-midnight `turn_idx`) and
+  reads daily files with `union_by_name=true` so a month mixing legacy
+  (entry-only) and flattened daily files merges cleanly. Both jobs also run a
+  **self-healing schema-upgrade pass** that re-flattens any legacy 5-column
+  consolidated file in place from its preserved `entry` blob (lossless,
+  idempotent), so the whole `consolidated/**` corpus converges to one schema and
+  old logs gain the flat columns too — no mixed-schema barrier for analysts.
+  Existing `entry`-based queries were never at risk (DuckDB name-matches common
+  columns across a mixed glob). `LOGGING.md` / `AGENTS.md` document both schemas,
+  the `sessions/**` ⟂ `consolidated/**` glob split, and the mixed-glob caveat.
+
 ### Fixed
 - **Response logging restored (#37).** Since the #26 (X-Client) deploy, the
   `async with httpx.AsyncClient(...) as client` block shadowed the `client`
