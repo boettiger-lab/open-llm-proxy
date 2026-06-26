@@ -6,16 +6,16 @@
             "models": [
                 "kimi",
                 "qwen3",
-                "glm-4.7",
+                "glm-5",
                 "minimax-m2",
                 "gpt-oss",
                 "gemma",
-                "gemma-4-e4b"
+                "gemma-small-e4b"
             ],
             "thinking_models": {
                 "kimi":   "thinking",
                 "qwen3":  "enable_thinking",
-                "glm-4.7": "enable_thinking"
+                "glm-5": "enable_thinking"
             }
         },
         "openrouter": {
