@@ -23,6 +23,12 @@
 #   TRIALS                 trials per (model, question) (default 2)
 #   MAX_TURNS              agent maxToolCalls (default 20)
 #   APP_BRANCH             app repo branch to clone (default main)
+#   GEO_AGENT_BRANCH       boettiger-lab/geo-agent branch to clone (default
+#                          main). The runner imports its framework (Agent,
+#                          DatasetCatalog, ToolRegistry, createMapTools) from
+#                          this checkout, so set it to A/B-test a code-level
+#                          change (e.g. a tool-description variant) on the open
+#                          model collection before it ships in a pinned release.
 #   NAMESPACE              k8s namespace (default biodiversity)
 #   SYSTEM_PROMPT_APPEND_FILE
 #                          path to a local file whose contents are appended to
@@ -59,6 +65,7 @@ MODELS="${MODELS:-}"
 TRIALS="${TRIALS:-2}"
 MAX_TURNS="${MAX_TURNS:-20}"
 APP_BRANCH="${APP_BRANCH:-main}"
+GEO_AGENT_BRANCH="${GEO_AGENT_BRANCH:-main}"
 NAMESPACE="${NAMESPACE:-biodiversity}"
 
 TS="$(date -u +%Y%m%d-%H%M%S)"
@@ -76,13 +83,13 @@ if [ -n "${SYSTEM_PROMPT_APPEND_FILE:-}" ]; then
     SYSTEM_PROMPT_APPEND_B64="$(base64 -w0 < "$SYSTEM_PROMPT_APPEND_FILE")"
 fi
 
-export APP_REPO APP_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
+export APP_REPO APP_BRANCH GEO_AGENT_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
     QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64}' \
+envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64}' \
     < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF

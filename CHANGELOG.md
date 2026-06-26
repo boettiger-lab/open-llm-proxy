@@ -16,6 +16,15 @@ See [Releases](README.md#releases) for how a release is cut.
   `thinking_models` key `glm-4.7` → `glm-5`).
 
 ### Added
+- **Headless matrix: `GEO_AGENT_BRANCH` to pin the geo-agent framework clone.**
+  The matrix Job hard-coded a `main` clone of `boettiger-lab/geo-agent`, which
+  supplies the framework (`Agent` / `DatasetCatalog` / `ToolRegistry` /
+  `createMapTools`) the runner imports — so there was no way to evaluate a
+  code-level geo-agent change before it merged and shipped in a pinned release.
+  `run-matrix-k8s.sh` now accepts `GEO_AGENT_BRANCH` (default `main`) and the Job
+  clones that branch, mirroring the existing `APP_BRANCH`. Run the matrix once on
+  a fix branch and once on `main` to A/B a change (e.g. a tool-description
+  variant) across the open model collection before pinning the fleet.
 - **Query-ready consolidated logs: flattened columns + a materialized session
   view (#31).** The daily consolidation now promotes the hot fields
   (`session_id`, `client`, `provider`, `model`, `message_count`, `tools_count`,

@@ -64,6 +64,7 @@ request/response pairs.
 | `TAG` | `[a-z0-9-]+` identifier — becomes `JOB_NAME` suffix and `ORIGIN` query tag |
 | `MODELS` | Optional override. Default: read from the app's `k8s/configmap.yaml` inside the pod |
 | `TRIALS` / `MAX_TURNS` / `APP_BRANCH` / `NAMESPACE` | Optional; sensible defaults |
+| `GEO_AGENT_BRANCH` | Optional; `boettiger-lab/geo-agent` branch to clone (default `main`). The runner imports its framework from this checkout, so set it to A/B-test a code-level geo-agent change on the open models before it ships in a pinned release. Pair with a second run on `main` for the baseline. |
 
 ## Local single-run usage (ad-hoc debugging only)
 
