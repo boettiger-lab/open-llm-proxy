@@ -39,6 +39,8 @@ spec:
               value: "${APP_REPO}"
             - name: APP_BRANCH
               value: "${APP_BRANCH}"
+            - name: GEO_AGENT_BRANCH
+              value: "${GEO_AGENT_BRANCH}"
             - name: APP_NAME
               value: "${APP_NAME}"
             - name: ORIGIN
@@ -68,7 +70,12 @@ spec:
               #   /work/open-llm-proxy   /work/geo-agent   /work/<APP_NAME>
               mkdir -p /work && cd /work
               git clone --depth 1 https://github.com/boettiger-lab/open-llm-proxy.git
-              git clone --depth 1 https://github.com/boettiger-lab/geo-agent.git
+              # geo-agent supplies the framework (Agent / DatasetCatalog /
+              # ToolRegistry / createMapTools) the runner imports. Pin its branch
+              # to A/B-test code-level changes (e.g. tool-description variants)
+              # before they ship in a release the fleet pins.
+              git clone --depth 1 --branch "$GEO_AGENT_BRANCH" \
+                  https://github.com/boettiger-lab/geo-agent.git
               git clone --depth 1 --branch "$APP_BRANCH" \
                   "https://github.com/$APP_REPO.git" "$APP_NAME"
 
