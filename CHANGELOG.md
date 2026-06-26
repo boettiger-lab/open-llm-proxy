@@ -8,6 +8,13 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Fixed
+- **`config.json`: corrected two stale NRP model ids that 404'd at the gateway.**
+  `ellm.nrp-nautilus.io`'s `/v1/models` no longer serves `glm-4.7` or
+  `gemma-4-e4b`; requests for them returned `404 No matching route found`. Renamed
+  to the currently-served ids `glm-5` and `gemma-small-e4b` (and updated the
+  `thinking_models` key `glm-4.7` → `glm-5`).
+
 ### Added
 - **Query-ready consolidated logs: flattened columns + a materialized session
   view (#31).** The daily consolidation now promotes the hot fields
