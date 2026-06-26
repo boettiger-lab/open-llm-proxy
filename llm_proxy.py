@@ -209,12 +209,12 @@ def load_config() -> dict:
             "nrp": {
                 "endpoint": "https://ellm.nrp-nautilus.io/v1/chat/completions",
                 "api_key_env": "NRP_API_KEY",
-                "models": ["kimi", "qwen3", "glm-4.6"]
+                "models": ["kimi", "qwen3", "glm-5"]
             },
             "openrouter": {
                 "endpoint": "https://openrouter.ai/api/v1/chat/completions",
                 "api_key_env": "OPENROUTER_KEY",
-                "models": ["anthropic/", "mistralai/", "amazon/", "openai/", "qwen/"],
+                "models": ["anthropic/", "mistralai/", "amazon/", "openai/", "qwen/", "nvidia/", "z-ai/", "minimax/", "moonshotai/"],
                 "extra_headers": {
                     "HTTP-Referer": "https://wetlands.nrp-nautilus.io",
                     "X-Title": "Wetlands Chatbot"

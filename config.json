@@ -27,7 +27,10 @@
                 "amazon/",
                 "openai/",
                 "qwen/",
-                "nvidia/"
+                "nvidia/",
+                "z-ai/",
+                "minimax/",
+                "moonshotai/"
             ],
             "extra_headers": {
                 "HTTP-Referer": "https://open-llm-proxy.nrp-nautilus.io",

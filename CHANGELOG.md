@@ -16,6 +16,15 @@ See [Releases](README.md#releases) for how a release is cut.
   `thinking_models` key `glm-4.7` → `glm-5`).
 
 ### Added
+- **OpenRouter: link `z-ai/`, `minimax/`, and `moonshotai/` model families.**
+  Added these three vendor prefixes to `config.json`'s OpenRouter `models` list
+  (and the in-code fallback + README provider table), so ids like `z-ai/glm-5.2`,
+  `minimax/minimax-m3`, and `moonshotai/kimi-k2.7-code` route to OpenRouter
+  instead of falling through to the NRP default. Enables an open-model
+  performance/accuracy evaluation across these families. The proxy reads
+  `config.json` from a fresh `git clone` of `main` at pod boot, so this reaches
+  prod on the next `rollout restart`. (Also synced the stale `glm-4.6`→`glm-5`
+  and missing `nvidia/` entries in the in-code fallback default.)
 - **Headless matrix: `GEO_AGENT_BRANCH` to pin the geo-agent framework clone.**
   The matrix Job hard-coded a `main` clone of `boettiger-lab/geo-agent`, which
   supplies the framework (`Agent` / `DatasetCatalog` / `ToolRegistry` /
