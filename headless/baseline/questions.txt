@@ -3,7 +3,7 @@ Which countries have the most Ramsar wetland sites?
 What are the top 10 ecoregions by vulnerable carbon?
 
 # bosl-high-seas
-How much and what type of industrial fishing would be displaced by designating all EBSAs in the high seas as MPAs, closed to fishing?
+How much and what type of industrial fishing would be displaced by designating all EBSAs in the high seas as MPAs, closed to fishing? Use the most recent year (2024) of Global Fishing Watch effort, reported in apparent fishing hours.
 How many seamounts are there in the Sargasso Sea "Ecologically or Biologically Significant Marine Area" that was designated on the high seas?
 
 # ca-30x30
@@ -13,7 +13,7 @@ Which ecoregion has the most conserved acreage?
 # global-30x30
 What percentage of global land is currently inside a designated protected area?
 How many people live inside existing protected areas?
-Which ecoregions are least represented in the current protected-area network?
+Which ecoregions have the lowest share of their area inside a protected area? List those at approximately 0%.
 Show me species richness for mammals and identify the top 5 protected areas by mean richness.
 
 # tpl-ca
@@ -32,5 +32,5 @@ Who has funded land conservation in Boulder County, Colorado? show areas on the 
 # wetlands
 Calculate vulnerable carbon stored in different wetlands of India?
 Show Ramsar sites meeting Criterion 9; explain the criterion
-Rank the top 10 level-3 hydrobasins by wetland extent, carbon, and NCP, normalized. Explain methodology and show them on map.
+Rank the top 10 level-3 hydrobasins by wetland extent, carbon, and NCP (min-max normalize each metric to [0,1] across basins, then rank by the equal-weighted mean). Explain methodology.
 

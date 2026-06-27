@@ -20,9 +20,10 @@ META = {
  ("biodiversity","q2"): dict(id="bio-ecoregion-vuln-carbon", trap="hex-join-include-h0;carbon-cell-is-total",
    gold="West Siberian taiga ~13.85 Gt C #1; taiga+Amazon+Congo top 10 (Mg C, vulnerable-2024)",
    accept="top ecoregion = West Siberian taiga; values ~±10%; units Mg/Gt C"),
- ("bosl-high-seas","q1"): dict(id="bosl-fishing-displaced", trap="mask-before-aggregate;units-fishing-hours;multi-year-pick;ebsa-coverage-partial",
-   gold="~1.96M fishing hours/yr (2024) in high-seas EBSAs; ~75% drifting longlines, ~14% squid jigger",
-   accept="order ~1–2M hours, dominated by longlines; declares a year; high-seas = EBSA∩not-EEZ"),
+ ("bosl-high-seas","q1"): dict(id="bosl-fishing-displaced", trap="mask-before-aggregate;units-fishing-hours;ebsa-coverage-partial",
+   gold="~1.96M apparent fishing hours (2024) in high-seas EBSAs; ~75% drifting longlines, ~14% squid jigger",
+   accept="~1.96M hours (2024, now specified), dominated by longlines; high-seas = EBSA∩not-EEZ",
+   note="Original (no year) was ambiguous — answers split 2024 vs multi-year avg. Year now specified; the ambiguous twin is in clarify.txt."),
  ("bosl-high-seas","q2"): dict(id="bosl-sargasso-seamounts", trap="intersect-vs-within;feature_type-exact",
    gold="141 seamounts intersecting Sargasso EBSA (135 fully within)",
    accept="135–141 (intersect or within both ok)"),
@@ -105,7 +106,7 @@ for app in ["biodiversity","bosl-high-seas","ca-30x30","global-30x30","tpl-ca","
     for i, q in enumerate(qs, 1):
         m = META[(app, f"q{i}")]
         rec = {
-            "id": m["id"], "app": app, "q_idx": f"q{i}", "question": q,
+            "id": m["id"], "app": app, "q_idx": f"q{i}", "question": q, "mode": "answer",
             "gold": m["gold"], "accept": m["accept"],
             "trap": m["trap"].split(";"),
             "sql_ref": f"gold/{app}.md (q{i})",
@@ -113,6 +114,33 @@ for app in ["biodiversity","bosl-high-seas","ca-30x30","global-30x30","tpl-ca","
         }
         if m.get("note"): rec["note"] = m["note"]
         records.append(rec)
+
+# mode=clarify: gold response = recognize the ambiguity and ask, NOT answer.
+# These are the original ambiguous phrasings of the precise answer-variants above.
+CLARIFY = [
+ dict(id="clarify-bosl-fishing-year", app="bosl-high-seas",
+   question="How much and what type of industrial fishing would be displaced by designating all EBSAs in the high seas as MPAs, closed to fishing?",
+   ambiguity="year unspecified (GFW effort spans 2012–2024; single year vs multi-year average changes the number)",
+   accept="recognizes the year is unspecified and asks which year / whether to average (GFW 2012–2024); does NOT silently pick one and present a single number as definitive",
+   pairs_with="bosl-fishing-displaced"),
+ dict(id="clarify-tplca-attribution", app="tpl-ca",
+   question="Which congressional district has raised the most conservation funding through ballot measures since 2010?",
+   ambiguity="(1) statewide vs local measures; (2) how to attribute a multi-district measure's funds (full-overlap vs apportioned)",
+   accept="surfaces the statewide-vs-local and/or attribution-method ambiguity and asks how to handle it; does NOT silently pick one attribution and rank",
+   pairs_with="tplca-cd-ballot-funding-2010"),
+ dict(id="clarify-wetlands-composite", app="wetlands",
+   question="Rank the top 10 level-3 hydrobasins by wetland extent, carbon, and NCP, normalized.",
+   ambiguity="normalization method and weighting unspecified (min-max vs z-score vs rank; equal vs custom weights; NCP is an intensity mixed with extensive sums)",
+   accept="asks how to normalize/weight the composite (and flags the intensity-vs-extensive mismatch) before ranking; does NOT silently choose a method",
+   pairs_with="wet-top10-hydrobasins-composite"),
+]
+for c in CLARIFY:
+    records.append({
+        "id": c["id"], "app": c["app"], "q_idx": "clarify", "question": c["question"],
+        "mode": "clarify", "ambiguity": c["ambiguity"], "accept": c["accept"],
+        "pairs_with": c["pairs_with"],
+        "note": "Gold = identify the ambiguity and ask; NOT a data answer. Currently fails for most models (they answer anyway) — gated on a clarification-steering guidance change (geo-agent issue).",
+    })
 
 manifest = {
     "version": "2026-06-27",
@@ -124,6 +152,12 @@ manifest = {
         "pass": "targeted trap fixed AND no regression vs this baseline (per-question, instance-level)."
     },
     "n_questions": len(records),
+    "n_answer": sum(1 for r in records if r["mode"] == "answer"),
+    "n_clarify": sum(1 for r in records if r["mode"] == "clarify"),
+    "modes": {
+        "answer": "gold = the computed answer; grade against `accept`.",
+        "clarify": "gold = recognize the ambiguity and ask; grade on whether the model asks rather than silently picks. Tied to a clarification-steering guidance change.",
+    },
     "questions": records,
 }
 out = os.path.join(HERE, "golden.json")
@@ -137,6 +171,9 @@ with open(os.path.join(HERE, "questions.txt"), "w") as fh:
         fh.write("\n")
 print("wrote questions.txt")
 # difficulty summary
-hard = sorted(records, key=lambda r: r["bench_mean_acc"])[:5]
-print("hardest (trap-rule seeds):")
+ans = [r for r in records if r["mode"] == "answer"]
+clar = [r for r in records if r["mode"] == "clarify"]
+print(f"  modes: {len(ans)} answer, {len(clar)} clarify")
+hard = sorted(ans, key=lambda r: r["bench_mean_acc"])[:5]
+print("hardest answer-mode (trap-rule seeds):")
 for r in hard: print(f"  {r['bench_mean_acc']:.2f}  {r['id']:32} traps={r['trap']}")

@@ -19,10 +19,21 @@ answer — the failure mode we explicitly guard against).
 > not prod. `headless/run.js` defaults to prod, so pass `--mcp-url` (or set
 > `config.mcp_url`) explicitly for a validation run. Encoded in `golden.json → gate`.
 
+## Two modes (`golden.json` → `mode`)
+- **`answer`** (22) — gold is the computed answer; grade against `accept`. Questions are
+  written to be **precise**: where the first run revealed an *ambiguity* (models reasoned
+  right but differently), the question now specifies the missing axis and `accept` grades
+  the discriminating skill, not an arbitrary modeling choice. See `findings/ambiguity-audit.md`.
+- **`clarify`** (3, `questions/clarify.txt`) — the *original ambiguous* phrasings, where the
+  gold response is to **recognize the ambiguity and ask**, not silently pick. Tests "ask,
+  don't guess." Currently fails for most models (they answer anyway) — a forward-looking gate
+  tied to a clarification-steering guidance change (geo-agent issue, linked in the findings).
+
 ## Files
-- `golden.json` — the manifest: per question → `gold` (checkable answer), `accept`
-  (pass rule), `trap` (the rule it guards — the #42 rule-store key), `sql_ref`
+- `golden.json` — the manifest: per question → `mode`, `gold`/`accept` (or `ambiguity`/`accept`
+  for clarify), `trap` (the rule it guards — the #42 rule-store key), `sql_ref`
   (authoritative SQL in `gold/`), and `bench_mean_acc` (first-run difficulty).
+- `findings/` — per-question root-cause writeups (ambiguity audit, tpl-ca q2).
 - `gold/<app>.md` — verified answers **with authoritative SQL** (so transcripts are
   checked mechanically, not by eye).
 - `questions.txt` — flat question set; `questions/<app>.txt` — per-app (matrix input).
