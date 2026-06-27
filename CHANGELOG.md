@@ -9,6 +9,20 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Capture upstream response headers on the error path (#44).** On
+  `httpx.HTTPStatusError`, `proxy_chat` logged only the status code and (often
+  empty) body, discarding the response headers that distinguish a genuine
+  rate-limit (`429` + `retry-after`/`x-ratelimit-*`) from a dead-backend gateway
+  failure (naked `500`, `content-length: 0`, no `server`/`x-request-id`). That
+  distinction was previously only catchable live with `curl -i` and impossible to
+  recover after the fact. Now an allow-listed subset (`retry-after`,
+  `x-ratelimit-{limit,remaining,reset}`, `x-request-id`, `server`, `date`,
+  `content-length`) is captured into the error response log under
+  `entry.upstream_headers`, queryable via `json_extract(entry,'$.upstream_headers')`.
+  Allow-list only (no full header bag); values pass through the scrubber for
+  defense in depth. Only the `HTTPStatusError` branch has a response to read —
+  the timeout/connection branches fail without one. Not promoted to a flat
+  consolidated column (entry-JSON access suffices for occasional debugging).
 - **Forward sampling/routing knobs instead of dropping them (#47).** `proxy_chat`
   rebuilt the upstream payload from a hard whitelist (`model`/`messages`/
   `temperature` + `tools`), so any other client field was silently dropped before

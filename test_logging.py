@@ -335,6 +335,58 @@ def _run_proxy_capture(req, provider=("nrp", {"endpoint": "http://upstream", "ap
     return captured["payload"]
 
 
+def test_error_path_captures_allowlisted_upstream_headers():
+    """On the HTTPStatusError path, allow-listed upstream headers land in the
+    buffered error response so 429-throttle vs naked-500 is queryable (#44)."""
+    import asyncio
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    # Mirror NRP's dead-backend signature: 500, empty body, content-length 0,
+    # plus a couple of allow-listed correlation/rate-limit headers and one
+    # disallowed header that must NOT be captured.
+    upstream = p.httpx.Response(
+        status_code=500,
+        headers={"content-length": "0", "retry-after": "30",
+                 "x-request-id": "abc123", "x-secret-internal": "leak-me"},
+        request=p.httpx.Request("POST", "http://upstream"),
+    )
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **k):
+            return upstream  # raise_for_status() below turns 500 into the error
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+    with patch.object(p, "get_provider_for_model",
+                      return_value=("nrp", {"endpoint": "http://upstream", "api_key": "k"})), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+        try:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+            assert False, "expected HTTPException on upstream 500"
+        except p.HTTPException:
+            pass
+
+    errs = [e for e in p._log_buffer if e.get("type") == "response" and e.get("error")]
+    assert len(errs) == 1
+    hdrs = errs[0]["upstream_headers"]
+    assert hdrs["content-length"] == "0"
+    assert hdrs["retry-after"] == "30"
+    assert hdrs["x-request-id"] == "abc123"
+    assert "x-secret-internal" not in hdrs   # allow-list only
+    json.dumps(errs[0])   # must stay serializable
+
+
 def test_passthrough_sampling_knobs_forwarded():
     """seed/top_p/stop/max_tokens/response_format reach upstream on any provider (#47)."""
     payload = _run_proxy_capture(dict(
