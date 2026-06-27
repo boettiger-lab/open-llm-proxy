@@ -485,15 +485,20 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
 
     # Forward known-safe sampling/output knobs when the client sends them (#47).
     # Only set keys that are present (non-None) so provider defaults are untouched.
-    for field in ("top_p", "seed", "stop", "max_tokens", "response_format", "usage"):
+    for field in ("top_p", "seed", "stop", "max_tokens", "response_format"):
         value = getattr(request, field)
         if value is not None:
             payload[field] = value
 
-    # OpenRouter-only routing block (zdr / order / only / require_parameters, ...).
-    # Meaningless—and potentially rejected—elsewhere, so guard by provider.
-    if request.provider is not None and provider_name == "openrouter":
-        payload["provider"] = request.provider
+    # OpenRouter-only knobs: the `provider` routing block (zdr / order / only /
+    # require_parameters, ...) and top-level `usage` ({"include": true}). Both are
+    # OpenRouter-isms — meaningless, and potentially rejected by strict
+    # OpenAI-compatible servers (e.g. vllm), elsewhere — so guard by provider.
+    if provider_name == "openrouter":
+        if request.provider is not None:
+            payload["provider"] = request.provider
+        if request.usage is not None:
+            payload["usage"] = request.usage
 
     # Cache salt: isolate this deployment's cached responses from other NRP tenants
     if CACHE_SALT and provider_name == "nrp":
