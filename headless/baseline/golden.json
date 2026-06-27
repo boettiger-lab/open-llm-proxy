@@ -168,14 +168,15 @@
       "app": "tpl-ca",
       "q_idx": "q2",
       "question": "Which congressional districts have raised the most conservation funding through ballot measures since 2010?",
-      "gold": "Local-only (meaningful): CD30/29 ~$665M, CD36/32 ~$527M, CD15 ~$509M (statewide props add a ~$4.5B baseline to every CD)",
-      "accept": "SEPARATES statewide measures from local; CD30/29 top local",
+      "gold": "Discriminating skill = SEPARATE statewide props (jurisdiction='State', ~$4.5B baseline touching every CD) from local. Local top is the LA/coastal cluster \u2014 full-overlap: CD30/29 ~$665M, CD36/32 ~$527M, CD15 ~$509M; apportioned: CA-11 ~$170M (both defensible).",
+      "accept": "MUST separate statewide from local measures (the graded skill). Local ranking by EITHER full-overlap OR apportioned attribution accepted; top local districts in the LA/coastal cluster. Do NOT require the full-overlap dollar figures \u2014 attribution method is unspecified by the question.",
       "trap": [
         "statewide-measure-attribution",
         "dedup-landvote-id"
       ],
       "sql_ref": "gold/tpl-ca.md (q2)",
-      "bench_mean_acc": 0.625
+      "bench_mean_acc": 0.625,
+      "note": "Most models self-handled the statewide trap; the 0.5 spread was full-overlap vs apportioned attribution (an unspecified, defensible fork) \u2014 an assessment-design issue, not a guidance bug. See findings/tpl-ca-q2-statewide.md."
     },
     {
       "id": "tplca-cd-failed-measures",

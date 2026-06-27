@@ -48,8 +48,9 @@ META = {
    gold="~$36.1M CD16: Prop40 $11.75M, Prop12 $7.61M, Property Tax $6.15M, LWCF (USFWS+NPS) ~$5.6M …",
    accept="programs incl. state bonds + LWCF; total ~$30–40M"),
  ("tpl-ca","q2"): dict(id="tplca-cd-ballot-funding-2010", trap="statewide-measure-attribution;dedup-landvote-id",
-   gold="Local-only (meaningful): CD30/29 ~$665M, CD36/32 ~$527M, CD15 ~$509M (statewide props add a ~$4.5B baseline to every CD)",
-   accept="SEPARATES statewide measures from local; CD30/29 top local"),
+   gold="Discriminating skill = SEPARATE statewide props (jurisdiction='State', ~$4.5B baseline touching every CD) from local. Local top is the LA/coastal cluster — full-overlap: CD30/29 ~$665M, CD36/32 ~$527M, CD15 ~$509M; apportioned: CA-11 ~$170M (both defensible).",
+   accept="MUST separate statewide from local measures (the graded skill). Local ranking by EITHER full-overlap OR apportioned attribution accepted; top local districts in the LA/coastal cluster. Do NOT require the full-overlap dollar figures — attribution method is unspecified by the question.",
+   note="Most models self-handled the statewide trap; the 0.5 spread was full-overlap vs apportioned attribution (an unspecified, defensible fork) — an assessment-design issue, not a guidance bug. See findings/tpl-ca-q2-statewide.md."),
  ("tpl-ca","q3"): dict(id="tplca-cd-failed-measures", trap="statewide-measure-attribution;status-fail-filter",
    gold="All 52 CDs have failed measures; local-only top CD49 ~$2.15B, CD50 ~$2.13B, CD48 ~$2.12B (San Diego ~$2B driver)",
    accept="separates statewide ~$7.7B baseline; San Diego-region CDs top local"),
@@ -103,13 +104,15 @@ for app in ["biodiversity","bosl-high-seas","ca-30x30","global-30x30","tpl-ca","
     qs = qtext(app)
     for i, q in enumerate(qs, 1):
         m = META[(app, f"q{i}")]
-        records.append({
+        rec = {
             "id": m["id"], "app": app, "q_idx": f"q{i}", "question": q,
             "gold": m["gold"], "accept": m["accept"],
             "trap": m["trap"].split(";"),
             "sql_ref": f"gold/{app}.md (q{i})",
             "bench_mean_acc": BENCH_FLAT[m["id"]],
-        })
+        }
+        if m.get("note"): rec["note"] = m["note"]
+        records.append(rec)
 
 manifest = {
     "version": "2026-06-27",
