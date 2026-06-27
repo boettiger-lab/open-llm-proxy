@@ -9,6 +9,16 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Standing baseline question set for guidance-change regression testing (#40).**
+  New `headless/baseline/`: 22 analytical questions with operator-verified golden
+  answers + authoritative SQL (`gold/`), seeded from the open-model benchmark
+  (`headless/experiments/2026-06-26-or-openmodel-bench`). `golden.json` tags each
+  question with the **trap it guards** (the #42 rule-store key), an `accept` rule,
+  and first-run difficulty (`bench_mean_acc`). This is the durable set the
+  MCP-server guidance-change gate regresses against (per-question/instance-level,
+  not aggregate; gold is operator-verified, never model consensus). Encodes the
+  dev-MCP targeting requirement (validation must hit `dev-duckdb-mcp`, not prod).
+  `build_golden.py` regenerates the manifest; grow-on-fix as new traps are found.
 - **Forward sampling/routing knobs instead of dropping them (#47).** `proxy_chat`
   rebuilt the upstream payload from a hard whitelist (`model`/`messages`/
   `temperature` + `tools`), so any other client field was silently dropped before
