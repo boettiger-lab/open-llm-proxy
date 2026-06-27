@@ -25,9 +25,10 @@ baseline questions (the original ambiguous wordings) whose **gold answer is iden
 ambiguity and asking a focused clarifying question** — NOT producing a data answer.
 
 Current models almost always silently pick an interpretation, so these will *fail* until the
-harness steers clarification (proposed in geo-agent — see issue link in README). That makes
-them a forward-looking gate item tied to a specific guidance change, validated the same way
-as any other guidance change.
+harness steers clarification — proposed in **boettiger-lab/geo-agent#274**. That makes them a
+forward-looking gate item tied to a specific guidance change, validated the same way as any
+other guidance change (and per geo-agent#42, the higher-leverage form is a runtime
+request-shape check, not prose).
 
 ## Generalizable rule (carry into assessment design)
 Before treating an all-wrong question as a guidance trap: **check whether models reasoned
