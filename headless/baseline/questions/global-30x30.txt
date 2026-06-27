@@ -1,0 +1,4 @@
+What percentage of global land is currently inside a designated protected area?
+How many people live inside existing protected areas?
+Which ecoregions are least represented in the current protected-area network?
+Show me species richness for mammals and identify the top 5 protected areas by mean richness.
