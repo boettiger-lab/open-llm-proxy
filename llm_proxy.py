@@ -409,6 +409,17 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 0.0
     enable_thinking: Optional[bool] = None  # None = use model default; True/False to override
     user: Optional[str] = None  # OpenAI end-user id; geo-agent sets it to its per-session UUID. Logged as session_id (not forwarded upstream).
+    # Known-safe sampling/routing knobs forwarded verbatim when present (#47).
+    # Without these, anything outside the whitelist below was silently dropped:
+    # `seed`/`top_p` (determinism), `stop`/`max_tokens`/`response_format` (output
+    # shaping), `usage` + OpenRouter `provider` (cost/cache/ZDR routing).
+    top_p: Optional[float] = None
+    seed: Optional[int] = None
+    stop: Optional[Any] = None  # str or list[str] per OpenAI spec
+    max_tokens: Optional[int] = None
+    response_format: Optional[Dict[str, Any]] = None
+    usage: Optional[Dict[str, Any]] = None  # e.g. OpenRouter {"include": true}
+    provider: Optional[Dict[str, Any]] = None  # OpenRouter routing block (zdr/order/only/...)
 
 @app.post("/v1/chat/completions")
 @app.post("/chat")  # Keep for backward compatibility
@@ -471,6 +482,18 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if request.tools:
         payload["tools"] = request.tools
         payload["tool_choice"] = request.tool_choice
+
+    # Forward known-safe sampling/output knobs when the client sends them (#47).
+    # Only set keys that are present (non-None) so provider defaults are untouched.
+    for field in ("top_p", "seed", "stop", "max_tokens", "response_format", "usage"):
+        value = getattr(request, field)
+        if value is not None:
+            payload[field] = value
+
+    # OpenRouter-only routing block (zdr / order / only / require_parameters, ...).
+    # Meaningless—and potentially rejected—elsewhere, so guard by provider.
+    if request.provider is not None and provider_name == "openrouter":
+        payload["provider"] = request.provider
 
     # Cache salt: isolate this deployment's cached responses from other NRP tenants
     if CACHE_SALT and provider_name == "nrp":

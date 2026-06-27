@@ -8,6 +8,19 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **Forward sampling/routing knobs instead of dropping them (#47).** `proxy_chat`
+  rebuilt the upstream payload from a hard whitelist (`model`/`messages`/
+  `temperature` + `tools`), so any other client field was silently dropped before
+  forwarding. Added `top_p`, `seed`, `stop`, `max_tokens`, `response_format`, and
+  `usage` to `ChatRequest` and forward each verbatim when present (non-None), plus
+  the OpenRouter `provider` routing block (`zdr`/`order`/`only`/
+  `require_parameters`, ...) guarded to `provider_name == "openrouter"`. This
+  unblocks per-request `seed`/`top_p` determinism (geo-agent#266), provider
+  steering for cache/cost, and per-request `provider.zdr`. `cache_control` inside
+  message content blocks already passed through (the `messages` array is forwarded
+  verbatim); the NRP `cache_salt` path is unchanged. Relates to geo-agent#273.
+
 ### Fixed
 - **`config.json`: corrected two stale NRP model ids that 404'd at the gateway.**
   `ellm.nrp-nautilus.io`'s `/v1/models` no longer serves `glm-4.7` or
