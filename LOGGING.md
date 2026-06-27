@@ -302,6 +302,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `tool_calls` | Array of `{name, arguments}` — full tool call arguments including SQL query strings. Credential args (`s3_key`/`s3_secret`/…) are redacted. |
 | `tokens` | Token usage object from the provider (`prompt_tokens`, `completion_tokens`, `total_tokens`) |
 | `error` | Error detail string (only present on failed requests) |
+| `upstream_headers` | Allow-listed upstream response headers, captured only when the upstream returned an HTTP error response (#44). Tells a real rate-limit (`retry-after`/`x-ratelimit-*`) apart from a dead-backend gateway failure (naked `500`, `content-length: 0`, no `server`/`x-request-id`). Not a flat column — query via `json_extract(entry,'$.upstream_headers')`. |
 
 ### Wiring up `session_id`
 
