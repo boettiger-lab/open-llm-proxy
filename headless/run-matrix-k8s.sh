@@ -67,6 +67,11 @@ MAX_TURNS="${MAX_TURNS:-20}"
 APP_BRANCH="${APP_BRANCH:-main}"
 GEO_AGENT_BRANCH="${GEO_AGENT_BRANCH:-main}"
 NAMESPACE="${NAMESPACE:-biodiversity}"
+# Durable per-cell transcript capture to S3 (survives pod GC). Default on;
+# uploads to s3://$CAPTURE_BUCKET/experiments/$JOB_NAME/ (pulled by sync-logs.sh).
+# Set CAPTURE_TRANSCRIPTS=false to disable. Needs the `aws` secret (optional).
+CAPTURE_TRANSCRIPTS="${CAPTURE_TRANSCRIPTS:-true}"
+CAPTURE_BUCKET="${CAPTURE_BUCKET:-logs-open-llm-proxy}"
 
 TS="$(date -u +%Y%m%d-%H%M%S)"
 JOB_NAME="hmx-${APP_NAME}-${TAG}-${TS}"
@@ -84,12 +89,12 @@ if [ -n "${SYSTEM_PROMPT_APPEND_FILE:-}" ]; then
 fi
 
 export APP_REPO APP_BRANCH GEO_AGENT_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
-    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64
+    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 CAPTURE_TRANSCRIPTS CAPTURE_BUCKET
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64}' \
+envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${CAPTURE_TRANSCRIPTS} ${CAPTURE_BUCKET}' \
     < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF

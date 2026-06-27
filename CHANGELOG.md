@@ -9,6 +9,17 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Headless matrix: durable per-cell transcript capture to S3.** The matrix Job
+  already `cat`-ed each cell's transcript JSON + `summary.tsv` to pod stdout, but
+  those died with the pod at `ttlSecondsAfterFinished` (24h) — so a later analysis
+  lost them. The Job now also uploads `runs/<JOB_NAME>/*` to
+  `s3://$CAPTURE_BUCKET/experiments/<JOB_NAME>/` (default bucket
+  `logs-open-llm-proxy`, so `sync-logs.sh` pulls them automatically). Controlled by
+  `CAPTURE_TRANSCRIPTS` (default `true`) in `run-matrix-k8s.sh`; best-effort (never
+  fails the run) and skipped if the `aws` secret is absent (`optional: true`).
+  Transcripts carry what proxy logs don't: llm-vs-tool time split, per-tool
+  `tool_exec_ms`, `timed_out`/`cancelled` disposition, and clean
+  `(model, question, trial)` keys.
 - **Capture upstream response headers on the error path (#44).** On
   `httpx.HTTPStatusError`, `proxy_chat` logged only the status code and (often
   empty) body, discarding the response headers that distinguish a genuine

@@ -57,6 +57,23 @@ spec:
               value: "${SYSTEM_PROMPT_APPEND_B64}"
             - name: JOB_NAME
               value: "${JOB_NAME}"
+            # Durable transcript capture: upload per-cell transcript JSON +
+            # summary.tsv to s3://<bucket>/experiments/<JOB_NAME>/ so they
+            # survive pod GC (ttlSecondsAfterFinished). Default on; best-effort
+            # (never fails the run). sync-logs.sh pulls them down automatically.
+            - name: CAPTURE_TRANSCRIPTS
+              value: "${CAPTURE_TRANSCRIPTS}"
+            - name: CAPTURE_BUCKET
+              value: "${CAPTURE_BUCKET}"
+            # S3 creds reused from the same `aws` secret the proxy/consolidation
+            # use. optional:true so the job still runs in namespaces without it
+            # (capture is just skipped).
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID, optional: true }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY, optional: true }
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -129,6 +146,29 @@ spec:
 
               echo "=== summary.tsv ==="
               cat "$RUNS_DIR_REL/summary.tsv" 2>/dev/null || echo "(no summary written)"
+
+              # Durable capture: persist transcripts + summary to S3 so they
+              # outlive the pod. Best-effort — never fails the run.
+              if [ "${CAPTURE_TRANSCRIPTS:-true}" = "true" ] && [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+                  echo
+                  echo "=== uploading transcripts to s3://${CAPTURE_BUCKET}/experiments/$JOB_NAME/ ==="
+                  pip install --quiet --break-system-packages boto3 >/dev/null 2>&1 || pip install --quiet boto3 >/dev/null 2>&1 || true
+                  RUNS_DIR_REL="$RUNS_DIR_REL" CAPTURE_BUCKET="$CAPTURE_BUCKET" JOB_NAME="$JOB_NAME" python3 - <<'PYUP' || echo "(transcript upload skipped/failed — non-fatal)"
+              import os, glob, boto3
+              s3 = boto3.client('s3', endpoint_url='http://rook-ceph-rgw-nautiluss3.rook',
+                                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+                                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'])
+              bucket = os.environ.get('CAPTURE_BUCKET') or 'logs-open-llm-proxy'
+              job = os.environ['JOB_NAME']; rd = os.environ['RUNS_DIR_REL']
+              n = 0
+              for f in sorted(glob.glob(rd + '/*')):
+                  if os.path.isfile(f):
+                      s3.upload_file(f, bucket, f"experiments/{job}/{os.path.basename(f)}"); n += 1
+              print(f"uploaded {n} files to s3://{bucket}/experiments/{job}/")
+              PYUP
+              else
+                  echo "(transcript S3 capture disabled or no AWS creds — transcripts only in this pod's stdout)"
+              fi
 
               echo
               echo "=== filter proxy logs by origin: $ORIGIN ==="
