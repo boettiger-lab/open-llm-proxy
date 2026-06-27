@@ -300,6 +300,85 @@ def test_handler_emits_response_to_buffer_with_serializable_client():
     json.dumps(responses[0])   # must be JSON-serializable — the crux of the bug
 
 
+def _run_proxy_capture(req, provider=("nrp", {"endpoint": "http://upstream", "api_key": "k"})):
+    """Drive proxy_chat with a fake client that records the forwarded payload."""
+    import asyncio
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey", CACHE_SALT="")
+    captured = {}
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, endpoint, json=None, headers=None):
+            captured["payload"] = json
+            return _FakeResp()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    cr = p.ChatRequest(**req)
+    with patch.object(p, "get_provider_for_model", return_value=provider), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+        asyncio.run(p.proxy_chat(cr, _FakeRequest(), authorization="Bearer testkey"))
+    return captured["payload"]
+
+
+def test_passthrough_sampling_knobs_forwarded():
+    """seed/top_p/stop/max_tokens/response_format reach upstream on any provider (#47)."""
+    payload = _run_proxy_capture(dict(
+        model="qwen3", messages=[{"role": "user", "content": "hi"}],
+        seed=42, top_p=0.9, stop=["END"], max_tokens=256,
+        response_format={"type": "json_object"},
+    ))
+    assert payload["seed"] == 42
+    assert payload["top_p"] == 0.9
+    assert payload["stop"] == ["END"]
+    assert payload["max_tokens"] == 256
+    assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_passthrough_omits_unset_fields():
+    """Fields the client didn't send are not injected (provider defaults intact)."""
+    payload = _run_proxy_capture(dict(
+        model="qwen3", messages=[{"role": "user", "content": "hi"}]))
+    for k in ("seed", "top_p", "stop", "max_tokens", "response_format", "usage", "provider"):
+        assert k not in payload, f"{k} should not be forwarded when unset"
+
+
+def test_openrouter_only_knobs():
+    """`provider` routing block and top-level `usage` go to OpenRouter only (#47).
+
+    Both are OpenRouter-isms; a strict OpenAI-compatible server (e.g. vllm) may
+    400 on them, so they must never leak to non-OpenRouter providers."""
+    block = {"zdr": True, "order": ["anthropic"]}
+    usage = {"include": True}
+    or_payload = _run_proxy_capture(
+        dict(model="z-ai/glm-5.2", messages=[{"role": "user", "content": "hi"}],
+             provider=block, usage=usage),
+        provider=("openrouter", {"endpoint": "http://or", "api_key": "k"}))
+    assert or_payload["provider"] == block
+    assert or_payload["usage"] == usage
+
+    nrp_payload = _run_proxy_capture(
+        dict(model="qwen3", messages=[{"role": "user", "content": "hi"}],
+             provider=block, usage=usage),
+        provider=("nrp", {"endpoint": "http://upstream", "api_key": "k"}))
+    assert "provider" not in nrp_payload, "provider block must not leak to non-OpenRouter"
+    assert "usage" not in nrp_payload, "usage must not leak to non-OpenRouter"
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
