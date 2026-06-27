@@ -68,3 +68,32 @@ Accuracy = mean judge score (1 correct / 0.5 partial / 0 wrong) over completed t
 | wetlands-v2 | q1 | 265 | 83 | 123 | 127 |
 | wetlands-v2 | q2 | 76 | 68 | 51 | 43 |
 | wetlands-v2 | q3 | 451 | 778 | 836 | 449 |
+
+## Per-question LLM calls per trial — median (max) (completed trials)
+
+Each agentic turn = one LLM call. A high count signals a model grinding / making mistaken tool calls and self-correcting. Max in parens exposes worst-case loops.
+
+| app | q | glm-5.2 | minimax-m3 | kimi-2.7-code | nemotron-3-ultra |
+|---|---|--:|--:|--:|--:|
+| biodiversity | q1 | 4 (4) | 3 (4) | 4 (5) | 5 (10) |
+| biodiversity | q2 | 5 (5) | 3 (3) | 6 (9) | 3 (4) |
+| bosl-high-seas | q1 | 5 (7) | 6 (8) | 14 (14) | 9 (15) |
+| bosl-high-seas | q2 | 5 (6) | 4 (4) | 5 (12) | 5 (5) |
+| ca-30x30 | q1 | 2 (2) | 3 (3) | 2 (2) | 4 (4) |
+| ca-30x30 | q2 | 3 (3) | 3 (3) | 3 (4) | 3 (3) |
+| global-30x30 | q1 | 3 (3) | 2 (2) | 4 (4) | 6 (6) |
+| global-30x30 | q2 | 5 (5) | 4 (4) | 9 (9) | 4 (4) |
+| global-30x30 | q3 | 3 (3) | 7 (7) | 3 (3) | 6 (6) |
+| global-30x30 | q4 | 2 (2) | 7 (7) | 7 (7) | 5 (5) |
+| tpl | q1 | 3 (3) | 3 (4) | 8 (9) | 7 (11) |
+| tpl | q2 | 7 (9) | 4 (5) | 6 (7) | 9 (10) |
+| tpl | q3 | 7 (8) | 8 (11) | 10 (12) | 10 (11) |
+| tpl | q4 | 4 (4) | 10 (12) | 7 (9) | 7 (9) |
+| tpl-ca | q1 | 5 (6) | 5 (5) | 6 (7) | 5 (7) |
+| tpl-ca | q2 | 4 (6) | 3 (4) | 11 (16) | 7 (11) |
+| tpl-ca | q3 | 7 (8) | 6 (7) | 5 (5) | 14 (22) |
+| tpl-ca | q4 | 3 (3) | 3 (4) | 6 (8) | 3 (3) |
+| tpl-ca | q5 | 8 (10) | 5 (5) | 3 (3) | 7 (10) |
+| wetlands-v2 | q1 | 3 (5) | 1 (2) | 2 (3) | 4 (5) |
+| wetlands-v2 | q2 | 5 (5) | 9 (11) | 6 (6) | 5 (5) |
+| wetlands-v2 | q3 | 3 (4) | 11 (11) | 10 (10) | 25 (25) |

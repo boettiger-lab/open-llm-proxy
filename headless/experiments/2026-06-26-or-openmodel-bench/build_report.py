@@ -92,6 +92,22 @@ for k in sorted(lat):
     for m in models:
         v = lat[k].get(m); line += f" {('%.0f' % st.median(v) if v else '-')} |"
     L.append(line)
+
+# per-question LLM-call counts (turns): median (max) — agentic effort / self-correction signal
+calls = collections.defaultdict(lambda: collections.defaultdict(list))
+for r in sess:
+    if r["status"] == "ok":
+        calls[(r["app"], r["q"])][r["model"]].append(r["turns"])
+L.append("\n## Per-question LLM calls per trial — median (max) (completed trials)\n")
+L.append("Each agentic turn = one LLM call. A high count signals a model grinding / making "
+         "mistaken tool calls and self-correcting. Max in parens exposes worst-case loops.\n")
+L.append("| app | q | glm-5.2 | minimax-m3 | kimi-2.7-code | nemotron-3-ultra |")
+L.append("|---|---|--:|--:|--:|--:|")
+for k in sorted(calls):
+    line = f"| {k[0]} | {k[1]} |"
+    for m in models:
+        v = calls[k].get(m); line += f" {(f'{int(st.median(v))} ({max(v)})' if v else '-')} |"
+    L.append(line)
 open(os.path.join(E, "results", "REPORT.md"), "w").write("\n".join(L) + "\n")
 print("wrote results/REPORT.md\n")
 print("\n".join(L))
