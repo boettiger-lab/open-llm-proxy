@@ -1,0 +1,263 @@
+session_id	app	q_idx	model	status	score
+bcc31ea4-6b8d-4254-ba6d-e9269f47f56e	tpl-ca	q1	minimax/minimax-m3	ok	1.0
+57f81365-e1cd-4923-9332-2a2f89e79fd1	bosl-high-seas	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	0.5
+76a49ce8-d250-4dd1-a711-62bb83f91388	wetlands-v2	?	z-ai/glm-5.2	ok	1.0
+bb119285-f173-483c-b479-d45ba8bf77fd	ca-30x30	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+b360c20e-7f00-45bf-a2b2-f377da6f6d75	biodiversity	q1	z-ai/glm-5.2	ok	1.0
+2db004ae-662c-4018-a308-fb472fc9ff7c	wetlands-v2	?	z-ai/glm-5.2	ok	0.0
+fe35313a-0c1e-405d-a0b0-2d2782a7a232	biodiversity	q2	z-ai/glm-5.2	ok	1.0
+307d98b6-4a31-4585-b95f-cad97b9012fe	bosl-high-seas	q1	z-ai/glm-5.2	ok	0.5
+a86be710-a071-4273-9e14-089b40548b80	biodiversity	q2	moonshotai/kimi-k2.7-code	ok	1.0
+37f49213-5757-4d95-9e2e-320b4fd8290d	bosl-high-seas	q2	moonshotai/kimi-k2.7-code	ok	1.0
+ac003422-fef1-49a9-8adc-6fa6c3a627f7	tpl-ca	q2	moonshotai/kimi-k2.7-code	ok	0.5
+ec16dbaa-51eb-4c85-a26e-e38ae8e09f89	tpl	q3	minimax/minimax-m3	ok	0.5
+35a9f528-caca-4c41-8937-fae4187e81ad	tpl-ca	q1	minimax/minimax-m3	budget_capped	
+1177112f-5d06-4e10-9ee7-a19fae3dbb88	bosl-high-seas	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+dad37f40-55d5-4188-b623-674df8622a0b	biodiversity	q2	minimax/minimax-m3	ok	1.0
+0fa10f23-08ad-401e-b8c9-bc24c6623a27	tpl-ca	q5	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+29bb2382-8050-4584-bd53-ae3f95b8234c	global-30x30	q3	moonshotai/kimi-k2.7-code	budget_capped	
+62a38377-cdda-4a57-8951-470c034e5304	tpl-ca	q4	moonshotai/kimi-k2.7-code	budget_capped	
+1889c29b-0be6-4d88-8779-0f2bde173555	global-30x30	q1	z-ai/glm-5.2	budget_capped	
+49cb6482-bf77-4c28-9458-e70bb4747b4f	tpl-ca	q2	moonshotai/kimi-k2.7-code	budget_capped	
+219f1805-d800-4366-8df7-b464796fe16c	global-30x30	q3	minimax/minimax-m3	budget_capped	
+aa65d674-3cde-498a-9bad-52f30264a32f	biodiversity	q1	minimax/minimax-m3	ok	1.0
+b2db687d-41ef-49e6-8caf-ce8913d74168	tpl-ca	q1	moonshotai/kimi-k2.7-code	ok	1.0
+bcc8cfeb-3810-48fd-ab54-b82170d9fbd9	wetlands-v2	?	minimax/minimax-m3	ok	1.0
+da4445f8-fa94-47e0-9459-2a8b009dc9d4	biodiversity	q2	moonshotai/kimi-k2.7-code	ok	1.0
+aedfd861-ad64-4d95-b9b3-b9bc83caedb9	tpl	q1	moonshotai/kimi-k2.7-code	ok	1.0
+6a12c5a6-90fa-418f-a26e-7c6e7509c7ee	ca-30x30	q1	moonshotai/kimi-k2.7-code	ok	1.0
+a226db54-5dd2-4ee2-81fa-6f21138428ee	bosl-high-seas	q2	minimax/minimax-m3	ok	1.0
+7b523dcf-bb7c-4e3e-952a-c9b85eb643fb	biodiversity	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	0.5
+88e4a04f-177e-426a-929b-f113ce877a54	global-30x30	q3	moonshotai/kimi-k2.7-code	ok	0.0
+51be619a-238a-4f1f-92fd-5f243a190d1e	wetlands-v2	?	moonshotai/kimi-k2.7-code	ok	1.0
+39efa2bc-d2b6-4d61-9a7b-6812d572e0f1	bosl-high-seas	q1	moonshotai/kimi-k2.7-code	ok	1.0
+b9c61aa0-7889-467b-9c9c-f35d5914c13e	wetlands-v2	?	moonshotai/kimi-k2.7-code	ok	1.0
+b7dddc44-c745-4248-88a5-5739e27f744f	wetlands-v2	?	moonshotai/kimi-k2.7-code	budget_capped	
+6f06f80f-fb09-4813-b953-67d4c4e8523d	bosl-high-seas	q2	z-ai/glm-5.2	ok	1.0
+f3e955b1-3fe9-4047-973d-7c42d8c6d36d	tpl	q1	minimax/minimax-m3	ok	0.5
+b1182ad3-f6a3-4705-be00-74f71a6a7dac	global-30x30	q3	z-ai/glm-5.2	budget_capped	
+d068878b-bc03-4a33-bb59-47f20b33e8e1	global-30x30	q4	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+e04d4e4a-a6f1-45d1-bfa0-c8040f784fad	wetlands-v2	?	z-ai/glm-5.2	budget_capped	
+21c97eaa-7d46-44a9-a024-383cba264ce1	tpl	q1	minimax/minimax-m3	budget_capped	
+8d616165-ffc2-41e9-9ed4-dcbb724a9608	ca-30x30	q1	minimax/minimax-m3	ok	1.0
+daf841b6-c716-4160-96ba-53a0d56afc17	ca-30x30	q1	moonshotai/kimi-k2.7-code	ok	1.0
+56fee264-7528-43f0-9af4-865956aa6cfa	tpl	q1	minimax/minimax-m3	ok	1.0
+9437cd2d-b302-4694-8a5a-8de9ae4a5a79	ca-30x30	q1	minimax/minimax-m3	ok	1.0
+5690be93-0bbb-46fe-94ba-84c047bccb2d	tpl	q2	z-ai/glm-5.2	ok	1.0
+ff3f871a-c68c-46c0-9b1b-475d04dec31b	tpl	q3	z-ai/glm-5.2	ok	0.0
+8b8f3076-dae3-4e82-baca-3de8d98b1748	tpl	q3	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+b01cd32a-ecb9-467f-8ea5-b9b8638fb371	global-30x30	q4	minimax/minimax-m3	ok	0.5
+159b4e6c-e347-4479-b222-cd62765afa54	biodiversity	q1	minimax/minimax-m3	ok	1.0
+6770be0c-11d5-48c9-92c6-16dadc5fb63b	wetlands-v2	?	minimax/minimax-m3	budget_capped	
+be39a514-9c1a-4a6d-a464-d3cdb7bf31ee	tpl-ca	q5	minimax/minimax-m3	budget_capped	
+76bd6eeb-49c6-4ba5-b8fe-426677670555	tpl	q4	moonshotai/kimi-k2.7-code	budget_capped	
+23cdd8c7-a71a-47fc-9796-df206090e23c	tpl-ca	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+aca1ad2d-a794-4b1d-be77-9ae2486f097d	global-30x30	q1	minimax/minimax-m3	ok	1.0
+654c1245-44fe-4ba0-a432-851433701dc3	ca-30x30	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+dd4ea215-023d-43af-bdd2-e35ff4bf4222	biodiversity	q1	moonshotai/kimi-k2.7-code	ok	1.0
+ee49b865-b135-4e52-a1cd-70d5ff0b7531	bosl-high-seas	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+6ab76ddb-c744-4a33-9cb0-04cf4db30250	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	ok	0.5
+fe669d7f-1596-4dd5-b7fb-3d681cf0e3c1	tpl-ca	q4	z-ai/glm-5.2	ok	1.0
+e577658f-2832-406f-9ed3-85272964b7cf	global-30x30	q3	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+0aaed14f-e1d4-45c4-b64f-1130303a1fd3	tpl	q2	moonshotai/kimi-k2.7-code	ok	1.0
+1a30f6f4-a658-402b-8236-fa829968877d	tpl	q3	z-ai/glm-5.2	ok	0.5
+2ec36c31-a5cd-4885-b4cd-812bb38d5665	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+aaf603ab-b9d6-408a-a091-90a80b54befa	global-30x30	q4	z-ai/glm-5.2	budget_capped	
+14d3a9d5-f53c-4e01-a076-358cb241f78b	wetlands-v2	?	moonshotai/kimi-k2.7-code	budget_capped	
+9a869dbf-7e8e-4e0a-8f33-1fdcbe118071	global-30x30	q4	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+93eb7729-bf44-455c-a237-72919111bdc6	global-30x30	q4	moonshotai/kimi-k2.7-code	budget_capped	
+8070a4ae-996e-41fc-81fb-8f2762a47d7a	global-30x30	q1	minimax/minimax-m3	budget_capped	
+61afe2d6-7d03-42cd-873a-65216f3d155e	tpl	q1	moonshotai/kimi-k2.7-code	budget_capped	
+f8bd9ba5-a5cf-4be8-803f-a59915ab895b	wetlands-v2	?	z-ai/glm-5.2	ok	1.0
+c6e75b24-a232-46aa-aff7-36d62cbe20ed	ca-30x30	q1	moonshotai/kimi-k2.7-code	ok	1.0
+a7edc181-d385-4055-ac43-d632f64ffcc9	ca-30x30	q2	moonshotai/kimi-k2.7-code	ok	1.0
+259f25fb-d1c8-41ab-a3de-8d1c436465ba	global-30x30	q1	moonshotai/kimi-k2.7-code	ok	1.0
+4053bad4-3760-4463-b349-f19340ba59bf	tpl	q3	moonshotai/kimi-k2.7-code	ok	1.0
+1b0cb86a-6bc6-4448-a071-3e44da0f09b8	bosl-high-seas	q2	z-ai/glm-5.2	ok	1.0
+4f83b54c-0f18-42a4-86ee-423e428470c7	biodiversity	q2	moonshotai/kimi-k2.7-code	ok	1.0
+ded61c23-43a4-4885-949d-69361a599010	tpl	q2	z-ai/glm-5.2	ok	1.0
+d3965622-0520-4c50-8805-0cdd80c83b68	tpl	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+d9531269-509c-4548-9edb-47596c42f929	tpl-ca	q4	z-ai/glm-5.2	ok	1.0
+37eaaf93-ce34-4c01-8086-f33996efeaf3	tpl	q3	moonshotai/kimi-k2.7-code	ok	1.0
+e6426fb3-1b62-4949-969f-ee16d7a90cca	tpl-ca	q4	minimax/minimax-m3	ok	1.0
+443d5609-e000-421d-8fec-7148450f5707	global-30x30	q2	moonshotai/kimi-k2.7-code	budget_capped	
+253a77ff-893a-404e-829b-2020d8a2e5b3	tpl-ca	q5	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+54c0b3f7-d8c0-4534-9667-3284cb15ff37	tpl-ca	q4	minimax/minimax-m3	budget_capped	
+84587986-0fbe-4689-bb76-4631bb83641b	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+bcc13a46-3ca9-43c0-834b-f6a5fdc9752e	tpl-ca	q3	moonshotai/kimi-k2.7-code	budget_capped	
+6dd4922e-ae14-41e5-acad-4fbeae6f0c3c	biodiversity	q2	z-ai/glm-5.2	ok	1.0
+cd1e4756-147f-4e81-99d6-71ef38ab7652	tpl-ca	q2	z-ai/glm-5.2	ok	1.0
+cc6aa367-440f-4688-a91c-9fa93840b2e9	ca-30x30	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+a8b4db95-0151-4d5b-b9dc-bde6221bd9de	ca-30x30	q2	minimax/minimax-m3	ok	1.0
+cbf09933-6bc8-4833-84cd-e9c0cb389e7d	wetlands-v2	?	minimax/minimax-m3	ok	0.0
+0bb7fbfc-8711-4c6e-9245-68556d2bbd9e	biodiversity	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+4c162d0e-f28a-4c1a-8a29-299867a10e69	global-30x30	q2	moonshotai/kimi-k2.7-code	ok	0.5
+84cf0bc4-e885-43c8-bdd8-63d4f4b02f5d	tpl	q4	minimax/minimax-m3	ok	1.0
+d4135da3-910a-4958-9976-ac41a05a78b0	tpl-ca	q3	z-ai/glm-5.2	ok	1.0
+dbc118f6-55df-43d9-a9f8-946404cf32c6	global-30x30	q4	moonshotai/kimi-k2.7-code	ok	1.0
+d7aaac7d-31cb-4bc2-9d1d-b92e29fd1a78	tpl-ca	q5	minimax/minimax-m3	ok	1.0
+5a35e36e-4268-4113-bdd7-6d5fc41349fd	global-30x30	q3	z-ai/glm-5.2	ok	1.0
+adbbfb0f-37a3-4fd2-8771-0b1efc7d1ef1	global-30x30	q3	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+d13c4fa3-d7e5-47a8-9771-8d0f65483062	tpl	q2	minimax/minimax-m3	budget_capped	
+097c9f85-b8ae-4b67-ab11-5a1e6558979e	tpl-ca	q4	z-ai/glm-5.2	budget_capped	
+b4b5cb2c-04ca-4d48-a831-f6d9f3d5c273	global-30x30	q2	z-ai/glm-5.2	budget_capped	
+2a88b488-a022-48ff-a650-2768fe2ef192	tpl-ca	q1	moonshotai/kimi-k2.7-code	budget_capped	
+1482beb6-976d-46a7-adfb-16434bd50d7d	tpl-ca	q2	minimax/minimax-m3	budget_capped	
+28fa7d12-daa0-4df8-852c-2ed6afef1320	tpl	q1	z-ai/glm-5.2	ok	1.0
+b7da2668-9280-4c58-a2b7-652f491cff5c	tpl-ca	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+10d55e75-d6a0-489c-8195-e55d7c80e437	global-30x30	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+4a7f8a52-5e2c-41d5-af99-b1354e66c3e2	ca-30x30	q1	z-ai/glm-5.2	ok	1.0
+d2c1822b-88b4-4cfe-9507-790b0d3948ea	ca-30x30	q2	z-ai/glm-5.2	ok	1.0
+c4eaee11-a704-4a86-938d-43abdf4078cb	tpl	q1	z-ai/glm-5.2	ok	1.0
+11b32c81-3df9-43e3-a151-70d071665e83	wetlands-v2	?	z-ai/glm-5.2	ok	1.0
+7169b499-83b2-4a47-b8ad-5db8f3fa9498	bosl-high-seas	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+55a5e87f-b84f-40a9-8023-046f601cb04b	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	ok	0.5
+8abeb7fb-0fd3-4cb5-8dc0-e79f62ab73f6	global-30x30	q1	z-ai/glm-5.2	budget_capped	
+36902e2f-7c1a-4de2-807d-9b73f733a730	wetlands-v2	?	z-ai/glm-5.2	ok	0.5
+c17ee553-2c2c-4783-8a6f-22a6ac84949e	tpl-ca	q5	moonshotai/kimi-k2.7-code	budget_capped	
+024cf6d9-89f9-4b3b-9d6e-e71c8618aa3a	tpl	q3	z-ai/glm-5.2	budget_capped	
+01bb358f-c1f2-4392-baa6-8450b29afd57	wetlands-v2	?	minimax/minimax-m3	budget_capped	
+5bfbc393-c8c6-432d-8bb3-ec720e2c1860	wetlands-v2	?	z-ai/glm-5.2	budget_capped	
+17aec60b-cb6f-43fd-ae08-0a61a602f037	wetlands-v2	?	moonshotai/kimi-k2.7-code	ok	0.0
+5938ff15-029d-48d2-b4e1-8fb80c36a242	bosl-high-seas	q1	moonshotai/kimi-k2.7-code	ok	0.5
+4a2eae29-542c-4a55-aba6-98e7d1be6af0	tpl-ca	q3	z-ai/glm-5.2	ok	1.0
+511bb3ed-aa60-45f1-9c59-97ca2aeff629	wetlands-v2	?	moonshotai/kimi-k2.7-code	ok	1.0
+d3e6f877-6741-4d7c-b51f-711866b3e4f5	tpl-ca	q3	minimax/minimax-m3	ok	0.5
+dc43f89d-ba78-4aca-9e53-aa9b2e9dc9d2	tpl-ca	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+6342eef7-3394-45e9-94d8-f1fe4a973d69	tpl-ca	q1	moonshotai/kimi-k2.7-code	ok	1.0
+8d857393-d66a-4a11-ab5e-c049d0bc214e	tpl	q4	moonshotai/kimi-k2.7-code	ok	1.0
+d502d48f-d3dc-4da3-82e5-35f5d65d83d9	global-30x30	q2	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+0eedf09a-7a97-4ed7-a1fb-f37e301904df	tpl-ca	q3	z-ai/glm-5.2	budget_capped	
+17a0e4f9-9134-445b-a178-8e37d5ba6148	tpl	q3	minimax/minimax-m3	budget_capped	
+4dd5e598-3c75-460b-9155-0d0e087c9351	global-30x30	q2	minimax/minimax-m3	budget_capped	
+b14fc8d4-38df-49c0-934f-90886b8dea01	bosl-high-seas	q1	minimax/minimax-m3	ok	0.0
+3d4c512c-116d-4872-b702-ed23b4710f1a	bosl-high-seas	q2	z-ai/glm-5.2	ok	1.0
+2804b4b8-6ce5-4894-a42e-cc261942d2ac	tpl-ca	q3	nvidia/nemotron-3-ultra-550b-a55b	ok	0.0
+44742d87-29ed-4063-a7b1-728ee4bde955	tpl	q3	minimax/minimax-m3	ok	0.5
+f4e29dfe-586a-4260-a82c-6bc70c2668e2	bosl-high-seas	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+c9e0e5d1-7d8f-4c1c-992d-2bb7d258b4d2	tpl	q2	minimax/minimax-m3	ok	0.0
+35a49a2d-163e-4fc8-afef-036a53ea0e9d	wetlands-v2	?	z-ai/glm-5.2	ok	1.0
+32247ed9-bf88-4615-a7f5-76d7d7297cea	bosl-high-seas	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+c1be6a18-3977-4559-b473-73505bba1985	tpl-ca	q5	moonshotai/kimi-k2.7-code	ok	1.0
+618d4d47-c54b-4451-92f2-cc3116877237	tpl-ca	q3	moonshotai/kimi-k2.7-code	ok	1.0
+6d4774b5-30fd-4547-951a-f1a45996c8fa	wetlands-v2	?	moonshotai/kimi-k2.7-code	budget_capped	
+737d5389-f891-468a-aa70-5901e99ded6f	global-30x30	q3	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+23a3f6ae-135a-453f-941a-639b71c5cb03	tpl-ca	q1	minimax/minimax-m3	ok	1.0
+1fa34d0f-0e83-4ae1-be5e-b7186ecd9a37	global-30x30	q4	minimax/minimax-m3	budget_capped	
+9d6a0f49-a437-47c1-83b7-16ce193a4249	tpl	q1	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+1f12ca66-b909-4ada-ae66-dc5d61527007	tpl-ca	q2	z-ai/glm-5.2	budget_capped	
+895704e5-8dee-4db1-8192-4f59bfeb052d	bosl-high-seas	q1	z-ai/glm-5.2	ok	0.0
+bf3d1532-0fda-472f-b3b6-43508c356d2c	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+17c2f4b7-14a2-4255-892e-acb295f80671	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+c6cd57d8-3ed6-4a2b-a569-c75c88da4bf3	bosl-high-seas	q2	moonshotai/kimi-k2.7-code	ok	1.0
+0f889000-fc17-4303-afe4-bbca6254b084	biodiversity	q2	minimax/minimax-m3	ok	1.0
+2ae74b3c-d69e-4ce4-ab1a-330665395016	tpl-ca	q4	minimax/minimax-m3	ok	1.0
+8e2f692b-080c-46e9-9d12-808865369260	tpl	q4	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+f914c626-096d-4a80-a1c3-4437d01c109e	bosl-high-seas	q1	minimax/minimax-m3	ok	0.5
+3f65ce4b-ac14-4c1e-99dc-7ebbc2f627f2	bosl-high-seas	q1	minimax/minimax-m3	ok	1.0
+bc7e1bb7-7c1e-4e24-a294-eeb5f2f04d09	wetlands-v2	?	minimax/minimax-m3	ok	0.0
+be09a4a5-66b0-434b-92b2-a06fa9ffa55e	tpl	q4	z-ai/glm-5.2	ok	1.0
+984c911b-adca-4188-b5f3-d3a09a034bf5	wetlands-v2	?	moonshotai/kimi-k2.7-code	ok	0.0
+7a6349f7-a0ee-4126-b9d1-4a45c8314e77	tpl-ca	q5	z-ai/glm-5.2	ok	1.0
+155b0a1b-8488-4c61-bc70-de5e825f91ac	tpl-ca	q1	z-ai/glm-5.2	ok	1.0
+47821222-d47a-4375-84be-ec77cb06342b	tpl	q3	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+742e7c13-8bea-4e3d-9ae2-1c8315a23cce	bosl-high-seas	q2	minimax/minimax-m3	ok	1.0
+1657f436-06e0-4d9e-980a-c0605b432b25	global-30x30	q4	minimax/minimax-m3	budget_capped	
+b27817c0-7f7b-4709-8720-05c610de7021	biodiversity	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+021328f2-eaf7-4336-ab64-67141daab1a1	biodiversity	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+3567f62f-e1fa-42e8-b840-0402009ed96c	tpl-ca	q2	minimax/minimax-m3	ok	0.5
+6c1cec2e-f55d-4214-9c04-cbf2ab90aa51	ca-30x30	q2	moonshotai/kimi-k2.7-code	ok	1.0
+cf1ec67a-9cca-4eea-ae40-d50a892b9b2a	ca-30x30	q2	moonshotai/kimi-k2.7-code	ok	1.0
+31b36e57-4663-414d-9492-053254d979fd	tpl	q2	moonshotai/kimi-k2.7-code	ok	1.0
+8d5f5ea8-5f5d-4bde-b979-473caf4db8ab	tpl-ca	q5	z-ai/glm-5.2	ok	1.0
+97ae5e95-a174-4cc5-9448-1407cbc27d18	tpl	q4	z-ai/glm-5.2	ok	1.0
+65f6f66e-a6c4-42ac-b13a-7db4df44d7fb	tpl-ca	q5	minimax/minimax-m3	ok	1.0
+5f57e1f6-be50-4912-a59e-c8e563ab7d66	tpl	q4	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+2c0d8141-34e4-4500-9e04-16fbeb176363	tpl-ca	q4	moonshotai/kimi-k2.7-code	ok	1.0
+ef12057d-5504-4fea-be8e-8502ce297106	tpl-ca	q3	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+bdb6c7bf-ae7f-42a0-a406-f35b6cf50eab	global-30x30	q2	moonshotai/kimi-k2.7-code	budget_capped	
+96574311-7b01-4a4e-9ecf-db7e7d353e0d	tpl-ca	q3	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+f23ccd0e-d037-4057-b000-23bb654d3655	global-30x30	q4	z-ai/glm-5.2	ok	0.5
+32677d6a-b457-41ba-8f84-88a83102bdd6	wetlands-v2	?	moonshotai/kimi-k2.7-code	budget_capped	
+abe16d12-50be-4c32-99c8-067db6ff99b5	tpl	q2	z-ai/glm-5.2	budget_capped	
+879c22be-4569-40d8-9950-4196312b04b5	tpl	q2	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+5a355f25-c9de-4101-acb6-5a8a8dd79eb0	tpl	q4	minimax/minimax-m3	budget_capped	
+355f3d56-3423-4674-bdb5-485e2c2baebd	tpl	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+ee5e9f2d-4d3a-401b-9682-246834a1b8ae	global-30x30	q1	z-ai/glm-5.2	ok	1.0
+441a69e1-a819-4456-a7cc-57251172b43b	ca-30x30	q1	z-ai/glm-5.2	ok	1.0
+e475412b-ac75-4ca0-a1fe-3808226baffc	tpl	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+18eaba67-0a4d-4bc3-8b4c-0f7d4b56b48e	ca-30x30	q2	z-ai/glm-5.2	ok	1.0
+93cae0b6-e167-4445-a073-145962decfe1	ca-30x30	q2	minimax/minimax-m3	ok	1.0
+9c9923d1-3741-409e-be9e-e11203567f9e	tpl	q3	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+4e3adf08-34fa-4d74-a19b-a32c849929d3	biodiversity	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+70dabec7-531b-4d22-876c-800b7a44e7e1	tpl-ca	q2	z-ai/glm-5.2	ok	0.0
+4365cc46-2451-4d62-952b-66a5edaa1429	tpl-ca	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	0.5
+8a0efab7-735b-4ce2-afb4-fdf205d29406	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+584dcd39-29e9-48f5-97ee-681c2356944e	tpl	q1	z-ai/glm-5.2	ok	1.0
+da26c113-2998-461a-a37a-1fddc19653ab	global-30x30	q4	moonshotai/kimi-k2.7-code	budget_capped	
+3c70e970-5a28-4022-a62d-4b068b5fa165	wetlands-v2	?	minimax/minimax-m3	ok	0.0
+d9c62ee0-99c8-43a5-bfe6-ead10f75f105	wetlands-v2	?	minimax/minimax-m3	budget_capped	
+6e89f393-eed9-4aed-b0ce-426eca0f1469	tpl	q2	moonshotai/kimi-k2.7-code	budget_capped	
+f9db8b15-57bb-42ff-9cfe-8aa23238439b	tpl	q4	z-ai/glm-5.2	budget_capped	
+b6febed2-2b6d-4bee-aa36-eded305ea0a0	global-30x30	q1	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+7891dc0e-1fbc-4fea-8e41-a0d96eaa94fb	global-30x30	q3	moonshotai/kimi-k2.7-code	budget_capped	
+13101b7e-fa64-4161-a80c-385405e7cda3	ca-30x30	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+0f18db17-953a-43d4-9c86-1c3ea70722cb	tpl-ca	q2	moonshotai/kimi-k2.7-code	ok	1.0
+ec2de6b9-c4c2-452e-97e9-dbd7f60438a8	global-30x30	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+a43dcd08-bef3-467e-9517-89d03e5f3200	tpl-ca	q4	moonshotai/kimi-k2.7-code	ok	1.0
+78b38ae0-4b63-423a-acc5-bf83490c3dc3	tpl-ca	q5	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+7685462b-4ef9-48f7-8541-317c12e0a2e5	global-30x30	q3	minimax/minimax-m3	ok	0.5
+09827dcc-ee2f-499d-bb0d-f2e57717eb1b	tpl	q4	minimax/minimax-m3	ok	1.0
+74eb7bd0-3049-468c-b5d0-1206ff22d3bb	tpl	q3	moonshotai/kimi-k2.7-code	budget_capped	
+5a780346-b3e6-459f-ab87-3738a0ee936e	tpl-ca	q3	minimax/minimax-m3	budget_capped	
+b8b32b37-1dc1-4160-b795-12c467208149	global-30x30	q1	moonshotai/kimi-k2.7-code	budget_capped	
+3f906d4b-6928-459f-8b7d-8cfffee92184	wetlands-v2	?	minimax/minimax-m3	budget_capped	
+1c32edf0-fff5-4fa8-b882-a6d2c89e389b	global-30x30	q1	moonshotai/kimi-k2.7-code	budget_capped	
+fa86efd4-2838-4581-9758-6fa9cba2192f	biodiversity	q1	moonshotai/kimi-k2.7-code	ok	1.0
+4134c58e-af7b-4bfb-9b23-16f213276766	tpl-ca	q2	minimax/minimax-m3	ok	0.5
+d116666e-5b17-4c35-b1a9-4798971683a7	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+b54d736f-6183-4b38-b447-4b1f31df79db	global-30x30	q3	z-ai/glm-5.2	budget_capped	
+21f662ce-6aa8-421c-ae3b-74046a108f85	tpl-ca	q1	z-ai/glm-5.2	budget_capped	
+1fa84fd7-785d-430b-b8e9-0d0e1403bfad	tpl-ca	q4	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+8979d3d8-4fc2-45f3-bb36-e406e46d137f	global-30x30	q1	minimax/minimax-m3	budget_capped	
+6b4448c0-8056-42e3-8293-86260c3210be	global-30x30	q1	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+ccaae87e-42c4-4f1c-b9ab-e9b356980a47	ca-30x30	q2	z-ai/glm-5.2	ok	1.0
+a87a3cef-a5b4-4427-af50-6a1a277ba3eb	ca-30x30	q2	minimax/minimax-m3	ok	1.0
+98802450-bfa8-48a7-9ac5-e5846e7455ef	biodiversity	q2	minimax/minimax-m3	ok	1.0
+8bb021a4-6ed9-464c-ad28-48f790cced29	tpl-ca	q4	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+55f431d5-b7f8-47a2-b449-ea720c7f4a98	wetlands-v2	?	minimax/minimax-m3	ok	0.0
+f40ff678-c312-44f4-a045-74670f061651	tpl	q4	moonshotai/kimi-k2.7-code	ok	1.0
+a52e2c1c-8c19-4cfb-82ec-83ce2ffc4263	biodiversity	q2	z-ai/glm-5.2	ok	1.0
+01d5be0d-f9bc-4556-9bbd-c93a67c119b1	bosl-high-seas	q1	moonshotai/kimi-k2.7-code	ok	1.0
+71b8bfdd-02ab-426d-92dc-add6dc258225	bosl-high-seas	q2	minimax/minimax-m3	ok	1.0
+ee7fbc9c-1e71-4900-a6f0-0f9daee15653	tpl-ca	q4	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+be169e66-693b-4362-8710-7f46b3669a81	global-30x30	q2	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+874b9877-b24b-4227-af89-0222ef80debd	biodiversity	q1	moonshotai/kimi-k2.7-code	ok	1.0
+233f8638-e74a-4c88-8e36-e3ea332135ce	ca-30x30	q1	z-ai/glm-5.2	ok	1.0
+550e2b04-c41b-446a-9107-fe57e228c089	global-30x30	q2	z-ai/glm-5.2	ok	1.0
+52ebfc04-6b42-4c8a-a168-ab68faf0e663	tpl	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+941927d5-314e-4be4-975e-9c2ddad5c24d	tpl	q2	minimax/minimax-m3	ok	1.0
+34ab1268-b1fc-49c1-a663-6d298e5ed000	tpl	q1	moonshotai/kimi-k2.7-code	ok	1.0
+b513b4b5-e004-48a8-9c64-8fe32aae3d51	wetlands-v2	?	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+4e90a84f-5946-4dc6-841e-6770e8a13674	tpl-ca	q3	minimax/minimax-m3	ok	1.0
+c5faf022-fe2b-4ea7-bfd8-f2e5dcc4c05d	global-30x30	q4	z-ai/glm-5.2	budget_capped	
+a659cfac-1937-4e85-ae47-1094b4f4f9f5	tpl-ca	q2	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+7b0a894d-8e0b-462a-8a2c-5ca0b6404328	bosl-high-seas	q2	moonshotai/kimi-k2.7-code	ok	1.0
+5b650f9b-1f20-4785-826b-e3d4889a47c7	global-30x30	q2	minimax/minimax-m3	budget_capped	
+e10bb080-7fde-4eda-b6a4-43521e10b1f6	biodiversity	q1	z-ai/glm-5.2	ok	1.0
+9d6889c9-12a9-4115-8589-44a509c587b0	tpl-ca	q1	z-ai/glm-5.2	ok	1.0
+2eab1858-5ee0-4aa8-9999-32d3ac1ae80d	ca-30x30	q1	minimax/minimax-m3	ok	1.0
+92d360f9-1f1d-4ce3-b7a6-4259cc885430	ca-30x30	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+01b775bb-b1f5-414a-a21c-b4ff12f9b320	biodiversity	q1	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+e49fca74-3273-4671-8199-adec4a534c1b	biodiversity	q1	minimax/minimax-m3	ok	1.0
+81de86f7-e0d5-48a5-b2f3-2e2193665522	ca-30x30	q2	nvidia/nemotron-3-ultra-550b-a55b	ok	1.0
+89a257c2-6e6b-46d7-a483-c0898baf027b	global-30x30	q2	minimax/minimax-m3	ok	1.0
+497a4c7c-6397-4444-bbbf-3b93a01a5f2b	bosl-high-seas	q1	z-ai/glm-5.2	ok	0.5
+37ed8fb5-e1ef-4f91-9b70-4ee93a19fc6c	tpl	q4	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+a0a24dfb-709b-45cb-a6ea-40226146ca2b	biodiversity	q1	z-ai/glm-5.2	ok	1.0
+ed4862e4-a2eb-4297-8c99-45ad2d92b20c	tpl-ca	q1	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
+a25e6537-9f6e-4d40-82c1-51f2d012212b	wetlands-v2	?	z-ai/glm-5.2	budget_capped	
+d1892362-3c35-4413-b43b-e84a9a904e19	tpl-ca	q5	moonshotai/kimi-k2.7-code	budget_capped	
+883d3a9f-5b4d-47b6-ae87-8396b829ad79	tpl-ca	q5	z-ai/glm-5.2	budget_capped	
+94f63992-835a-427b-999b-950bfa2d4753	global-30x30	q3	minimax/minimax-m3	budget_capped	
+5524e5a4-2499-4cd9-a38a-9bebf0196eed	global-30x30	q4	nvidia/nemotron-3-ultra-550b-a55b	budget_capped	
