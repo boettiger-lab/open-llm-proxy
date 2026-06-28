@@ -1,0 +1,12 @@
+# mode=clarify — the GOLD response is to identify the ambiguity and ask a focused
+# clarifying question, NOT to silently pick an interpretation and answer.
+# These are the original ambiguous phrasings of questions whose precise variants
+# live in the per-app files. They test "ask, don't guess" and currently fail for
+# most models (they answer anyway) — a forward-looking gate tied to a guidance change.
+#
+# app=bosl-high-seas
+How much and what type of industrial fishing would be displaced by designating all EBSAs in the high seas as MPAs, closed to fishing?
+# app=tpl-ca
+Which congressional district has raised the most conservation funding through ballot measures since 2010?
+# app=wetlands
+Rank the top 10 level-3 hydrobasins by wetland extent, carbon, and NCP, normalized.
