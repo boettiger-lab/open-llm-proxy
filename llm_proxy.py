@@ -64,6 +64,30 @@ _USER_QUESTION_MAX = _int_env("LOG_USER_QUESTION_MAX", 4000)
 # stdout is the sole sink). See LOGGING.md.
 _STDOUT_MAX_FIELD = _int_env("LOG_STDOUT_MAX_FIELD", 200)
 
+# Allow-list of upstream response headers to capture on the error path (#44).
+# These let us distinguish a genuine rate-limit (429 + retry-after/x-ratelimit-*)
+# from a dead-backend gateway failure (naked 500, content-length: 0, no
+# server/x-request-id) — a distinction otherwise only catchable live with
+# `curl -i`. Kept an explicit allow-list (not the full header bag) so nothing
+# sensitive is logged; values still pass through the scrubber for defense in
+# depth. Lower-cased for case-insensitive lookup against httpx.Headers.
+_UPSTREAM_HEADER_ALLOWLIST = (
+    "retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+    "x-request-id", "server", "date", "content-length",
+)
+
+def _capture_upstream_headers(headers) -> dict:
+    """Pull the allow-listed subset of an upstream response's headers, scrubbed.
+    Returns None when none are present so the field is omitted from the log."""
+    if not headers:
+        return None
+    captured = {
+        name: _scrub_text(headers[name])
+        for name in _UPSTREAM_HEADER_ALLOWLIST
+        if name in headers
+    }
+    return captured or None
+
 def _cap(s: Optional[str], limit: int) -> str:
     """Truncate `s` to `limit` chars; limit <= 0 means no truncation."""
     s = s or ""
@@ -354,7 +378,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _emit(log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -370,6 +394,10 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
     
     if error:
         log_entry["error"] = error
+        # Allow-listed upstream response headers (#44) — present only on the
+        # HTTPStatusError path, where the upstream actually returned a response.
+        if upstream_headers:
+            log_entry["upstream_headers"] = upstream_headers
     else:
         # Extract response details
         if "choices" in response_data and len(response_data["choices"]) > 0:
@@ -538,7 +566,11 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except httpx.HTTPStatusError as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Provider returned {e.response.status_code}: {e.response.text[:1000]}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
+            # Capture allow-listed upstream headers so the rate-limit (429 +
+            # retry-after/x-ratelimit-*) vs dead-backend (naked 500, no
+            # server/x-request-id) distinction is queryable from logs (#44).
+            upstream_headers = _capture_upstream_headers(e.response.headers)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, upstream_headers=upstream_headers)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
