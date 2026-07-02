@@ -193,3 +193,22 @@ and `native_tokens_cached` per call, and runs one question reasoning-ON vs -OFF.
 Confirms the Prometheus finding independently (57–97% of glm-5.2 wall time is
 decode) and shows reasoning is **36–106%** of output tokens — i.e. the dominant
 latency component is mostly thinking. See geo-agent#282.
+
+### Reasoning ON/OFF runs (`ENABLE_THINKING`)
+
+Since decode (mostly reasoning) dominates latency, the payoff question is: how
+much does reasoning actually *help accuracy*, per model? To A/B it against the
+baseline, set `ENABLE_THINKING` on any `run.js` invocation — the fetch wrapper
+injects the proxy's top-level `enable_thinking` flag, which the proxy translates
+per-model (only `qwen3` / `glm-5` / `kimi` have a `thinking_key` in
+`config.json`; others silently ignore it):
+
+```bash
+ENABLE_THINKING=false node run.js "…" --model qwen3 --config … --system-prompt …   # reasoning off
+ENABLE_THINKING=true  node run.js "…" --model qwen3 …                              # reasoning on
+# unset → model default
+```
+
+Pair each mode with gold grading (`baseline/`) for an accuracy-vs-latency table.
+Pilot (qwen3, bosl seamounts Q, geo-agent#283): both modes answered correctly
+(141), reasoning-off cut LLM time ~2× (198s→98s). See geo-agent#283.
