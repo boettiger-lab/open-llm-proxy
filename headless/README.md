@@ -139,3 +139,57 @@ FROM read_parquet('/tmp/open-llm-proxy-logs/consolidated/**/*.parquet')
 WHERE origin = 'https://tpl.nrp-nautilus.io/agent_runner'
 ORDER BY ts;
 ```
+
+## Prefill vs. decode split from Prometheus (`prom_prefill_decode.py`)
+
+vLLM exports per-`model_name` histograms for prefill and decode time, plus
+prefix-cache counters, to `prometheus.nrp-nautilus.io`. That means the
+prefill-vs-decode **time** split is answerable straight from **production
+traffic** — no `PROXY_KEY`, no runs. `prom_prefill_decode.py` pulls the summed
+prefill/decode seconds, prompt/generation tokens, and cache hits per model over
+a window and derives the split:
+
+```bash
+python3 prom_prefill_decode.py 7d     # window; defaults to 24h
+```
+
+Columns: avg prefill/decode seconds per request, `decode ÷ prefill`,
+aggregate prefill and decode tok/s, their ratio (`rate_x` — the prefill-is-much-
+faster-than-decode factor), decode's share of LLM compute time, and prefix-cache
+hit rate. Uses only the Python stdlib (no deps).
+
+Key finding (geo-agent#282): despite prompt tokens outnumbering completion
+~43:1, **72–98% of LLM compute *time* is decode** fleet-wide, because prefill
+runs 20–500× faster per token. The workload is decode-latency-bound, not
+prefill-bound — so prefix-caching wins on *cost*, while *latency* levers are
+fewer round-trips, smaller outputs, and disabling unnecessary reasoning.
+
+Metrics used: `vllm:request_{prefill,decode}_time_seconds_{sum,count}`,
+`vllm:{prompt,generation}_tokens_total`, `vllm:prefix_cache_{hits,queries}_total`.
+Models on a non-vLLM stack (e.g. nemotron on the gb10) won't appear.
+
+### Per-call split for OpenRouter models (`bench_openrouter_split.py`)
+
+Prometheus only covers our own serving stack and reports aggregates. For an
+OpenRouter-hosted model, `bench_openrouter_split.py` gets a **clean per-call**
+split from OpenRouter's `/api/v1/generation` stats — and, unlike vLLM
+Prometheus, breaks out **reasoning tokens** (the largest decode component, and
+the #283 lever):
+
+```bash
+OPENROUTER_KEY=... python3 bench_openrouter_split.py z-ai/glm-5.2
+```
+
+It sends the real geo-agent system prompt + a few analytical questions, reads
+`latency` (prefill/TTFT), `generation_time` (decode), `native_tokens_reasoning`,
+and `native_tokens_cached` per call, and runs one question reasoning-ON vs -OFF.
+
+- **Costs money** (hits OpenRouter). Keep the question list short.
+- `OPENROUTER_KEY` on-cluster = the `openrouter-key` secret. `SYS_PROMPT` overrides
+  the prompt path (defaults to the sibling `../../geo-agent/app/system-prompt.md`).
+- The generic `reasoning:{enabled:false}` flag is **provider-dependent** — it did
+  not reliably disable reasoning on glm-5.2. Verify per model.
+
+Confirms the Prometheus finding independently (57–97% of glm-5.2 wall time is
+decode) and shows reasoning is **36–106%** of output tokens — i.e. the dominant
+latency component is mostly thinking. See geo-agent#282.
