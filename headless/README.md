@@ -167,3 +167,29 @@ fewer round-trips, smaller outputs, and disabling unnecessary reasoning.
 Metrics used: `vllm:request_{prefill,decode}_time_seconds_{sum,count}`,
 `vllm:{prompt,generation}_tokens_total`, `vllm:prefix_cache_{hits,queries}_total`.
 Models on a non-vLLM stack (e.g. nemotron on the gb10) won't appear.
+
+### Per-call split for OpenRouter models (`bench_openrouter_split.py`)
+
+Prometheus only covers our own serving stack and reports aggregates. For an
+OpenRouter-hosted model, `bench_openrouter_split.py` gets a **clean per-call**
+split from OpenRouter's `/api/v1/generation` stats — and, unlike vLLM
+Prometheus, breaks out **reasoning tokens** (the largest decode component, and
+the #283 lever):
+
+```bash
+OPENROUTER_KEY=... python3 bench_openrouter_split.py z-ai/glm-5.2
+```
+
+It sends the real geo-agent system prompt + a few analytical questions, reads
+`latency` (prefill/TTFT), `generation_time` (decode), `native_tokens_reasoning`,
+and `native_tokens_cached` per call, and runs one question reasoning-ON vs -OFF.
+
+- **Costs money** (hits OpenRouter). Keep the question list short.
+- `OPENROUTER_KEY` on-cluster = the `openrouter-key` secret. `SYS_PROMPT` overrides
+  the prompt path (defaults to the sibling `../../geo-agent/app/system-prompt.md`).
+- The generic `reasoning:{enabled:false}` flag is **provider-dependent** — it did
+  not reliably disable reasoning on glm-5.2. Verify per model.
+
+Confirms the Prometheus finding independently (57–97% of glm-5.2 wall time is
+decode) and shows reasoning is **36–106%** of output tokens — i.e. the dominant
+latency component is mostly thinking. See geo-agent#282.
