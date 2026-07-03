@@ -64,6 +64,13 @@ fi
 MODELS="${MODELS:-}"
 TRIALS="${TRIALS:-2}"
 MAX_TURNS="${MAX_TURNS:-20}"
+# Reasoning on/off (open-llm-proxy#58). "true"/"false" → the proxy injects the
+# per-model enable_thinking chat_template_kwargs (qwen3/glm-5/kimi wired). Default
+# "true" is behavior-preserving: reasoning-on is already the default for those
+# models, and models without a thinking_key ignore it. Never leave empty — run.js
+# treats a set-but-empty value as an explicit (false) override.
+ENABLE_THINKING="${ENABLE_THINKING:-true}"
+case "$ENABLE_THINKING" in true|false) ;; *) echo "ERROR: ENABLE_THINKING must be 'true' or 'false' (got: '$ENABLE_THINKING')" >&2; exit 2;; esac
 APP_BRANCH="${APP_BRANCH:-main}"
 GEO_AGENT_BRANCH="${GEO_AGENT_BRANCH:-main}"
 NAMESPACE="${NAMESPACE:-biodiversity}"
@@ -84,12 +91,12 @@ if [ -n "${SYSTEM_PROMPT_APPEND_FILE:-}" ]; then
 fi
 
 export APP_REPO APP_BRANCH GEO_AGENT_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
-    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64
+    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 ENABLE_THINKING
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64}' \
+envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING}' \
     < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF

@@ -51,6 +51,8 @@ spec:
               value: "${MAX_TURNS}"
             - name: MODELS
               value: "${MODELS}"
+            - name: ENABLE_THINKING
+              value: "${ENABLE_THINKING}"
             - name: QUESTIONS_B64
               value: "${QUESTIONS_B64}"
             - name: SYSTEM_PROMPT_APPEND_B64
