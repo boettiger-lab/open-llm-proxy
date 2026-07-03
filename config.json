@@ -15,7 +15,9 @@
             "thinking_models": {
                 "kimi":   "thinking",
                 "qwen3":  "enable_thinking",
-                "glm-5": "enable_thinking"
+                "glm-5": "enable_thinking",
+                "gemma": "enable_thinking",
+                "gemma-small-e4b": "enable_thinking"
             }
         },
         "openrouter": {

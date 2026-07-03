@@ -8,6 +8,16 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Fixed
+- **gemma/gemma-small-e4b `enable_thinking` was silently ignored (#57).** These
+  NRP models support disabling reasoning via `chat_template_kwargs={"enable_thinking":
+  false}`, but they were absent from `config.json`'s `nrp.thinking_models`, so
+  `proxy_chat` found no `thinking_key` and dropped the client's top-level
+  `enable_thinking` flag (logging `no thinking_key configured — ignoring`) — the
+  toggle appeared to work client-side but had no effect. Added `gemma` and
+  `gemma-small-e4b` with the `enable_thinking` key. Unblocks including gemma in the
+  reasoning ON/OFF assessment (#58).
+
 ### Added
 - **Capture upstream response headers on the error path (#44).** On
   `httpx.HTTPStatusError`, `proxy_chat` logged only the status code and (often
