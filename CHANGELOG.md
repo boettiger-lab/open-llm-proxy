@@ -8,6 +8,18 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **`ENABLE_THINKING` passthrough in the k8s matrix runner (#58).**
+  `run-matrix-k8s.sh` now forwards an `ENABLE_THINKING` env (added to the export
+  set, the `envsubst` allowlist, and the pod env in `matrix-job.yaml`), so a
+  matrix sweep can pin reasoning on or off per pass. `run.js` (#56) turns it into
+  the top-level `enable_thinking` flag, which the proxy maps to each model's
+  `chat_template_kwargs` (qwen3/glm-5/kimi wired; gemma added in #57). Default
+  `true` is behavior-preserving (reasoning-on is already the default; models
+  without a `thinking_key` ignore it); the value is validated to `true`/`false`
+  and never left empty (an empty-but-set value would read as an explicit `false`).
+  Enables the two-pass reasoning ON/OFF assessment against the gold baseline (#58).
+
 ### Fixed
 - **gemma/gemma-small-e4b `enable_thinking` was silently ignored (#57).** These
   NRP models support disabling reasoning via `chat_template_kwargs={"enable_thinking":
