@@ -86,6 +86,18 @@ function installFetchWrapper(proxyEndpoint, origin, onProxyFetch, perFetchTimeou
             headers.set('Origin', origin);
             init = { ...init, headers };
         }
+        // Reasoning on/off assessment (geo-agent#282/#283): inject the proxy's
+        // top-level `enable_thinking` flag when ENABLE_THINKING is set, so a run
+        // can be driven reasoning-ON vs -OFF without touching the agent. The
+        // proxy translates it per-model (qwen3/glm-5/kimi have a thinking_key).
+        // Unset → omit the field → model default. Only applied to proxy calls.
+        if (isProxy && process.env.ENABLE_THINKING !== undefined && init.body) {
+            try {
+                const b = JSON.parse(init.body);
+                b.enable_thinking = process.env.ENABLE_THINKING === 'true';
+                init = { ...init, body: JSON.stringify(b) };
+            } catch { /* non-JSON body; leave as-is */ }
+        }
         if (!isProxy) return originalFetch(input, init);
         const t0 = Date.now();
         try {
