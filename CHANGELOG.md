@@ -8,6 +8,17 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Changed
+- **Nimbus (DSE) model renamed `nemotron` → `qwen`.** The `vllm-nimbus.carlboettiger.info`
+  endpoint now serves `nvidia/Qwen3.6-35B-A3B-NVFP4` under the id `qwen` (was
+  `nemotron`). Updated `config.json`'s `nimbus.models` to `["qwen"]` so the proxy
+  (exact-match-then-prefix routing) forwards `model: "qwen"` to the nimbus endpoint;
+  requests for `nemotron` no longer route anywhere. Requires a pod restart to take
+  effect (config is git-synced at pod start).
+- **Re-vendored `headless/mcp-client.js`** to match geo-agent upstream (#275 connect()
+  race that could register zero MCP tools + reconnect-budget reset). `npm run
+  check-drift` is clean again.
+
 ### Added
 - **`ENABLE_THINKING` passthrough in the k8s matrix runner (#58).**
   `run-matrix-k8s.sh` now forwards an `ENABLE_THINKING` env (added to the export
