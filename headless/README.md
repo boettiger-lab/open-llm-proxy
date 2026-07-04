@@ -75,8 +75,26 @@ matrix testing — use the k8s Job above.**
 ### Requirements
 
 - Node 22+ (24 LTS recommended; the cluster Job uses 24)
-- `boettiger-lab/geo-agent` cloned as a sibling (`../../geo-agent/`)
+- `boettiger-lab/geo-agent` available — the `../../geo-agent/` sibling by default,
+  or point `GEO_AGENT_DIR` at any checkout (see below)
 - A valid proxy key, via `PROXY_KEY` env var or `--api-key`
+
+### Isolating from the shared geo-agent checkout (`GEO_AGENT_DIR`)
+
+`run.js` imports the geo-agent framework from `GEO_AGENT_DIR` (default: the
+`../../geo-agent` sibling). If that sibling is a shared dev checkout other agents
+are editing on branches, pin your run to its own always-fresh-from-`main` copy:
+
+```bash
+export GEO_AGENT_DIR="$(./fresh-geoagent.sh)"   # clones/updates geo-agent@main in a cache dir
+node run.js "…" --config … --system-prompt … --model qwen
+```
+
+`fresh-geoagent.sh` is idempotent (clone once, then fetch + hard-reset to
+`origin/main`), keeps the clone outside the repo tree (`~/.cache/olp-headless/`,
+override with `GEO_AGENT_CACHE`), and warns if the vendored `mcp-client.js` has
+drifted from `main`. Only geo-agent's `app/*.js` come from `GEO_AGENT_DIR`;
+`mcp-client.js` stays vendored here for bare-specifier resolution.
 
 ### Install
 
