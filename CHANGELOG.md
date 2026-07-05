@@ -51,6 +51,18 @@ See [Releases](README.md#releases) for how a release is cut.
   Enables the two-pass reasoning ON/OFF assessment against the gold baseline (#58).
 
 ### Fixed
+- **nimbus `qwen` ignored `enable_thinking`; its reasoning trace wasn't logged (#66).**
+  Two fixes for the direct nimbus vLLM endpoint (`nvidia/Qwen3.6-35B-A3B-NVFP4`):
+  (1) added `nimbus.thinking_models = {"qwen": "enable_thinking"}` to `config.json` —
+  the block had no `thinking_models`, so `proxy_chat` dropped the client's
+  `enable_thinking` flag (`no thinking_key configured — ignoring`) and the endpoint
+  reasoned regardless. Verified against the endpoint: `chat_template_kwargs=
+  {"enable_thinking": false}` suppresses the trace, `true` restores it. (2) `log_response`
+  now reads `message.reasoning_content or message.reasoning` — nimbus emits the trace
+  under `reasoning` (not `reasoning_content` like NRP), so `has_reasoning_content` /
+  `reasoning_content` were empty for nimbus even when it clearly reasoned. Pairs with
+  the request-side `enable_thinking` column (#64) to make requested-vs-observed reasoning
+  analyzable for nimbus. Requires a pod restart (config git-synced at boot).
 - **gemma/gemma-small-e4b `enable_thinking` was silently ignored (#57).** These
   NRP models support disabling reasoning via `chat_template_kwargs={"enable_thinking":
   false}`, but they were absent from `config.json`'s `nrp.thinking_models`, so
