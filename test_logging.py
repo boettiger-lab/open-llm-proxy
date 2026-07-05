@@ -69,6 +69,34 @@ def test_response_content_not_truncated_and_scrubbed():
     assert len(entry["content_preview"]) <= 200    # preview still capped
 
 
+def test_reasoning_field_fallback_for_nimbus():
+    # #66: NRP emits `reasoning_content`; the nimbus vLLM endpoint emits `reasoning`.
+    # Both must set has_reasoning_content and land in the reasoning_content column.
+    p = _reload(LOG_CONTENT_MAX="0")
+    # nimbus-style: trace under `reasoning`, no `reasoning_content`
+    p._log_buffer.clear()
+    p.log_response("nimbus", "qwen",
+                   {"choices": [{"message": {"content": "answer", "reasoning": "R" * 300}}]},
+                   10, request_id="n1")
+    e = p._log_buffer[-1]
+    assert e["has_reasoning_content"] is True
+    assert e["reasoning_content"].startswith("R")
+    # NRP-style still works, and reasoning_content wins if both are present
+    p._log_buffer.clear()
+    p.log_response("nrp", "qwen3",
+                   {"choices": [{"message": {"content": "answer",
+                                             "reasoning_content": "PREFERRED", "reasoning": "IGNORED"}}]},
+                   10, request_id="r1")
+    e = p._log_buffer[-1]
+    assert e["has_reasoning_content"] is True
+    assert e["reasoning_content"] == "PREFERRED"
+    # No reasoning at all → flag false
+    p._log_buffer.clear()
+    p.log_response("nimbus", "qwen",
+                   {"choices": [{"message": {"content": "answer"}}]}, 10, request_id="p1")
+    assert p._log_buffer[-1]["has_reasoning_content"] is False
+
+
 def test_reasoning_capped_independently_of_content():
     # Middle ground: full final answer + full tool calls, but bounded reasoning.
     p = _reload(LOG_CONTENT_MAX="0", LOG_REASONING_MAX="100")

@@ -407,10 +407,15 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         if "choices" in response_data and len(response_data["choices"]) > 0:
             message = response_data["choices"][0].get("message", {})
             content = _scrub_text(message.get("content") or "")
-            reasoning = _scrub_text(message.get("reasoning_content") or "")
+            # Reasoning trace field name is provider-dependent: NRP ellm (qwen3 etc.)
+            # emits `reasoning_content`; the nimbus vLLM endpoint emits `reasoning`.
+            # Prefer `reasoning_content`, fall back to `reasoning`, so the trace is
+            # captured (and `has_reasoning_content` is accurate) for both (#66).
+            raw_reasoning = message.get("reasoning_content") or message.get("reasoning")
+            reasoning = _scrub_text(raw_reasoning or "")
             log_entry["has_content"] = bool(message.get("content"))
             log_entry["has_tool_calls"] = bool(message.get("tool_calls"))
-            log_entry["has_reasoning_content"] = bool(message.get("reasoning_content"))
+            log_entry["has_reasoning_content"] = bool(raw_reasoning)
             # Full (scrubbed) response — this is the training target, no longer
             # truncated. *_preview kept for cheap kubectl/SQL scans (back-compat).
             log_entry["content"] = _cap(content, _CONTENT_MAX)
