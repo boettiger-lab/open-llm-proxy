@@ -93,6 +93,29 @@ def test_summary_mode_omits_messages():
     assert "messages" not in p._log_buffer[-1]
 
 
+def test_request_logs_requested_enable_thinking():
+    # #64: the requested thinking mode must be logged so it can be told apart from
+    # observed reasoning after the fact. None (not sent) / True / False all round-trip,
+    # and None serializes to JSON null rather than being dropped.
+    p = _reload(LOG_CAPTURE_MODE="summary")
+    for req_id, requested in (("r-none", None), ("r-on", True), ("r-off", False)):
+        p._log_buffer.clear()
+        p.log_request("nrp", "qwen3", [{"role": "user", "content": "hi"}],
+                      request_id=req_id, enable_thinking=requested)
+        entry = p._log_buffer[-1]
+        assert entry["enable_thinking"] is requested
+        # must survive JSON serialization as an explicit value (null, not absent)
+        assert json.loads(json.dumps(entry))["enable_thinking"] == requested
+
+
+def test_request_enable_thinking_defaults_to_none():
+    # Callers that don't pass the flag (e.g. non-thinking clients) log null.
+    p = _reload(LOG_CAPTURE_MODE="summary")
+    p._log_buffer.clear()
+    p.log_request("nrp", "qwen3", [{"role": "user", "content": "hi"}], request_id="r1")
+    assert p._log_buffer[-1]["enable_thinking"] is None
+
+
 def test_full_mode_captures_and_dedups_system_prompt():
     p = _reload(LOG_CAPTURE_MODE="full")
     p._log_buffer.clear()

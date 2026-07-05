@@ -28,6 +28,17 @@ See [Releases](README.md#releases) for how a release is cut.
   stays vendored (bare-specifier resolution) and the script warns on drift.
 
 ### Added
+- **Log the requested thinking mode `enable_thinking` (#64).** `log_request` now
+  records `request.enable_thinking` — the mode the client **asked for** — alongside
+  the existing response-side `has_reasoning_content`/`reasoning_content` (what the
+  model actually **did**). Flattened to a typed `enable_thinking BOOLEAN` column
+  (`null` = flag not sent / model default) in the consolidated Parquet schema and
+  the per-turn session view; both cron jobs' re-flatten passes add the column to
+  legacy files (as `null`) so the corpus stays on one schema. Disambiguates "reasoning
+  off by request" from "model chose not to think" from "non-thinking model", making
+  the effect of geo-agent's user-facing reasoning toggle (geo-agent#283) measurable
+  from live traffic — not just the out-of-band headless A/B (#56/#60). See
+  [LOGGING.md](LOGGING.md).
 - **`ENABLE_THINKING` passthrough in the k8s matrix runner (#58).**
   `run-matrix-k8s.sh` now forwards an `ENABLE_THINKING` env (added to the export
   set, the `envsubst` allowlist, and the pod env in `matrix-job.yaml`), so a
