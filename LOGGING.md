@@ -57,6 +57,7 @@ for fidelity, so old `entry::JSON->>'…'` / `json_extract_string` queries still
 | `model` | `VARCHAR` | Model id |
 | `message_count` | `INTEGER` | Request only — messages in the prompt |
 | `tools_count` | `INTEGER` | Request only — tools offered |
+| `enable_thinking` | `BOOLEAN` | Request only — the thinking mode the client **asked for** (`request.enable_thinking`). `null` = flag not sent / model default; `true`/`false` = explicit override. Distinct from the response-side `has_reasoning_content` (what the model actually **did**) — together they disambiguate "reasoning off by request" from "model chose not to think" from "non-thinking model". |
 | `user_question` | `VARCHAR` | Request only — **first** user message (see trap below) |
 | `latency_ms` | `BIGINT` | Response only |
 | `has_tool_calls` | `BOOLEAN` | Response only |
@@ -95,6 +96,7 @@ request/response interleaving:
 | `origin`, `client`, `provider`, `model` | `VARCHAR` | |
 | `user_question` | `VARCHAR` | Opening question (same first-message-only caveat) |
 | `message_count` | `INTEGER` | |
+| `enable_thinking` | `BOOLEAN` | Requested thinking mode this turn (`null` = default / not sent). Pair with `reasoning_content` to compare requested-vs-observed reasoning per turn. |
 | `tool_results` | `JSON` | Tool outputs that came *into* this turn |
 | `assistant_content` / `reasoning_content` | `VARCHAR` | The model's reply this turn |
 | `tool_calls` | `JSON` | Tools the model called *out* this turn |
@@ -270,6 +272,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `session_id` | Stable per-browser-session id that ties together every turn **and every follow-up question** of one user session. Sourced from the request body's OpenAI `user` field (geo-agent already sends its per-session UUID there), falling back to the `X-Session-Id` header. **`null` in records written before this was wired up** (see wiring note below) — for those, fall back to the `(origin, user_question)` heuristic and mind the `user_question` caveat. |
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
+| `enable_thinking` | The thinking mode the client **requested** for this turn (`request.enable_thinking`): `null` when the flag wasn't sent (model default), `true`/`false` on an explicit override. The request-side counterpart to the response's `has_reasoning_content`/`reasoning_content` (what the model actually did). Lets you tell "reasoning off by request" apart from "model chose not to think" and from "non-thinking model" — needed to evaluate a user-facing reasoning toggle from live traffic. |
 | `user_question` | First `role: user` message in the conversation. ⚠️ **First-message-only — this is a trap.** It is the human's *original* opening question and is stable across all turns of a tool-use loop, but it does **not** update when the user asks a follow-up in the same session. A session where the user opens with "Tell me about datasets" and later asks "now map the hardwood woodland" logs **both** turns under `user_question = "Tell me about datasets"`; the follow-up text lives only inside the `messages` array (`full` mode) and is invisible to any `user_question` filter. To find follow-ups, full-text-search the whole record or capture `session_id`. Capped at `LOG_USER_QUESTION_MAX` chars (default 4000). |
 | `tool_results_this_turn` | Array of `{tool_call_id, content}` for any `role: tool` messages appended since the last assistant turn. Captures results from both local geo-agent tools (e.g. `list_datasets`, `get_dataset_details`) and remote MCP tools (e.g. `query`). Each `content` is capped at `LOG_TOOL_RESULT_MAX` chars (default 20000). `null` on the first turn. |
 | `messages` | **Only when `LOG_CAPTURE_MODE=full`.** The entire scrubbed `messages` array sent to the provider — training-grade fidelity. The large system prompt is de-duplicated: each `role: system` message is replaced by `{role, system_sha256, content_len, _dedup: true}` and the full body is emitted once (per worker) as a separate `type: "system_prompt"` entry. Join `messages[].system_sha256` → the `system_prompt` entry to rehydrate. |

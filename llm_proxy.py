@@ -337,7 +337,7 @@ def _never_raises(fn):
     return wrapper
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -367,6 +367,10 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "origin": origin,
         "message_count": len(messages),
         "tools_count": tools_count,
+        # Requested thinking mode (what the client asked for), distinct from the
+        # observed reasoning trace on the response side. null = client didn't send
+        # the flag / model default; True/False = explicit request override.
+        "enable_thinking": enable_thinking,
         "user_question": _scrub_text(_cap(user_question, _USER_QUESTION_MAX)),
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
     }
@@ -488,7 +492,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     # per-session UUID there); fall back to the X-Session-Id header for other clients.
     session_id = request.user or http_request.headers.get("x-session-id")
     client = http_request.headers.get("x-client")   # e.g. "geo-agent/v3.13.1"; null until clients send it
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, enable_thinking=request.enable_thinking)
     
     # Prepare request to LLM provider
     headers = {
