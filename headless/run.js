@@ -5,14 +5,28 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-
-import { Agent } from '../../geo-agent/app/agent.js';
-import { DatasetCatalog } from '../../geo-agent/app/dataset-catalog.js';
-import { ToolRegistry } from '../../geo-agent/app/tool-registry.js';
-import { createMapTools } from '../../geo-agent/app/map-tools.js';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { MCPClient } from './mcp-client.js';
 import { StubMapManager } from './stub-map-manager.js';
+
+// Resolve the geo-agent app dir. Defaults to the sibling checkout, but
+// GEO_AGENT_DIR lets the runner point at an isolated, always-fresh-from-main
+// copy (see fresh-geoagent.sh) so a headless run never depends on whatever
+// branch or in-progress edits are live in a shared dev checkout that other
+// agents may be using. Static import specifiers can't be parameterized, so
+// these four app modules load via dynamic import (top-level await). Only
+// mcp-client.js stays vendored locally (it has a bare specifier that must
+// resolve against this package's node_modules — see check-drift.sh).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const GEO_AGENT_DIR = process.env.GEO_AGENT_DIR
+    ? path.resolve(process.env.GEO_AGENT_DIR)
+    : path.resolve(__dirname, '../../geo-agent');
+const geoApp = (m) => import(pathToFileURL(path.join(GEO_AGENT_DIR, 'app', m)).href);
+const { Agent } = await geoApp('agent.js');
+const { DatasetCatalog } = await geoApp('dataset-catalog.js');
+const { ToolRegistry } = await geoApp('tool-registry.js');
+const { createMapTools } = await geoApp('map-tools.js');
 
 function parseArgs(argv) {
     const args = { _positional: [] };
@@ -203,6 +217,7 @@ async function main() {
     const log = (msg) => { if (!quiet) console.log(msg); };
     const err = (msg) => console.error(msg);
 
+    err(`[headless] geo-agent: ${GEO_AGENT_DIR}`);
     err(`[headless] STAC catalog: ${config.catalog}`);
     const catalog = new DatasetCatalog();
     await catalog.load(config);

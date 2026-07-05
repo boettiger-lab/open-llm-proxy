@@ -8,6 +8,25 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Changed
+- **Nimbus (DSE) model renamed `nemotron` → `qwen`.** The `vllm-nimbus.carlboettiger.info`
+  endpoint now serves `nvidia/Qwen3.6-35B-A3B-NVFP4` under the id `qwen` (was
+  `nemotron`). Updated `config.json`'s `nimbus.models` to `["qwen"]` so the proxy
+  (exact-match-then-prefix routing) forwards `model: "qwen"` to the nimbus endpoint;
+  requests for `nemotron` no longer route anywhere. Requires a pod restart to take
+  effect (config is git-synced at pod start).
+- **Re-vendored `headless/mcp-client.js`** to match geo-agent upstream (#275 connect()
+  race that could register zero MCP tools + reconnect-budget reset). `npm run
+  check-drift` is clean again.
+- **Headless runner resolves geo-agent via `GEO_AGENT_DIR` + `fresh-geoagent.sh`.**
+  `run.js` now dynamic-imports the four geo-agent app modules from `GEO_AGENT_DIR`
+  (default: the `../../geo-agent` sibling, so existing setups are unchanged). The
+  new `headless/fresh-geoagent.sh` maintains an isolated `geo-agent@main` clone in
+  a cache dir and prints its path, so `export GEO_AGENT_DIR="$(./fresh-geoagent.sh)"`
+  gives a run its own pinned copy instead of depending on a shared dev checkout that
+  other agents may be editing on branches. Only the app modules move; `mcp-client.js`
+  stays vendored (bare-specifier resolution) and the script warns on drift.
+
 ### Added
 - **`ENABLE_THINKING` passthrough in the k8s matrix runner (#58).**
   `run-matrix-k8s.sh` now forwards an `ENABLE_THINKING` env (added to the export
