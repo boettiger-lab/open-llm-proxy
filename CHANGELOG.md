@@ -28,6 +28,13 @@ See [Releases](README.md#releases) for how a release is cut.
   stays vendored (bare-specifier resolution) and the script warns on drift.
 
 ### Added
+- **New self-hosted provider `qwen3-cirrus`.** Adds the `qwen3-cirrus.carlboettiger.info`
+  endpoint (qwen3 on the local k3s / cirrus host) to `config.json` under the model id
+  `qwen3-cirrus` — distinct from nrp's `qwen3` and nimbus's `qwen` so the proxy's
+  exact-match-then-prefix routing forwards it unambiguously. Reuses `NIMBUS_API_KEY`
+  (same as the other `carlboettiger.info` vLLM endpoints) and is marked thinking-capable
+  (`enable_thinking`). Requires a pod restart to take effect (config is git-synced at
+  pod start).
 - **Log the requested thinking mode `enable_thinking` (#64).** `log_request` now
   records `request.enable_thinking` — the mode the client **asked for** — alongside
   the existing response-side `has_reasoning_content`/`reasoning_content` (what the
