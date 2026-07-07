@@ -70,10 +70,10 @@
             "endpoint": "https://qwen3-cirrus.carlboettiger.info/v1/chat/completions",
             "api_key_env": "NIMBUS_API_KEY",
             "models": [
-                "qwen3-cirrus"
+                "qwen3-6"
             ],
             "thinking_models": {
-                "qwen3-cirrus": "enable_thinking"
+                "qwen3-6": "enable_thinking"
             }
         }
     }
