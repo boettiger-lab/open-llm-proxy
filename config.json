@@ -65,6 +65,16 @@
             "models": [
                 "gemma4"
             ]
+        },
+        "qwen3-cirrus": {
+            "endpoint": "https://qwen3-cirrus.carlboettiger.info/v1/chat/completions",
+            "api_key_env": "NIMBUS_API_KEY",
+            "models": [
+                "qwen3-cirrus"
+            ],
+            "thinking_models": {
+                "qwen3-cirrus": "enable_thinking"
+            }
         }
     }
 }
