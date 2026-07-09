@@ -17,12 +17,19 @@ WHERE g.year=2024 GROUP BY g.geartype ORDER BY fishing_hours_2024 DESC;
 
 ## Q2. How many seamounts in the Sargasso Sea EBSA?
 - **Answer:** **141 seamounts** intersecting (135 fully within). Confirmed two ways (H3 hex join + exact `ST_Intersects` polygon join both = 141).
-- **Datasets:** `seafloor-geomorphology` polygon `s3://public-high-seas/seafloor-geomorphology.parquet` (feature_type='Seamounts'); `ebsa` polygon `s3://public-high-seas/ebsa.parquet` (GLOBAL_ID='WC_13' = Sargasso Sea).
-- **SQL:**
+- **Datasets:** `seafloor-geomorphology` hex `s3://public-high-seas/seafloor-geomorphology/hex/h0=*/data_0.parquet` (feature_type='Seamounts', native res 6); `ebsa` hex `s3://public-high-seas/ebsa/hex/h0=*/data_0.parquet` (GLOBAL_ID='WC_13' = Sargasso Sea). Flat polygon GeoParquets (`…/seafloor-geomorphology.parquet`, `…/ebsa.parquet`) used only for the exact cross-check below.
+- **SQL (primary — hex join, the sanctioned path; `ST_*` is banned on large data):**
+```sql
+WITH sarg AS (SELECT DISTINCT h6, h0 FROM read_parquet('s3://public-high-seas/ebsa/hex/h0=*/data_0.parquet') WHERE GLOBAL_ID='WC_13'),
+     sm   AS (SELECT _cng_fid, h6, h0 FROM read_parquet('s3://public-high-seas/seafloor-geomorphology/hex/h0=*/data_0.parquet') WHERE feature_type='Seamounts')
+SELECT COUNT(DISTINCT sm._cng_fid) AS intersecting
+FROM sm SEMI JOIN sarg USING (h6, h0);   -- = 141
+```
+- **Cross-check (exact geometry, operator-only — do NOT use `ST_*` in agent workflows):** confirms the hex count and additionally yields the 135-fully-within subset.
 ```sql
 WITH sarg AS (SELECT ST_SetCRS(geom,'OGC:CRS84') AS sgeom FROM read_parquet('s3://public-high-seas/ebsa.parquet') WHERE GLOBAL_ID='WC_13'),
      sm AS (SELECT geometry AS mgeom FROM read_parquet('s3://public-high-seas/seafloor-geomorphology.parquet') WHERE feature_type='Seamounts')
 SELECT COUNT(*) AS intersecting, COUNT(*) FILTER (WHERE ST_Within(sm.mgeom,sarg.sgeom)) AS fully_within
 FROM sm, sarg WHERE ST_Intersects(sm.mgeom, sarg.sgeom);
 ```
-- **Confidence:** HIGH. Standard "features in area" = intersection = 141 (135 "within" also defensible). Excludes Guyots (flat-topped seamounts, separate class).
+- **Confidence:** HIGH. Standard "features in area" = intersection = 141 (135 "within" also defensible). The hex join and the exact `ST_Intersects` join both return 141 — grade on the value, not the method. Excludes Guyots (flat-topped seamounts, separate class).
