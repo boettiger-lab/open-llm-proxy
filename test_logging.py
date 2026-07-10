@@ -20,6 +20,22 @@ def _reload(**env):
     return importlib.reload(llm_proxy)
 
 
+def test_compute_valid_keys_multi_and_backward_compat():
+    """Multi-key auth (#): PROXY_KEY plus comma-separated PROXY_KEYS_EXTRA are all
+    accepted; blanks dropped; single-key setup is unchanged."""
+    f = llm_proxy.compute_valid_keys
+    # backward compatible: no extras -> exactly the primary
+    assert f("prod", "") == frozenset({"prod"})
+    assert f("prod", None) == frozenset({"prod"})
+    # extras accepted alongside the primary
+    assert f("prod", "eval1,eval2") == frozenset({"prod", "eval1", "eval2"})
+    # whitespace and empty entries are dropped (no accidental "" accept-all)
+    assert f("prod", " eval1 , , eval2 ,") == frozenset({"prod", "eval1", "eval2"})
+    assert "" not in f("prod", ",, ,")
+    # a random key is NOT in the set (the property the auth check relies on)
+    assert "attacker" not in f("prod", "eval1")
+
+
 def test_scrub_redacts_tool_call_arguments():
     p = importlib.reload(llm_proxy)
     args = json.dumps({

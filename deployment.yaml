@@ -132,6 +132,16 @@ spec:
             secretKeyRef:
               name: open-llm-proxy-secrets
               key: proxy-key
+        # Optional additional revocable client keys (comma-separated), e.g.
+        # per-user eval keys. Accepted exactly like PROXY_KEY; revoke by removing
+        # from the secret value and restarting. optional=true so the pod starts
+        # fine when the secret key is absent (backward compatible).
+        - name: PROXY_KEYS_EXTRA
+          valueFrom:
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: proxy-keys-extra
+              optional: true
         - name: OPENROUTER_KEY
           valueFrom:
             secretKeyRef:
