@@ -58,6 +58,17 @@ See [Releases](README.md#releases) for how a release is cut.
   Enables the two-pass reasoning ON/OFF assessment against the gold baseline (#58).
 
 ### Fixed
+- **`temperature` no longer force-sent to models that reject it.** The proxy
+  unconditionally injected `temperature` (default `0.0`) into every upstream
+  payload, so the newest Anthropic models — Claude Sonnet 5, Opus 4.8/4.7, Fable 5
+  — returned `400 "temperature is deprecated for this model"` (they removed the
+  sampling params entirely). Added a per-provider `no_sampling_params` list of
+  model IDs (config-driven, matched exact-then-prefix like routing, and populated
+  for the `anthropic` provider); `temperature`/`top_p` are dropped for those models
+  and left untouched for everything else, so the forced `temperature: 0.0`
+  determinism default (#33) still holds for open models and older Anthropic models
+  (`claude-sonnet-4-6`, `claude-haiku-4-5`) that still accept it. Requires a pod
+  restart to pick up the config change.
 - **nimbus `qwen` ignored `enable_thinking`; its reasoning trace wasn't logged (#66).**
   Two fixes for the direct nimbus vLLM endpoint (`nvidia/Qwen3.6-35B-A3B-NVFP4`):
   (1) added `nimbus.thinking_models = {"qwen": "enable_thinking"}` to `config.json` —
