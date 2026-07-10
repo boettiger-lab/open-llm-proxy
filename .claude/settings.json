@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl -n biodiversity logs deployment/open-llm-proxy -c open-llm-proxy --tail=250)",
+      "Bash(curl -s -i --max-time 30 https://ellm.nrp-nautilus.io/v1/models -H 'Authorization: Bearer yMwh0LvyAdNWnt8E6QKlrhtLqDeEVsci')",
+      "Bash(python3 -c 'import sys,json *)",
+      "Bash(python3)"
+    ]
+  }
+}

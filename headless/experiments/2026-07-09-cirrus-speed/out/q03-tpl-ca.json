@@ -1,0 +1,164 @@
+{
+  "model": "qwen3-6",
+  "trial": null,
+  "question": "Which programs and agencies have funded land conservation in Congressional District 16, and how much?",
+  "origin": "https://benchmark.nrp-nautilus.io/cirrus-goldspeed",
+  "proxy_endpoint": "https://open-llm-proxy.nrp-nautilus.io/v1",
+  "mcp_url": "https://duckdb-mcp.nrp-nautilus.io/mcp",
+  "max_turns": 14,
+  "started_at": "2026-07-09T02:22:25.391Z",
+  "turns": [
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{\"dataset_id\":\"conservation-almanac-2024-sites\"}",
+      "ts": 1783563827851
+    },
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{\"dataset_id\":\"conservation-almanac-2024-funding\"}",
+      "ts": 1783563827851
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "**TPL Conservation Almanac 2024 — Sites**\nCollection ID: `conservation-almanac-2024-sites`\ncollection_url: `https://s3-west.nrp-nautilus.io/public-tpl/conservation-almanac-2024-sites/stac-collection.json`\n**Funding information is not in this collection.** Sponsors, programs, and dollar amounts live in a separate collection, `conservation-almanac-2024-funding`, linked by `tpl_id`. For any question about funding sources, federal programs, amounts, or sponsor categories, you **must** join this coll",
+      "result_length": 10282,
+      "ts": 1783563827943,
+      "tool_exec_ms": 92
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "**TPL Conservation Almanac 2024 — Funding Transactions**\nCollection ID: `conservation-almanac-2024-funding`\ncollection_url: `https://s3-west.nrp-nautilus.io/public-tpl/conservation-almanac-2024-funding/stac-collection.json`\nFunding transactions (sponsors, programs, dollar amounts) for protected and conserved lands in the TPL Conservation Almanac. Long table — one row per (site, program, sponsor) funding transaction. 90,068 total rows covering 67,428 sites (`tpl_id`s). Each transaction references",
+      "result_length": 4002,
+      "ts": 1783563827943,
+      "tool_exec_ms": 92
+    },
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{\"dataset_id\":\"census-2024-cd\"}",
+      "ts": 1783563879508
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "**US Census 2024 Congressional District Boundaries with H3 Indexing**\nCollection ID: `census-2024-cd`\ncollection_url: `https://s3-west.nrp-nautilus.io/public-census/census-2024/cd/stac-collection.json`\n2024 congressional district boundaries for the 119th Congress from the US Census Bureau's TIGER/Line shapefiles, processing approximately 435 voting districts plus at-large and delegate districts into cloud-native formats with H3 hexagonal spatial indexing at resolution 10 (~0.015 km² per hex). In",
+      "result_length": 5488,
+      "ts": 1783563879554,
+      "tool_exec_ms": 46
+    },
+    {
+      "turn": 1,
+      "type": "call",
+      "name": "query",
+      "arguments": "{\"sql_query\":\"WITH cd16_hex AS (\\n  SELECT DISTINCT h10, h0\\n  FROM read_parquet('s3://public-census/census-2024/cd/hex/h0=*/data_0.parquet')\\n  WHERE STATEFP = '06' AND CD119FP = '16'\\n),\\nsites_in_cd16 AS (\\n  SELECT DISTINCT s.tpl_id, s.site, s.county, s.acres\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-sites/hex/h0=*/data_0.parquet') s\\n  SEMI JOIN cd16_hex c USING (h10, h0)\\n  WHERE s.state_id = 'CA'\\n),\\nfunding_by_program AS (\\n  SELECT f.program, f.sponsor_type, f.sponsor, SUM(f.amount) AS total_funding\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-funding.parquet') f\\n  INNER JOIN sites_in_cd16 s USING (tpl_id)\\n  GROUP BY f.program, f.sponsor_type, f.sponsor\\n)\\nSELECT program, sponsor_type, sponsor, total_funding\\nFROM funding_by_program\\nORDER BY total_funding DESC;\"}",
+      "ts": 1783563923961
+    },
+    {
+      "turn": 1,
+      "type": "result",
+      "name": "query",
+      "source": "remote",
+      "result_preview": "| program                                 | sponsor_type   | sponsor                        |   total_funding |\n|:----------------------------------------|:---------------|:-------------------------------|----------------:|\n| State Bonds - Proposition 40            | STAT           | California                     |      1.175e+07  |\n| State Bonds - Proposition 12            | STAT           | California                     |      7.608e+06  |\n| Property Tax Funds                      | LOC     ",
+      "result_length": 1343,
+      "ts": 1783563928946,
+      "tool_exec_ms": 4986
+    },
+    {
+      "turn": 2,
+      "type": "call",
+      "name": "query",
+      "arguments": "{\"sql_query\":\"WITH sites_in_cd16 AS (\\n  SELECT DISTINCT s.tpl_id\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-sites/hex/h0=*/data_0.parquet') s\\n  INNER JOIN read_parquet('s3://public-census/census-2024/cd/hex/h0=*/data_0.parquet') c\\n    ON s.h10 = c.h10 AND s.h0 = c.h0\\n  WHERE c.STATEFP = '06' AND c.CD119FP = '16'\\n)\\nSELECT f.program, f.sponsor_type, f.sponsor, SUM(f.amount) AS total_funding\\nFROM read_parquet('s3://public-tpl/conservation-almanac-2024-funding.parquet') f\\nINNER JOIN sites_in_cd16 s USING (tpl_id)\\nWHERE f.amount > 0\\nGROUP BY f.program, f.sponsor_type, f.sponsor\\nORDER BY total_funding DESC;\"}",
+      "ts": 1783563963026
+    },
+    {
+      "turn": 2,
+      "type": "result",
+      "name": "query",
+      "source": "remote",
+      "result_preview": "| program                                 | sponsor_type   | sponsor                        |   total_funding |\n|:----------------------------------------|:---------------|:-------------------------------|----------------:|\n| State Bonds - Proposition 40            | STAT           | California                     |      1.175e+07  |\n| State Bonds - Proposition 12            | STAT           | California                     |      7.608e+06  |\n| Property Tax Funds                      | LOC     ",
+      "result_length": 1231,
+      "ts": 1783563966813,
+      "tool_exec_ms": 3787
+    }
+  ],
+  "llm_fetches": [
+    {
+      "ms": 81761,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 33962,
+        "total_tokens": 34212,
+        "completion_tokens": 250,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 51507,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 38435,
+        "total_tokens": 38712,
+        "completion_tokens": 277,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 44335,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 40351,
+        "total_tokens": 40821,
+        "completion_tokens": 470,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 34028,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 41152,
+        "total_tokens": 41569,
+        "completion_tokens": 417,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 52204,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 41882,
+        "total_tokens": 42437,
+        "completion_tokens": 555,
+        "prompt_tokens_details": null
+      }
+    }
+  ],
+  "elapsed_sec": 273.04,
+  "llm_total_ms": 263835,
+  "tool_total_ms": 9003,
+  "response": "\n\nHere are the programs and agencies that have funded land conservation in **California's 16th Congressional District**, ranked by total funding:\n\n| Program | Sponsor Type | Agency/Sponsor | Total Funding |\n|:---|:---|:---|---:|\n| State Bonds – Proposition 40 | State | California | $11,750,000 |\n| State Bonds – Proposition 12 | State | California | $7,608,000 |\n| Property Tax Funds | Local | Santa Clara County, CA | $6,150,000 |\n| State Bonds – Proposition 117 | State | California | $3,462,500 |\n| Land and Water Conservation Fund (LWCF) | Federal | U.S. Fish and Wildlife Service | $3,205,600 |\n| Land and Water Conservation Fund (LWCF) | Federal | U.S. National Park Service | $2,432,000 |\n| State Bonds – California State Parks | State | California | $800,000 |\n| General Fund | State | California | $485,204 |\n| State Bonds – Proposition 70 | State | California | $214,796 |\n| **Total** | | | **~$36.1 million** |\n\n**Key takeaways:**\n\n- **State bonds dominate** — Propositions 40, 12, 117, and 70, plus California State Parks bonds, account for ~$24.2 million (67% of total).\n- **Federal LWCF is the largest federal source** — $5.6 million split between USFWS and NPS.\n- **Local funding** comes primarily from Santa Clara County property tax funds ($6.15 million).\n- CD16 covers parts of **Santa Clara County** (including Palo Alto, Mountain View, Sunnyvale, and parts of San Jose), which explains the strong local property tax contribution alongside state bond measures.\n\n*Data source: TPL Conservation Almanac 2024 (funding transactions joined to sites via H3 spatial intersection with 2024 Census CD boundaries).*",
+  "cancelled": false,
+  "finished_at": "2026-07-09T02:26:59.075Z",
+  "tool_call_count": 5,
+  "prompt_tokens_total": 195782,
+  "completion_tokens_total": 1969,
+  "output_tok_per_sec": 7.46
+}

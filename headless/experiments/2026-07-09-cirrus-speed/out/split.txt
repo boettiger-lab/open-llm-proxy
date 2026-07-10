@@ -1,0 +1,20 @@
+
+Exact prefill/decode split over window  (model=qwen3-6, https://qwen3-cirrus.carlboettiger.info/metrics)
+requests in window:        36
+prompt tokens (prefill):   1,310,024   (1,134,176 cached, 87% of prompt)
+generation tokens (decode):10,875
+prefix-cache hit rate:     86.6%  (1,134,176/1,310,024 tokens)
+--------------------------------------------------------------
+prefill time  (sum):         580.20 s   avg 16.117 s/req
+decode  time  (sum):         660.78 s   avg 18.355 s/req
+queue   time  (sum):           0.00 s
+e2e latency   (sum):        1249.81 s   avg 34.717 s/req
+decode share of infer time:   53%
+--------------------------------------------------------------
+PREFILL throughput:            2258 tok/s
+DECODE  throughput:            16.5 tok/s
+prefill/decode rate ratio:    137.2x
+--------------------------------------------------------------
+avg TTFT (prefill latency):  17.335 s/req  (n=37)
+avg inter-token latency:      228.8 ms/tok ->    4.4 tok/s per-stream decode
+finished_reason:           {'stop': 36}

@@ -21,6 +21,11 @@ export class MCPClient {
         this.tools = [];
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 3;
+        // The attempt budget caps a single burst of failures, but it must not
+        // latch forever — after this much quiet time, the next attempt gets a
+        // fresh budget so a transient outage can't permanently disable MCP.
+        this.reconnectResetMs = 30000;
+        this.lastReconnectTime = 0;
         this._connectPromise = null;
         this._onReconnect = null;
     }
@@ -63,12 +68,18 @@ export class MCPClient {
                 { capabilities: {} }
             );
             await this.client.connect(transport);
-            this.connected = true;
-            this.reconnectAttempts = 0;
 
-            // Cache available tools
+            // Cache available tools BEFORE flipping `connected`. The flag is the
+            // short-circuit for connect()/ensureConnected(); if it went true here
+            // (transport up) but the tool list were still empty, a concurrent
+            // connect() would short-circuit and a getTools() reader would see []
+            // — registering zero remote tools with no error, no fallback, and no
+            // reconnect to recover (the silent MCP-tools-missing boot). Populate
+            // the cache first so `connected === true` always implies tools ready.
             const response = await this.client.listTools();
             this.tools = response.tools || [];
+            this.connected = true;
+            this.reconnectAttempts = 0;
             console.log('[MCP] Connected. Tools:', this.tools.map(t => t.name));
         } catch (error) {
             this.connected = false;
@@ -83,16 +94,13 @@ export class MCPClient {
      * Called lazily before any operation.
      */
     async ensureConnected() {
-        if (this.connected && this.client) {
-            try {
-                // Lightweight health check
-                await this.client.listTools();
-                return;
-            } catch {
-                console.warn('[MCP] Connection stale, reconnecting...');
-                this.connected = false;
-            }
-        }
+        // Trust the `connected` flag rather than probing with a listTools()
+        // round trip on every operation — that probe added a full request to
+        // each callTool/listPrompts/getPrompt, multiplying boot latency. A
+        // genuinely stale connection is caught by callTool's reconnect-and-retry
+        // branch (the only frequent, long-lived op); boot-time prompt reads run
+        // right after a fresh connect, so they're never stale.
+        if (this.connected && this.client) return;
         await this.reconnect();
     }
 
@@ -100,8 +108,17 @@ export class MCPClient {
      * Reconnect with exponential backoff.
      */
     async reconnect() {
+        const now = Date.now();
+        // A fresh attempt after a quiet period gets a clean budget. Rapid
+        // retries within one burst still hit the cap (no hammering), but a
+        // user action after the outage clears retries instead of failing.
+        if (now - this.lastReconnectTime > this.reconnectResetMs) {
+            this.reconnectAttempts = 0;
+        }
+        this.lastReconnectTime = now;
+
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            throw new Error('MCP server unreachable after multiple attempts. Please refresh the page.');
+            throw new Error('MCP server temporarily unavailable. Please try again in a moment.');
         }
 
         this.reconnectAttempts++;

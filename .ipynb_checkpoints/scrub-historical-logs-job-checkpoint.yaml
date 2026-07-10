@@ -1,0 +1,72 @@
+# One-shot Job: scrub credentials from historical logs already in S3 (issue #24).
+#
+# The live proxy only scrubs records written after the training-grade-logging
+# change; older consolidated Parquet still contains real s3_key/s3_secret values
+# (~184 entries observed). This Job rewrites them in place using the repo's
+# scrub.py — the SAME scrubber as the live proxy — so the two can't diverge.
+#
+#   # 1. Dry-run first (this is the default below): see what would change.
+#   kubectl -n biodiversity create -f scrub-historical-logs-job.yaml
+#   kubectl -n biodiversity logs -f job/scrub-historical-logs
+#
+#   # 2. When the dry-run looks right, drop `--dry-run` from `args` (leave
+#   #    `--verify`), delete the finished Job, and re-create to scrub for real:
+#   kubectl -n biodiversity delete job scrub-historical-logs
+#   #   (edit args -> ["--verify"]) then create again.
+#
+# Idempotent: re-running on clean files is a no-op. Parquet rewrites go via a
+# temp key + row-count check + atomic copy; only the `entry` column is scrubbed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: scrub-historical-logs
+  labels:
+    app: logs-scrub
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 604800
+  template:
+    spec:
+      priorityClassName: opportunistic
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: feature.node.kubernetes.io/pci-10de.present
+                    operator: NotIn
+                    values: ["true"]
+      initContainers:
+        - name: git-sync
+          image: alpine/git:latest
+          # Clones the default branch (main). Run AFTER the PR is merged, or set
+          # the branch explicitly if scrubbing before merge.
+          command: ["sh", "-c", "git clone --depth 1 https://github.com/boettiger-lab/open-llm-proxy.git /repo"]
+          volumeMounts:
+            - name: repo
+              mountPath: /repo
+      containers:
+        - name: scrub
+          image: python:3.12-slim
+          workingDir: /repo
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+            - name: LOG_BUCKET
+              value: "logs-open-llm-proxy"
+          command: ["/bin/bash", "-c"]
+          # ── flip to ["--verify"] (drop --dry-run) for the real run ──
+          args:
+            - |
+              set -euo pipefail
+              pip install --quiet duckdb boto3
+              python scrub-historical-logs.py --dry-run --verify
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "1000m", memory: "2Gi" }
+      volumes:
+        - name: repo
+          emptyDir: {}

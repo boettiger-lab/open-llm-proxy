@@ -1,0 +1,91 @@
+{
+  "model": "qwen3-6",
+  "trial": null,
+  "question": "How many acres of California land are conserved at GAP status 1 or 2?",
+  "origin": "https://benchmark.nrp-nautilus.io/cirrus-goldspeed",
+  "proxy_endpoint": "https://open-llm-proxy.nrp-nautilus.io/v1",
+  "mcp_url": "https://duckdb-mcp.nrp-nautilus.io/mcp",
+  "max_turns": 14,
+  "started_at": "2026-07-09T02:16:53.280Z",
+  "turns": [
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{\"dataset_id\":\"ca30x30-conserved-areas-terrestrial-2025\"}",
+      "ts": 1783563495439
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "**30x30 Conserved Areas, Terrestrial (2025)**\nCollection ID: `ca30x30-conserved-areas-terrestrial-2025`\ncollection_url: `https://s3-west.nrp-nautilus.io/public-ca30x30/conserved-areas-terrestrial-2025/stac-collection.json`\nThe 2025 edition of California's Terrestrial 30x30 Conserved Areas layer — the statewide inventory of conserved lands counted toward California's 30x30 goal (conserve 30% of land and coastal waters by 2030). Produced by the CA Nature working group at the California Natural Res",
+      "result_length": 22392,
+      "ts": 1783563495506,
+      "tool_exec_ms": 67
+    },
+    {
+      "turn": 1,
+      "type": "call",
+      "name": "query",
+      "arguments": "{\"sql_query\":\"SELECT SUM(Acres) AS total_gap12_acres, COUNT(*) AS num_units FROM read_parquet('s3://public-ca30x30/conserved-areas-terrestrial-2025.parquet')\"}",
+      "ts": 1783563544910
+    },
+    {
+      "turn": 1,
+      "type": "result",
+      "name": "query",
+      "source": "remote",
+      "result_preview": "|   total_gap12_acres |   num_units |\n|--------------------:|------------:|\n|         2.64715e+07 |       45811 |",
+      "result_length": 113,
+      "ts": 1783563545479,
+      "tool_exec_ms": 569
+    }
+  ],
+  "llm_fetches": [
+    {
+      "ms": 80785,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 31253,
+        "total_tokens": 31762,
+        "completion_tokens": 509,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 49347,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 36485,
+        "total_tokens": 36771,
+        "completion_tokens": 286,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 24951,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 36831,
+        "total_tokens": 37077,
+        "completion_tokens": 246,
+        "prompt_tokens_details": null
+      }
+    }
+  ],
+  "elapsed_sec": 155.88,
+  "llm_total_ms": 155083,
+  "tool_total_ms": 636,
+  "response": "\n\n**26.47 million acres** of California land are conserved at GAP status 1 or 2, across 45,811 conserved-area units.\n\nThis is the figure counted toward California's 30x30 goal. The `Acres` column in the dataset represents exactly Gap1_acres + Gap2_acres per unit — it is the GAP 1+2 portion only, not the unit's full extent.\n\nFor context, the dataset also tracks:\n- **GAP 3+4** (\"other protected\"): 25.90 million acres\n- **Total protected** (all GAP statuses): 52.38 million acres\n\nGAP 1+2 and GAP 3+4 are separate categories — GAP 1+2 is not \"all conserved.\"",
+  "cancelled": false,
+  "finished_at": "2026-07-09T02:19:30.479Z",
+  "tool_call_count": 2,
+  "prompt_tokens_total": 104569,
+  "completion_tokens_total": 1041,
+  "output_tok_per_sec": 6.71
+}

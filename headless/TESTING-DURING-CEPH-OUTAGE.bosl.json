@@ -1,0 +1,9 @@
+{
+  "catalog": "https://data.source.coop/cboettig/gfw/stac-collection.json",
+  "mcp_url": "https://dev-duckdb-mcp.nrp-nautilus.io/mcp",
+  "collections": [
+    {"collection_id": "gfw-fishing-effort", "collection_url": "https://data.source.coop/cboettig/gfw/stac-collection.json"},
+    {"collection_id": "ebsa", "collection_url": "https://data.source.coop/cboettig/high-seas/ebsa/stac-collection.json"},
+    {"collection_id": "seafloor-geomorphology", "collection_url": "https://data.source.coop/cboettig/high-seas/seafloor-geomorphology/stac-collection.json"}
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "model": "qwen",
+  "trial": 2,
+  "question": "Which programs and agencies have funded land conservation in Congressional District 16, and how much?",
+  "origin": "https://benchmark.nrp-nautilus.io/nimbus-trim",
+  "proxy_endpoint": "https://open-llm-proxy.nrp-nautilus.io/v1",
+  "mcp_url": "https://duckdb-mcp.nrp-nautilus.io/mcp",
+  "max_turns": 14,
+  "started_at": "2026-07-09T04:34:47.425Z",
+  "turns": [
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{}",
+      "ts": 1783572002373
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "{\"success\":false,\"error\":\"Dataset not found: undefined. Available: conservation-almanac-2024-funding, census-2024-cd, conservation-almanac-2024-sites. For datasets outside this app, use get_stac_details.\"}",
+      "result_length": 205,
+      "ts": 1783572002373,
+      "tool_exec_ms": 0
+    },
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{}",
+      "ts": 1783572004374
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "{\"success\":false,\"error\":\"Dataset not found: undefined. Available: conservation-almanac-2024-funding, census-2024-cd, conservation-almanac-2024-sites. For datasets outside this app, use get_stac_details.\"}",
+      "result_length": 205,
+      "ts": 1783572004375,
+      "tool_exec_ms": 1
+    },
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "list_datasets",
+      "arguments": "{}",
+      "ts": 1783572006078
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "list_datasets",
+      "source": "local",
+      "result_preview": "{\"success\":true,\"datasets\":[{\"id\":\"conservation-almanac-2024-funding\",\"title\":\"TPL Conservation Almanac 2024 — Funding Transactions\"},{\"id\":\"census-2024-cd\",\"title\":\"US Census 2024 Congressional District Boundaries with H3 Indexing\"},{\"id\":\"conservation-almanac-2024-sites\",\"title\":\"TPL Conservation Almanac 2024 — Sites\"}]}",
+      "result_length": 324,
+      "ts": 1783572006078,
+      "tool_exec_ms": 0
+    }
+  ],
+  "llm_fetches": [
+    {
+      "ms": 301556,
+      "ok": false,
+      "error": "fetch failed"
+    },
+    {
+      "ms": 9407,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 18281,
+        "total_tokens": 18919,
+        "completion_tokens": 638,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 2888,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 18542,
+        "total_tokens": 18697,
+        "completion_tokens": 155,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 1945,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 18773,
+        "total_tokens": 18844,
+        "completion_tokens": 71,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 14,
+      "ok": false,
+      "error": "fetch failed"
+    },
+    {
+      "ms": 1638,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 18920,
+        "total_tokens": 18970,
+        "completion_tokens": 50,
+        "prompt_tokens_details": null
+      }
+    }
+  ],
+  "timed_out": true,
+  "error": "run-timeout 320s",
+  "finished_at": "2026-07-09T04:40:07.428Z",
+  "tool_call_count": 3,
+  "llm_total_ms": 317448,
+  "prompt_tokens_total": 74516,
+  "completion_tokens_total": 914,
+  "output_tok_per_sec": 57.56
+}

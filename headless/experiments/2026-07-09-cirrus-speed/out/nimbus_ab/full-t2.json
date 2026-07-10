@@ -1,0 +1,181 @@
+{
+  "model": "qwen",
+  "trial": 2,
+  "question": "Which programs and agencies have funded land conservation in Congressional District 16, and how much?",
+  "origin": "https://benchmark.nrp-nautilus.io/nimbus-full",
+  "proxy_endpoint": "https://open-llm-proxy.nrp-nautilus.io/v1",
+  "mcp_url": "https://duckdb-mcp.nrp-nautilus.io/mcp",
+  "max_turns": 14,
+  "started_at": "2026-07-09T04:32:15.341Z",
+  "turns": [
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{\"dataset_id\":\"conservation-almanac-2024-funding\"}",
+      "ts": 1783571543612
+    },
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{\"dataset_id\":\"conservation-almanac-2024-sites\"}",
+      "ts": 1783571543612
+    },
+    {
+      "turn": 0,
+      "type": "call",
+      "name": "get_schema",
+      "arguments": "{\"dataset_id\":\"census-2024-cd\"}",
+      "ts": 1783571543612
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "**TPL Conservation Almanac 2024 — Funding Transactions**\nCollection ID: `conservation-almanac-2024-funding`\ncollection_url: `https://s3-west.nrp-nautilus.io/public-tpl/conservation-almanac-2024-funding/stac-collection.json`\nFunding transactions (sponsors, programs, dollar amounts) for protected and conserved lands in the TPL Conservation Almanac. Long table — one row per (site, program, sponsor) funding transaction. 90,068 total rows covering 67,428 sites (`tpl_id`s). Each transaction references",
+      "result_length": 4002,
+      "ts": 1783571543736,
+      "tool_exec_ms": 124
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "**TPL Conservation Almanac 2024 — Sites**\nCollection ID: `conservation-almanac-2024-sites`\ncollection_url: `https://s3-west.nrp-nautilus.io/public-tpl/conservation-almanac-2024-sites/stac-collection.json`\n**Funding information is not in this collection.** Sponsors, programs, and dollar amounts live in a separate collection, `conservation-almanac-2024-funding`, linked by `tpl_id`. For any question about funding sources, federal programs, amounts, or sponsor categories, you **must** join this coll",
+      "result_length": 10282,
+      "ts": 1783571543736,
+      "tool_exec_ms": 124
+    },
+    {
+      "turn": 0,
+      "type": "result",
+      "name": "get_schema",
+      "source": "local",
+      "result_preview": "**US Census 2024 Congressional District Boundaries with H3 Indexing**\nCollection ID: `census-2024-cd`\ncollection_url: `https://s3-west.nrp-nautilus.io/public-census/census-2024/cd/stac-collection.json`\n2024 congressional district boundaries for the 119th Congress from the US Census Bureau's TIGER/Line shapefiles, processing approximately 435 voting districts plus at-large and delegate districts into cloud-native formats with H3 hexagonal spatial indexing at resolution 10 (~0.015 km² per hex). In",
+      "result_length": 5488,
+      "ts": 1783571543736,
+      "tool_exec_ms": 124
+    },
+    {
+      "turn": 1,
+      "type": "call",
+      "name": "query",
+      "arguments": "{\"sql_query\":\"WITH cd16_sites AS (\\n  SELECT DISTINCT s.tpl_id, s.site, s.county, s.acres, s.owner, s.owner_type\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-sites/hex/h0=*/data_0.parquet') s\\n  JOIN read_parquet('s3://public-census/census-2024/cd/hex/h0=*/data_0.parquet') c\\n    ON s.h10 = c.h10 AND s.h0 = c.h0\\n  WHERE c.STATEFP = '06' AND c.CD119FP = '16'\\n),\\nfunding AS (\\n  SELECT f.tpl_id, f.program, f.sponsor, f.sponsor_type, f.amount\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-funding.parquet') f\\n  WHERE f.tpl_id IN (SELECT tpl_id FROM cd16_sites)\\n    AND f.amount > 0\\n)\\nSELECT \\n  f.sponsor_type,\\n  f.sponsor,\\n  f.program,\\n  COUNT(DISTINCT f.tpl_id) AS num_sites,\\n  SUM(f.amount) AS total_funding\\nFROM funding f\\nGROUP BY f.sponsor_type, f.sponsor, f.program\\nORDER BY total_funding DESC\\nLIMIT 50\"}",
+      "ts": 1783571551742
+    },
+    {
+      "turn": 1,
+      "type": "result",
+      "name": "query",
+      "source": "remote",
+      "result_preview": "| sponsor_type   | sponsor                        | program                                 |   num_sites |   total_funding |\n|:---------------|:-------------------------------|:----------------------------------------|------------:|----------------:|\n| STAT           | California                     | State Bonds - Proposition 40            |           3 |      1.175e+07  |\n| STAT           | California                     | State Bonds - Proposition 12            |           4 |      7.608e+06",
+      "result_length": 1385,
+      "ts": 1783571556383,
+      "tool_exec_ms": 4641
+    },
+    {
+      "turn": 2,
+      "type": "call",
+      "name": "query",
+      "arguments": "{\"sql_query\":\"WITH cd16_sites AS (\\n  SELECT DISTINCT s.tpl_id\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-sites/hex/h0=*/data_0.parquet') s\\n  JOIN read_parquet('s3://public-census/census-2024/cd/hex/h0=*/data_0.parquet') c\\n    ON s.h10 = c.h10 AND s.h0 = c.h0\\n  WHERE c.STATEFP = '06' AND c.CD119FP = '16'\\n),\\nfunding AS (\\n  SELECT f.tpl_id, f.program, f.sponsor, f.sponsor_type, f.amount\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-funding.parquet') f\\n  WHERE f.tpl_id IN (SELECT tpl_id FROM cd16_sites)\\n    AND f.amount > 0\\n)\\nSELECT \\n  sponsor_type,\\n  COUNT(DISTINCT tpl_id) AS num_sites,\\n  SUM(amount) AS total_funding\\nFROM funding\\nGROUP BY sponsor_type\\nORDER BY total_funding DESC\"}",
+      "ts": 1783571561104
+    },
+    {
+      "turn": 2,
+      "type": "result",
+      "name": "query",
+      "source": "remote",
+      "result_preview": "| sponsor_type   |   num_sites |   total_funding |\n|:---------------|------------:|----------------:|\n| STAT           |           8 |     2.43205e+07 |\n| LOC            |           2 |     6.15e+06    |\n| FED            |           4 |     5.6376e+06  |",
+      "result_length": 254,
+      "ts": 1783571565049,
+      "tool_exec_ms": 3944
+    },
+    {
+      "turn": 3,
+      "type": "call",
+      "name": "query",
+      "arguments": "{\"sql_query\":\"WITH cd16_sites AS (\\n  SELECT DISTINCT s.tpl_id, s.site, s.county, s.acres, s.owner, s.owner_type, s.year\\n  FROM read_parquet('s3://public-tpl/conservation-almanac-2024-sites/hex/h0=*/data_0.parquet') s\\n  JOIN read_parquet('s3://public-census/census-2024/cd/hex/h0=*/data_0.parquet') c\\n    ON s.h10 = c.h10 AND s.h0 = c.h0\\n  WHERE c.STATEFP = '06' AND c.CD119FP = '16'\\n)\\nSELECT tpl_id, site, county, acres, owner, owner_type, year\\nFROM cd16_sites\\nORDER BY acres DESC\"}",
+      "ts": 1783571568603
+    },
+    {
+      "turn": 3,
+      "type": "result",
+      "name": "query",
+      "source": "remote",
+      "result_preview": "|   tpl_id | site                                                      | county             |    acres | owner   | owner_type   |   year |\n|---------:|:----------------------------------------------------------|:-------------------|---------:|:--------|:-------------|-------:|\n| 10259579 | Rancho Corral de Tierra                                   | San Mateo County   | 4262     |         | UNK          |   2002 |\n| 10205711 | DON EDWARDS SAN FRANCISCO BAY NATIONAL WILDLIFE REFUGE 21 | Santa Clar",
+      "result_length": 2501,
+      "ts": 1783571572144,
+      "tool_exec_ms": 3541
+    }
+  ],
+  "llm_fetches": [
+    {
+      "ms": 7624,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 33962,
+        "total_tokens": 34226,
+        "completion_tokens": 264,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 7948,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 40078,
+        "total_tokens": 40592,
+        "completion_tokens": 514,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 4673,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 40948,
+        "total_tokens": 41278,
+        "completion_tokens": 330,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 3503,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 41385,
+        "total_tokens": 41628,
+        "completion_tokens": 243,
+        "prompt_tokens_details": null
+      }
+    },
+    {
+      "ms": 9572,
+      "ok": true,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 42479,
+        "total_tokens": 43338,
+        "completion_tokens": 859,
+        "prompt_tokens_details": null
+      }
+    }
+  ],
+  "elapsed_sec": 45.84,
+  "llm_total_ms": 33320,
+  "tool_total_ms": 12498,
+  "response": "\n\nHere's the conservation funding picture for **California's 16th Congressional District** (covering parts of San Mateo and Santa Clara counties):\n\n## Summary by Sponsor Type\n\n| Sponsor Type | Total Funding | Sites Funded |\n|---|---|---|\n| **State Government** | $24.3M | 8 sites |\n| **Local Government** | $6.2M | 2 sites |\n| **Federal Government** | $5.6M | 4 sites |\n| **Total** | **~$36.1M** | **12 sites** |\n\n## Top Funding Programs\n\n| Program | Sponsor | Amount | Sites |\n|---|---|---|---|\n| **Proposition 40** | State of California | $11.75M | 3 |\n| **Proposition 12** | State of California | $7.61M | 4 |\n| **Property Tax Funds** | Santa Clara County | $6.15M | 2 |\n| **Proposition 117** | State of California | $3.46M | 2 |\n| **LWCF** | U.S. Fish & Wildlife Service | $3.21M | 3 |\n| **LWCF** | U.S. National Park Service | $2.43M | 1 |\n| **State Parks Bonds** | State of California | $800K | 1 |\n| **General Fund** | State of California | $485K | 1 |\n| **Proposition 70** | State of California | $215K | 1 |\n\n## Conservation Sites in CD16\n\nThe district has **12 protected/conserved sites** totaling ~8,463 acres, including:\n- **Rancho Corral de Tierra** (San Mateo County) — 4,262 acres\n- **Don Edwards SF Bay NWR** (multiple parcels, Santa Clara County) — ~2,321 acres combined\n- **Tunitas Creek Property** (San Mateo County) — 708 acres\n- **Purisima Farms** (San Mateo County) — 534 acres\n- **Butano State Park** (San Mateo County) — 431 acres\n\n**Key takeaway:** State bond measures (Prop 40, 12, 117, 70) and the federal Land and Water Conservation Fund are the dominant funding sources, with California state bonds alone accounting for ~$23.6M (65%) of recorded conservation investment in this district.",
+  "cancelled": false,
+  "finished_at": "2026-07-09T04:33:01.773Z",
+  "tool_call_count": 6,
+  "prompt_tokens_total": 198852,
+  "completion_tokens_total": 2210,
+  "output_tok_per_sec": 66.33
+}
