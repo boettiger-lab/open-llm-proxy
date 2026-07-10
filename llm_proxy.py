@@ -282,7 +282,11 @@ for provider_name, provider_config in config["providers"].items():
         "api_key": api_key,
         "models": provider_config["models"],
         "extra_headers": provider_config.get("extra_headers", {}),
-        "thinking_models": provider_config.get("thinking_models", {})
+        "thinking_models": provider_config.get("thinking_models", {}),
+        # Models that 400 on sampling params (temperature/top_p) — e.g. the newest
+        # Anthropic models. Must be carried through here: this rebuilt dict (not the
+        # raw config) is what get_provider_for_model returns at request time.
+        "no_sampling_params": provider_config.get("no_sampling_params", [])
     }
 
 # Log configuration status

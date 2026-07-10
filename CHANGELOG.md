@@ -68,7 +68,10 @@ See [Releases](README.md#releases) for how a release is cut.
   and left untouched for everything else, so the forced `temperature: 0.0`
   determinism default (#33) still holds for open models and older Anthropic models
   (`claude-sonnet-4-6`, `claude-haiku-4-5`) that still accept it. Requires a pod
-  restart to pick up the config change.
+  restart to pick up the config change. (Follow-up: the `PROVIDERS` builder copies
+  a fixed key whitelist from `config.json`, so `no_sampling_params` also had to be
+  added there — without it the request-time lookup always saw an empty list and the
+  guard never fired.)
 - **nimbus `qwen` ignored `enable_thinking`; its reasoning trace wasn't logged (#66).**
   Two fixes for the direct nimbus vLLM endpoint (`nvidia/Qwen3.6-35B-A3B-NVFP4`):
   (1) added `nimbus.thinking_models = {"qwen": "enable_thinking"}` to `config.json` —
