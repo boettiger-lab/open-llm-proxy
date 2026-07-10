@@ -9,6 +9,16 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Multi-key client auth — accept more than one `PROXY_KEY` so eval/dev keys are
+  independently revocable.** New `PROXY_KEYS_EXTRA` env (comma-separated, wired from
+  `open-llm-proxy-secrets`/`proxy-keys-extra`, `optional: true`) is folded into the
+  accepted-key set alongside the primary `PROXY_KEY`; the auth check is now a set
+  membership test. Backward compatible — with `PROXY_KEYS_EXTRA` unset the accepted
+  set is exactly `{PROXY_KEY}`. Revoke a key by removing it from the secret value and
+  restarting. Deliberately minimal: no per-key rate limits or attribution (we are not
+  reinventing LiteLLM) — provider-side spend caps remain the enforcement point. Lets
+  group members run the headless eval locally with a disposable key instead of the
+  shared production key. Covered by `test_compute_valid_keys_multi_and_backward_compat`.
 - **Baseline golden set: 4 new ca-30x30 regression questions (#40 grow-on-fix) —
   3 answer-mode + 1 clarify-mode.** Operator-verified gold + authoritative SQL +
   `trap` tags for the failures found in the 2026-07-10 proxy-log analysis of the

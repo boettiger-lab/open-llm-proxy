@@ -268,8 +268,25 @@ def load_config() -> dict:
 
 # Load config and build providers
 config = load_config()
-PROXY_KEY = os.getenv("PROXY_KEY")  # Key required from clients
+PROXY_KEY = os.getenv("PROXY_KEY")  # Primary client key (prod apps)
 CACHE_SALT = os.getenv("CACHE_SALT")  # Optional: isolate cached responses per deployment
+
+
+def compute_valid_keys(primary, extra):
+    """Set of accepted client keys: the primary PROXY_KEY plus any comma-separated
+    revocable extras (PROXY_KEYS_EXTRA) — e.g. per-user eval keys. Blank/whitespace
+    entries are dropped. Deliberately NOT a key-management layer: keys are accepted
+    equally, with no per-key rate limits or attribution. Revoke a key by removing it
+    from PROXY_KEYS_EXTRA and restarting; spend caps are enforced upstream at the
+    providers, not here."""
+    return frozenset(
+        k.strip() for k in ([primary] + (extra or "").split(",")) if k and k.strip()
+    )
+
+
+# All client keys the proxy will accept. Backward-compatible: with no
+# PROXY_KEYS_EXTRA this is exactly {PROXY_KEY}, identical to the old behavior.
+VALID_PROXY_KEYS = compute_valid_keys(PROXY_KEY, os.getenv("PROXY_KEYS_EXTRA", ""))
 
 # Build PROVIDERS dictionary from config
 PROVIDERS = {}
@@ -299,6 +316,8 @@ for provider, config in PROVIDERS.items():
     print(f"{status} {provider.upper()}: {config['endpoint']} (key: {'set' if has_key else 'MISSING'})")
 if not PROXY_KEY:
     print("⚠️  WARNING: PROXY_KEY not set - proxy will reject all requests!")
+elif len(VALID_PROXY_KEYS) > 1:
+    print(f"✓ Accepting {len(VALID_PROXY_KEYS)} client keys (PROXY_KEY + {len(VALID_PROXY_KEYS)-1} from PROXY_KEYS_EXTRA)")
 if CACHE_SALT:
     print("✓ CACHE_SALT configured - responses isolated from other NRP tenants")
 else:
@@ -481,7 +500,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if authorization:
         client_key = authorization.replace('Bearer ', '').strip()
     
-    if not client_key or client_key != PROXY_KEY:
+    if not client_key or client_key not in VALID_PROXY_KEYS:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
     
     # Determine provider based on model
