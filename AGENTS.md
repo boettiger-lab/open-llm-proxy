@@ -8,6 +8,8 @@ This is an LLM proxy service that routes chat completion requests to NRP, OpenRo
 
 > **Track changes.** Behavior/config/ops changes should add a [CHANGELOG.md](CHANGELOG.md) entry under `## [Unreleased]`; see [README → Releases](README.md#releases) for the (SemVer) release process.
 
+> **Use a git worktree — never build on top of another branch's active work.** The primary checkout is frequently mid-edit on some feature branch (uncommitted changes, a branch based on a stale `main`). Do **not** make your edits there: you'll tangle your change with unrelated work, and if that branch is behind `main` you can silently *revert* already-merged commits when you ship. For any change, start clean: `git worktree add <path> -b <branch> origin/main` (fetch first), edit there, PR to `main`. This keeps your diff minimal and based on current `main`.
+
 > **CORS gotcha:** browser CORS is enforced by the **haproxy ingress** (`ingress.yaml` annotations), *not* the app's `CORSMiddleware` (which is effectively dead config). `cors-allow-headers` is an explicit list — a new custom request header (e.g. `X-Client`) must be added there or the browser preflight blocks the whole request. See the comment in `ingress.yaml`.
 
 ## Evaluating Logs

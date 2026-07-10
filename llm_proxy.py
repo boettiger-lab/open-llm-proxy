@@ -512,9 +512,20 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     payload = {
         "model": request.model,
         "messages": request.messages,
-        "temperature": request.temperature
     }
-    
+
+    # Sampling params: the newest Anthropic models (Sonnet 5, Opus 4.8/4.7, Fable 5,
+    # ...) reject `temperature`/`top_p`/`top_k` with a 400 — they were removed, not
+    # deprecated. `no_sampling_params` lists (per provider) the model IDs that must
+    # not receive them; matched exact-then-prefix like model routing. Everything else
+    # keeps the forced `temperature: 0.0` default (#33) for eval determinism.
+    no_sampling = provider_config.get("no_sampling_params", [])
+    rejects_sampling = request.model in no_sampling or any(
+        request.model.startswith(p) for p in no_sampling
+    )
+    if not rejects_sampling:
+        payload["temperature"] = request.temperature
+
     # Add tools if provided
     if request.tools:
         payload["tools"] = request.tools
@@ -525,6 +536,8 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     for field in ("top_p", "seed", "stop", "max_tokens", "response_format"):
         value = getattr(request, field)
         if value is not None:
+            if field == "top_p" and rejects_sampling:
+                continue  # same 400 as temperature on these models
             payload[field] = value
 
     # OpenRouter-only knobs: the `provider` routing block (zdr / order / only /
