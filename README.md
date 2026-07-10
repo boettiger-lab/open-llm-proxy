@@ -39,10 +39,25 @@ Configured in `config.json`. Most deployments only need NRP:
 |---|---|---|
 | **NRP** (`ellm.nrp-nautilus.io`) | `kimi`, `qwen3`, `glm-5`, `minimax-m2`, `gpt-oss`, `gemma` | Default; supports `enable_thinking` for applicable models |
 | **OpenRouter** | `anthropic/…`, `mistralai/…`, `openai/…`, `qwen/…`, `nvidia/…`, `amazon/…`, `z-ai/…`, `minimax/…`, `moonshotai/…` | Prefix match; requires separate API key |
-| **Anthropic** | `claude-…` (default `claude-sonnet-4-6`; `claude-opus-4-8`, `claude-haiku-4-5` also route) | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives |
+| **Anthropic** | `claude-…` (default `claude-sonnet-4-6`; `claude-opus-4-8`, `claude-haiku-4-5` also route) | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives. **No prompt caching** — see below |
 | **Nimbus** | `nemotron` | Private vLLM instance; requires separate API key |
 
 Unknown models fall back to NRP. To customize the model list, edit `config.json` — no code change needed.
+
+#### Claude: direct vs. OpenRouter (prompt caching)
+
+The **app picks the route by model id** — there are two ways to reach Claude, and they behave differently for [prompt caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching):
+
+| Send `model:` | Routes to | Prompt caching |
+|---|---|---|
+| `claude-sonnet-4-6` (bare `claude-*`) | Anthropic direct | ❌ **ignored** |
+| `anthropic/claude-sonnet-4.5` (OpenRouter slug) | OpenRouter → Anthropic | ✅ **works** |
+
+Anthropic's OpenAI-compatibility endpoint (`/v1/chat/completions`) silently ignores message-embedded `cache_control` — prompt caching is a native Messages-API (`/v1/messages`) feature (geo-agent [#273](https://github.com/boettiger-lab/geo-agent/issues/273), proxy [#75](https://github.com/boettiger-lab/open-llm-proxy/issues/75)). OpenRouter maps the OpenAI-style `cache_control` breakpoint onto Anthropic's native param, so the same request caches there.
+
+> **Naming gotcha:** `anthropic/…` is OpenRouter's *vendor namespace* ("the Anthropic-brand model **served by OpenRouter**"), **not** "route to Anthropic direct." Bare `claude-*` is the direct route. OpenRouter also uses its own version formatting (`claude-sonnet-4.5`, not `claude-sonnet-4-6`) — the app owns the exact slug.
+
+To get the savings, the app (client-side) must (1) send the system prompt as content parts with a `cache_control: {"type":"ephemeral"}` breakpoint, and (2) use the `anthropic/…` model id. Add `"usage": {"include": true}` to the request body to see the cache accounting (`cached_tokens` / `cache_write_tokens`) in the response and logs. Verified on `anthropic/claude-haiku-4.5`: a repeated ~6.8k-token prefix billed `cache_write_tokens` on the first call and `cached_tokens` on the second (~12× lower prefix cost).
 
 ### Thinking mode
 

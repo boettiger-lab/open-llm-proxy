@@ -9,6 +9,18 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Changed
+- **Documented Claude prompt-caching routing (#75) — app selects the route by model id.**
+  No code change: `anthropic/claude-*` already routes to OpenRouter (which maps the
+  OpenAI-style `cache_control` breakpoint onto Anthropic's native param, so prompt
+  caching lands), while bare `claude-*` routes to Anthropic's OpenAI-compat endpoint
+  (which silently ignores `cache_control`). Verified end-to-end on
+  `anthropic/claude-haiku-4.5`: a repeated ~6.8k-token cached prefix billed
+  `cache_write_tokens` on the first call and `cached_tokens` on the second (~12× lower
+  prefix cost). README's provider-routing section now spells out the two model ids
+  side by side, the `anthropic/…` = "served by OpenRouter" naming gotcha, and the
+  `"usage": {"include": true}` knob for surfacing cache accounting. Unblocks the
+  geo-agent client half (per-model `prompt_cache: true`, already merged and off by
+  default).
 - **Nimbus (DSE) model renamed `nemotron` → `qwen`.** The `vllm-nimbus.carlboettiger.info`
   endpoint now serves `nvidia/Qwen3.6-35B-A3B-NVFP4` under the id `qwen` (was
   `nemotron`). Updated `config.json`'s `nimbus.models` to `["qwen"]` so the proxy
