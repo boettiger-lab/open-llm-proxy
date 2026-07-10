@@ -9,6 +9,9 @@ How many seamounts are there in the Sargasso Sea "Ecologically or Biologically S
 # ca-30x30
 How many acres of California land are conserved at GAP status 1 or 2?
 Which ecoregion has the most conserved acreage?
+What percent of California's area is conserved under 30x30 (GAP 1 or 2)?
+Break down California's major habitat types (CWHR13) by percent conserved under 30x30 (GAP 1 or 2).
+What percent of hardwood woodland is conserved under 30x30 (GAP 1 or 2)?
 
 # global-30x30
 What percentage of global land is currently inside a designated protected area?
