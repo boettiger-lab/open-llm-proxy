@@ -33,6 +33,20 @@ META = {
  ("ca-30x30","q2"): dict(id="ca-ecoregion-most-conserved", trap="group-by-native-ecoregion-field",
    gold="Mojave Desert ~7.37M acres #1",
    accept="top ecoregion = Mojave Desert"),
+ ("ca-30x30","q3"): dict(id="ca-pct-conserved", trap="ca-denominator-ecoregion-source-area;units-percent-not-acres",
+   gold="~26.1% (26.47M ac GAP1+2 / 101.5M ac CA extent). Denominator = SUM(Shape_Area) of the source ecoregion polygons (101,498,000 ac), NOT a hex SUM (103.3M, double-counts dup rows) or count×nominal-cell-area (95.3M).",
+   accept="~26% (25.5–26.6). MUST divide 26.47M GAP1+2 by the ~101.5M ecoregion extent; reject 25.6% (hex-sum denom), 27.8% (nominal-area denom), acres-only, or '% of the 30% target'.",
+   note="Guidance trap added 2026-07-10 from proxy-log analysis: qwen recomputed the denominator ad hoc (25.6% vs 27.8% across runs). See notes/ca-30x30-gold-truth-vs-models.md; fixed by ca-30x30#87 (hardwired denominator)."),
+ ("ca-30x30","q4"): dict(id="ca-cwhr13-pct-conserved", trap="cwhr-code-name-from-schema-not-memory;cwhr13-use-fractional-hex-not-mode",
+   gold="Per whr13num (name from STAC legend, area from cwhr13-hex-fractions): Urban(80) 1.0%, Agriculture(10) 2.4%, Hardwood Woodland(52) 13.6%, Herbaceous(60) 15.8%, Water(90) 20.8%, Hardwood Forest(51) 21.3%, Conifer Forest(31) 23.5%, Shrub(70) 26.6%, Conifer Woodland(32) 28.8%, Wetland(100) 45.6%, Desert Shrub(41) 48.2%, Barren/Other(20) 51.7%, Desert Woodland(42) 56.7%.",
+   accept="Class NAMES correct per whr13num legend (10=Agriculture, 31=Conifer Forest, 52=Hardwood Woodland, 80=Urban, 90=Water …) — NOT fabricated (e.g. 10=Conifer, 80=Barren is the failure). Percents ±3pt. Least protected = Urban/Agriculture; most = Desert Woodland/Barren.",
+   note="Guidance trap added 2026-07-10: qwen queried cwhr13 without get_schema and fabricated 12/13 class names. See geo-agent#303, ca-30x30#87 (CWHR caveat), notes/ca-30x30-gold-truth-vs-models.md."),
+ ("ca-30x30","q5"): dict(id="ca-hardwood-woodland-pct", trap="cwhr-hardwood-woodland-is-code-52;cwhr13-use-fractional-hex-not-mode",
+   gold="~13.6% (Hardwood Woodland = whr13num 52; 5.87M ac total, 0.80M ac GAP1+2). Hardwood FOREST is code 51 (21.3%) — a distinct class.",
+   accept="~13–14% AND uses whr13num=52. Reject answers built on code 10 (Agriculture→2.4%), 70 (Shrub→26%), 60-class oak subtypes, or 'code 51' — all wrong-code selections seen in the logs.",
+   note="Guidance trap added 2026-07-10: minimax cycled through codes 71-76/70/10 (→2.4%/3.5%/26%/36%); qwen3/qwen used code 52 correctly (→13.5-13.8%). The clearest 'two numeric codes' failure. See notes/ca-30x30-gold-truth-vs-models.md."),
+ # NB: the ca-30x30 endemic×GAP-1 question is ambiguous (metric-layer + threshold-population
+ # forks) — it is a mode=clarify test (CLARIFY list below), NOT an answer-mode gold.
  ("global-30x30","q1"): dict(id="glob-pct-land-protected", trap="dedup-protected-hexes;land-mask-denominator",
    gold="~16.5% of global land inside WDPA",
    accept="~15–18%"),
@@ -110,7 +124,8 @@ for app in ["biodiversity","bosl-high-seas","ca-30x30","global-30x30","tpl-ca","
             "gold": m["gold"], "accept": m["accept"],
             "trap": m["trap"].split(";"),
             "sql_ref": f"gold/{app}.md (q{i})",
-            "bench_mean_acc": BENCH_FLAT[m["id"]],
+            # null for grow-on-fix additions not in the original 4-model benchmark
+            "bench_mean_acc": BENCH_FLAT.get(m["id"]),
         }
         if m.get("note"): rec["note"] = m["note"]
         records.append(rec)
@@ -133,14 +148,23 @@ CLARIFY = [
    ambiguity="normalization method and weighting unspecified (min-max vs z-score vs rank; equal vs custom weights; NCP is an intensity mixed with extensive sums)",
    accept="asks how to normalize/weight the composite (and flags the intensity-vs-extensive mismatch) before ranking; does NOT silently choose a method",
    pairs_with="wet-top10-hydrobasins-composite"),
+ dict(id="clarify-ca-endemic-gap1", app="ca-30x30",
+   question="What percent of GAP 1 land is in the top 20% (>=80th percentile) of endemic-species richness?",
+   ambiguity="'endemic-species richness' is unspecified: (1) WHICH layer — ACE `AllTaxaEnd` (all endemic/near-endemic taxa) vs the separate rarity-weighted endemic *plant* richness layer (plants only); (2) percentile over WHICH population (all ACE hexagons → P80=4 vs nonzero-only → higher). Axis (1) dominates the answer.",
+   accept="GOLD = recognizes 'endemic richness' is unspecified (at minimum the metric-layer choice) and ASKS which layer/threshold before computing. Silently answering with ANY single number — even the correct ~20.8% AllTaxaEnd value — is a FAIL; the model must ask, not guess.",
+   resolution="If the user picks ACE `AllTaxaEnd`, top-20% = AllTaxaEnd ≥ P80 (=4 over distinct hexagons), GAP-1 land by sanctioned Gap1_acres/Total_Acre area-weight (reGAP=1 gives the same): **~20.8%** — ≈ the 20% expected by chance, so GAP-1 land is NOT endemic-enriched. Alternative resolutions: rarity-weighted endemic *plant* richness layer → ~25%; AllTaxaEnd with a nonzero-only percentile population / polygon-acre GAP-1 → ~30%. Operator-verified SQL in gold/ca-30x30.md (q6).",
+   pairs_with=None),
 ]
 for c in CLARIFY:
-    records.append({
+    rec = {
         "id": c["id"], "app": c["app"], "q_idx": "clarify", "question": c["question"],
         "mode": "clarify", "ambiguity": c["ambiguity"], "accept": c["accept"],
         "pairs_with": c["pairs_with"],
         "note": "Gold = identify the ambiguity and ask; NOT a data answer. Currently fails for most models (they answer anyway) — gated on a clarification-steering guidance change (geo-agent issue).",
-    })
+    }
+    # optional preloaded disambiguation answer(s) to provide IF the model asks
+    if c.get("resolution"): rec["resolution"] = c["resolution"]
+    records.append(rec)
 
 manifest = {
     "version": "2026-06-27",
@@ -174,6 +198,11 @@ print("wrote questions.txt")
 ans = [r for r in records if r["mode"] == "answer"]
 clar = [r for r in records if r["mode"] == "clarify"]
 print(f"  modes: {len(ans)} answer, {len(clar)} clarify")
-hard = sorted(ans, key=lambda r: r["bench_mean_acc"])[:5]
+scored = [r for r in ans if r["bench_mean_acc"] is not None]
+hard = sorted(scored, key=lambda r: r["bench_mean_acc"])[:5]
 print("hardest answer-mode (trap-rule seeds):")
 for r in hard: print(f"  {r['bench_mean_acc']:.2f}  {r['id']:32} traps={r['trap']}")
+new = [r for r in ans if r["bench_mean_acc"] is None]
+if new:
+    print(f"grow-on-fix additions (no first-run bench): {len(new)}")
+    for r in new: print(f"  --    {r['id']:32} traps={r['trap']}")

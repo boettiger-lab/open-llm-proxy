@@ -8,6 +8,26 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **Baseline golden set: 4 new ca-30x30 regression questions (#40 grow-on-fix) —
+  3 answer-mode + 1 clarify-mode.** Operator-verified gold + authoritative SQL +
+  `trap` tags for the failures found in the 2026-07-10 proxy-log analysis of the
+  ca-30x30 app (DSE-nimbus `qwen`):
+  (answer) `% of California conserved` — pins the denominator to the source ecoregion
+  polygon area (101.5M ac → 26.1%), trap `ca-denominator-ecoregion-source-area`;
+  (answer) `CWHR13 habitat breakdown` — correct `whr13num` legend + fractional-hex area,
+  traps `cwhr-code-name-from-schema-not-memory`, `cwhr13-use-fractional-hex-not-mode`;
+  (answer) `% hardwood woodland conserved` — Hardwood Woodland = code 52 (13.6%), trap
+  `cwhr-hardwood-woodland-is-code-52`; (clarify) `% of GAP-1 land in top-20% endemic
+  richness` — genuinely ambiguous (endemic-metric + threshold-population forks), so the
+  gold is to ASK, not answer; a preloaded `resolution` field carries the disambiguated
+  answer (~20.8% for ACE AllTaxaEnd) to give if the model asks. `bench_mean_acc` is now
+  nullable for grow-on-fix additions (not in the original 4-model benchmark), and
+  clarify records gained an optional `resolution` field. First accuracy marks for
+  `qwen` + `z-ai/glm-5.2` are recorded in `gold/ca-30x30.md` (both models silently
+  answered the clarify question → FAIL). Related: geo-agent#303, ca-30x30#87,
+  data-workflows#387, mcp-data-server#294.
+
 ### Changed
 - **Documented Claude prompt-caching routing (#75) — app selects the route by model id.**
   No code change: `anthropic/claude-*` already routes to OpenRouter (which maps the

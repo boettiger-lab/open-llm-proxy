@@ -7,9 +7,9 @@
     "grading": "judge each model answer vs `gold`/`accept`; gold is operator-verified via own duckdb-geo queries (NOT model consensus).",
     "pass": "targeted trap fixed AND no regression vs this baseline (per-question, instance-level)."
   },
-  "n_questions": 25,
-  "n_answer": 22,
-  "n_clarify": 3,
+  "n_questions": 29,
+  "n_answer": 25,
+  "n_clarify": 4,
   "modes": {
     "answer": "gold = the computed answer; grade against `accept`.",
     "clarify": "gold = recognize the ambiguity and ask; grade on whether the model asks rather than silently picks. Tied to a clarification-steering guidance change."
@@ -104,6 +104,54 @@
       ],
       "sql_ref": "gold/ca-30x30.md (q2)",
       "bench_mean_acc": 1.0
+    },
+    {
+      "id": "ca-pct-conserved",
+      "app": "ca-30x30",
+      "q_idx": "q3",
+      "question": "What percent of California's area is conserved under 30x30 (GAP 1 or 2)?",
+      "mode": "answer",
+      "gold": "~26.1% (26.47M ac GAP1+2 / 101.5M ac CA extent). Denominator = SUM(Shape_Area) of the source ecoregion polygons (101,498,000 ac), NOT a hex SUM (103.3M, double-counts dup rows) or count\u00d7nominal-cell-area (95.3M).",
+      "accept": "~26% (25.5\u201326.6). MUST divide 26.47M GAP1+2 by the ~101.5M ecoregion extent; reject 25.6% (hex-sum denom), 27.8% (nominal-area denom), acres-only, or '% of the 30% target'.",
+      "trap": [
+        "ca-denominator-ecoregion-source-area",
+        "units-percent-not-acres"
+      ],
+      "sql_ref": "gold/ca-30x30.md (q3)",
+      "bench_mean_acc": null,
+      "note": "Guidance trap added 2026-07-10 from proxy-log analysis: qwen recomputed the denominator ad hoc (25.6% vs 27.8% across runs). See notes/ca-30x30-gold-truth-vs-models.md; fixed by ca-30x30#87 (hardwired denominator)."
+    },
+    {
+      "id": "ca-cwhr13-pct-conserved",
+      "app": "ca-30x30",
+      "q_idx": "q4",
+      "question": "Break down California's major habitat types (CWHR13) by percent conserved under 30x30 (GAP 1 or 2).",
+      "mode": "answer",
+      "gold": "Per whr13num (name from STAC legend, area from cwhr13-hex-fractions): Urban(80) 1.0%, Agriculture(10) 2.4%, Hardwood Woodland(52) 13.6%, Herbaceous(60) 15.8%, Water(90) 20.8%, Hardwood Forest(51) 21.3%, Conifer Forest(31) 23.5%, Shrub(70) 26.6%, Conifer Woodland(32) 28.8%, Wetland(100) 45.6%, Desert Shrub(41) 48.2%, Barren/Other(20) 51.7%, Desert Woodland(42) 56.7%.",
+      "accept": "Class NAMES correct per whr13num legend (10=Agriculture, 31=Conifer Forest, 52=Hardwood Woodland, 80=Urban, 90=Water \u2026) \u2014 NOT fabricated (e.g. 10=Conifer, 80=Barren is the failure). Percents \u00b13pt. Least protected = Urban/Agriculture; most = Desert Woodland/Barren.",
+      "trap": [
+        "cwhr-code-name-from-schema-not-memory",
+        "cwhr13-use-fractional-hex-not-mode"
+      ],
+      "sql_ref": "gold/ca-30x30.md (q4)",
+      "bench_mean_acc": null,
+      "note": "Guidance trap added 2026-07-10: qwen queried cwhr13 without get_schema and fabricated 12/13 class names. See geo-agent#303, ca-30x30#87 (CWHR caveat), notes/ca-30x30-gold-truth-vs-models.md."
+    },
+    {
+      "id": "ca-hardwood-woodland-pct",
+      "app": "ca-30x30",
+      "q_idx": "q5",
+      "question": "What percent of hardwood woodland is conserved under 30x30 (GAP 1 or 2)?",
+      "mode": "answer",
+      "gold": "~13.6% (Hardwood Woodland = whr13num 52; 5.87M ac total, 0.80M ac GAP1+2). Hardwood FOREST is code 51 (21.3%) \u2014 a distinct class.",
+      "accept": "~13\u201314% AND uses whr13num=52. Reject answers built on code 10 (Agriculture\u21922.4%), 70 (Shrub\u219226%), 60-class oak subtypes, or 'code 51' \u2014 all wrong-code selections seen in the logs.",
+      "trap": [
+        "cwhr-hardwood-woodland-is-code-52",
+        "cwhr13-use-fractional-hex-not-mode"
+      ],
+      "sql_ref": "gold/ca-30x30.md (q5)",
+      "bench_mean_acc": null,
+      "note": "Guidance trap added 2026-07-10: minimax cycled through codes 71-76/70/10 (\u21922.4%/3.5%/26%/36%); qwen3/qwen used code 52 correctly (\u219213.5-13.8%). The clearest 'two numeric codes' failure. See notes/ca-30x30-gold-truth-vs-models.md."
     },
     {
       "id": "glob-pct-land-protected",
@@ -381,6 +429,18 @@
       "accept": "asks how to normalize/weight the composite (and flags the intensity-vs-extensive mismatch) before ranking; does NOT silently choose a method",
       "pairs_with": "wet-top10-hydrobasins-composite",
       "note": "Gold = identify the ambiguity and ask; NOT a data answer. Currently fails for most models (they answer anyway) \u2014 gated on a clarification-steering guidance change (geo-agent issue)."
+    },
+    {
+      "id": "clarify-ca-endemic-gap1",
+      "app": "ca-30x30",
+      "q_idx": "clarify",
+      "question": "What percent of GAP 1 land is in the top 20% (>=80th percentile) of endemic-species richness?",
+      "mode": "clarify",
+      "ambiguity": "'endemic-species richness' is unspecified: (1) WHICH layer \u2014 ACE `AllTaxaEnd` (all endemic/near-endemic taxa) vs the separate rarity-weighted endemic *plant* richness layer (plants only); (2) percentile over WHICH population (all ACE hexagons \u2192 P80=4 vs nonzero-only \u2192 higher). Axis (1) dominates the answer.",
+      "accept": "GOLD = recognizes 'endemic richness' is unspecified (at minimum the metric-layer choice) and ASKS which layer/threshold before computing. Silently answering with ANY single number \u2014 even the correct ~20.8% AllTaxaEnd value \u2014 is a FAIL; the model must ask, not guess.",
+      "pairs_with": null,
+      "note": "Gold = identify the ambiguity and ask; NOT a data answer. Currently fails for most models (they answer anyway) \u2014 gated on a clarification-steering guidance change (geo-agent issue).",
+      "resolution": "If the user picks ACE `AllTaxaEnd`, top-20% = AllTaxaEnd \u2265 P80 (=4 over distinct hexagons), GAP-1 land by sanctioned Gap1_acres/Total_Acre area-weight (reGAP=1 gives the same): **~20.8%** \u2014 \u2248 the 20% expected by chance, so GAP-1 land is NOT endemic-enriched. Alternative resolutions: rarity-weighted endemic *plant* richness layer \u2192 ~25%; AllTaxaEnd with a nonzero-only percentile population / polygon-acre GAP-1 \u2192 ~30%. Operator-verified SQL in gold/ca-30x30.md (q6)."
     }
   ]
 }
