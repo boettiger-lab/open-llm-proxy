@@ -100,6 +100,18 @@ See [Releases](README.md#releases) for how a release is cut.
   Enables the two-pass reasoning ON/OFF assessment against the gold baseline (#58).
 
 ### Fixed
+- **Headless runner no longer spuriously crashes slow-decode reasoning models (#61).**
+  `run.js`'s fetch wrapper hard-capped every proxy call at 310s — *below* the agent's
+  own 600s per-attempt budget — so a legitimately-slow reasoning call (glm-5/kimi with
+  thinking ON, ~1 tok/s) was aborted mid-stream as `fetch failed`, which geo-agent
+  classifies as a transient *network* error and retries on its tight 90s floor →
+  `Request timed out after 90 seconds` → crash, no transcript. The wrapper cap is now
+  derived from the agent budget (`llmTimeoutSec*1000 + 60s`) so it always sits above it
+  and the agent's own clean timeout (full-budget retry) governs. New `--llm-timeout N`
+  / `LLM_TIMEOUT_SECONDS` sets the agent's `llm_timeout_seconds` (default 600, behavior-
+  preserving); `PER_FETCH_TIMEOUT_MS` overrides the wrapper backstop directly. Unblocks
+  benchmarking reasoning-ON on slow models (#58). Startup banner now prints both effective
+  timeouts.
 - **`temperature` no longer force-sent to models that reject it.** The proxy
   unconditionally injected `temperature` (default `0.0`) into every upstream
   payload, so the newest Anthropic models — Claude Sonnet 5, Opus 4.8/4.7, Fable 5
