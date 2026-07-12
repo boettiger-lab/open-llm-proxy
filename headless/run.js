@@ -70,6 +70,10 @@ Options:
   --transcript PATH        Write full transcript JSON to PATH
   --run-timeout N          Hard wall-clock cap in seconds; writes partial
                            transcript with timed_out=true and exits 124
+  --llm-timeout N          Per-LLM-call budget in seconds (agent's own timeout,
+                           = geo-agent llm_timeout_seconds). Default 600. Raise
+                           for slow-decode reasoning models (glm-5/kimi ON).
+                           Env: LLM_TIMEOUT_SECONDS.
   --trial N                Trial number (metadata only; stored in transcript)
   --quiet                  Suppress per-turn output; print only final answer
 `);
@@ -80,7 +84,15 @@ Options:
 // body (cloned so the original stream still goes to the agent), and (4) add a
 // hard per-request AbortSignal.timeout — composed with any caller-provided
 // signal — so a stuck undici socket can't wedge libuv timers indefinitely.
-function installFetchWrapper(proxyEndpoint, origin, onProxyFetch, perFetchTimeoutMs = 310_000) {
+//
+// perFetchTimeoutMs MUST sit ABOVE the agent's own per-attempt budget
+// (_llmTimeoutMs, default 600s). If it fires first (the old 310s default did on
+// slow-decode reasoning models), the agent sees a mid-stream `fetch failed`,
+// classifies it as a transient *network* error, and retries on the tight 90s
+// floor instead of its full budget — so a legitimately-slow call crashes the
+// run (#61). The caller derives this from --llm-timeout; it stays a backstop
+// against a truly wedged socket, not a cap on normal slow generation.
+function installFetchWrapper(proxyEndpoint, origin, onProxyFetch, perFetchTimeoutMs = 660_000) {
     const proxyOrigin = new URL(proxyEndpoint).origin;
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init = {}) => {
@@ -159,6 +171,14 @@ async function main() {
     const runTimeoutSec = Number(args.run_timeout) || 0;
     const trial = args.trial ? Number(args.trial) : null;
 
+    // Agent's own per-LLM-call budget (geo-agent llm_timeout_seconds); default
+    // matches geo-agent's own 600s default. The fetch wrapper's hard cap is
+    // derived to sit above it (+60s) so the agent's clean timeout+full-budget
+    // retry governs, never the wrapper's 90s network-retry floor (#61).
+    // PER_FETCH_TIMEOUT_MS overrides the derived value for a manual backstop.
+    const llmTimeoutSec = Number(args.llm_timeout ?? process.env.LLM_TIMEOUT_SECONDS) || 600;
+    const perFetchTimeoutMs = Number(process.env.PER_FETCH_TIMEOUT_MS) || (llmTimeoutSec * 1000 + 60_000);
+
     const transcript = {
         model,
         trial,
@@ -212,7 +232,7 @@ async function main() {
 
     installFetchWrapper(proxyEndpoint, args.origin, (sample) => {
         transcript.llm_fetches.push(sample);
-    });
+    }, perFetchTimeoutMs);
 
     const log = (msg) => { if (!quiet) console.log(msg); };
     const err = (msg) => console.error(msg);
@@ -263,6 +283,9 @@ async function main() {
     const agent = new Agent({
         auto_approve: true,
         llm_model: model,
+        // Top-level per-call budget; geo-agent's _llmTimeoutMs falls back to
+        // this when a model config has no llm_timeout_seconds of its own.
+        llm_timeout_seconds: llmTimeoutSec,
         llm_models: [{
             value: model,
             label: model,
@@ -322,6 +345,7 @@ async function main() {
     console.log('='.repeat(72));
     console.log(`Q: ${args.question}`);
     console.log(`model=${model}  origin=${args.origin || '(none)'}  max_turns=${maxTurns}`);
+    console.log(`llm_timeout=${llmTimeoutSec}s  fetch_cap=${Math.round(perFetchTimeoutMs / 1000)}s`);
     console.log('='.repeat(72));
 
     const t0 = Date.now();
