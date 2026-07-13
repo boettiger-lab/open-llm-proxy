@@ -21,7 +21,16 @@ metadata:
     haproxy-ingress.github.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Accept,Accept-Encoding,Accept-Language,Connection,Host,Origin,Referer,Sec-Fetch-Dest,Sec-Fetch-Mode,Sec-Fetch-Site,Priority,Authorization,X-Client,X-Session-Id"
     haproxy-ingress.github.io/cors-allow-credentials: "false"
     haproxy-ingress.github.io/cors-max-age: "600"
+    # Keep timeout-client aligned with timeout-server (hygiene). Because the proxy
+    # calls upstream non-streaming, a long completion leaves BOTH sides idle — the
+    # backend silent (timeout-server) and the client waiting (timeout-client) — so
+    # the two should match. NOTE: this does NOT resolve #82. A ~300s ceiling still
+    # cuts long single generations (client sees `fetch failed` at ~300s); testing
+    # showed NRP's shared haproxy enforces that client timeout and this per-Ingress
+    # annotation does not override it. The real fix is streaming end-to-end (proxy
+    # + geo-agent) or an NRP-side timeout bump — tracked in #82.
     haproxy-ingress.github.io/timeout-server: "600s"
+    haproxy-ingress.github.io/timeout-client: "600s"
     haproxy-ingress.github.io/timeout-tunnel: "3600s"
 spec:
   ingressClassName: haproxy
