@@ -39,6 +39,14 @@ See [Releases](README.md#releases) for how a release is cut.
   data-workflows#387, mcp-data-server#294.
 
 ### Changed
+- **Re-verified the gold baseline against current NRP data vintage — no drift (#81).**
+  WDPA advanced Dec-2025 → June-2026 (`WDPA_poly_Jun2026`, 306,985 features) and ca30x30's
+  canonical file was re-confirmed authoritative. Re-ran the gold SQL for the four
+  WDPA-dependent global-30x30 answers and both ca-30x30 GAP-status answers against
+  `s3-west`: every value reproduced **exactly** (H3-hex aggregation at h8 is robust to
+  WDPA's incremental additions). No expected-value edits to `gold/*.md` / `golden.json`;
+  added provenance notes to the two gold headers recording the vintage they were
+  re-verified against. Closes the loop from data-workflows#360.
 - **Align ingress `timeout-client` with `timeout-server` (both 600s) — hygiene.**
   Added `haproxy-ingress.github.io/timeout-client: "600s"` so the client- and
   server-side idle timeouts match (the proxy calls upstream non-streaming, so a long
