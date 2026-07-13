@@ -1,5 +1,9 @@
 # Gold — global-30x30
 
+<!-- Provenance: WDPA-dependent answers (Q1–Q4) re-verified 2026-07-13 against current NRP
+     (WDPA_poly_Jun2026, 306,985 features — advanced past the Dec-2025 vintage they were first
+     computed on). All values reproduced exactly; no changes. See open-llm-proxy#81. -->
+
 ## Q1. What % of global land is inside a designated protected area?
 - **Answer:** **16.48%** (29,263,682 protected land h8 cells / 177,521,782 total land h8 cells). Matches Protected Planet ~16–17% terrestrial.
 - **Datasets:** `wdpa` `s3://public-wdpa/wdpa/hex/h0=*/data_0.parquet`; land mask `cgls-lc100-2019` `s3://public-land-cover/cgls-lc100-2019/hex/h0=*/data_0.parquet` (land = lc_class NOT IN (0,80,200)).
