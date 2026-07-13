@@ -39,6 +39,15 @@ See [Releases](README.md#releases) for how a release is cut.
   data-workflows#387, mcp-data-server#294.
 
 ### Changed
+- **Align ingress `timeout-client` with `timeout-server` (both 600s) — hygiene.**
+  Added `haproxy-ingress.github.io/timeout-client: "600s"` so the client- and
+  server-side idle timeouts match (the proxy calls upstream non-streaming, so a long
+  completion leaves both sides idle). Does **not** resolve the ~300s ceiling on long
+  single generations investigated in #82 — testing showed NRP's shared haproxy enforces
+  a client timeout that this per-Ingress annotation doesn't override. #82 closed as
+  resolved-by-finding: the practical answer for slow reasoning models (e.g. glm-5.2) is
+  to run reasoning-OFF (consistently benchmarked as good OFF / not useful ON, #58), and
+  the app exposes reasoning toggles — so the streaming/infra fix isn't worth pursuing.
 - **Documented Claude prompt-caching routing (#75) — app selects the route by model id.**
   No code change: `anthropic/claude-*` already routes to OpenRouter (which maps the
   OpenAI-style `cache_control` breakpoint onto Anthropic's native param, so prompt
