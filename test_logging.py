@@ -498,6 +498,142 @@ def test_openrouter_only_knobs():
     assert "usage" not in nrp_payload, "usage must not leak to non-OpenRouter"
 
 
+# --- Tool-call arg-dialect normalization (#85) -------------------------------
+# glm-5.2 (and the qwen family) intermittently leak their tool-call arg encoding
+# into the structured `arguments`. Verbatim symptom from the issue: a valid outer
+# JSON object whose `value_stats` value is wrapped in the GLM XML arg dialect.
+
+def test_normalize_glm_value_level_leak():
+    """#85: dialect leaked into one value of an otherwise-valid JSON object.
+    The wrapper is stripped and the intended JSON payload comes back structured."""
+    p = importlib.reload(llm_proxy)
+    inner = {"by_res": {"2": {"max": 9.45, "min": 0.1}}}
+    args = json.dumps({
+        "layer_id": "hardwood",
+        "value_stats": f'<arg_key>value_stats</arg_key> <arg_value>{json.dumps(inner)}</arg_value>',
+    })
+    out, changed = p._normalize_tool_call_arguments(args)
+    assert changed
+    parsed = json.loads(out)
+    assert parsed["value_stats"] == inner           # structured, not a string
+    assert parsed["layer_id"] == "hardwood"         # untouched
+    assert "<arg_key>" not in out and "<arg_value>" not in out
+
+
+def test_normalize_glm_value_level_leak_unterminated():
+    """The leaked value may arrive without a closing </arg_value> tag (as the
+    issue's truncated capture showed). We still recover the payload up to end."""
+    p = importlib.reload(llm_proxy)
+    inner = {"by_res": {"2": {"max": 9.45}}}
+    args = json.dumps({
+        "value_stats": f'<arg_key>value_stats</arg_key> <arg_value>{json.dumps(inner)}',
+    })
+    out, changed = p._normalize_tool_call_arguments(args)
+    assert changed
+    assert json.loads(out)["value_stats"] == inner
+
+
+def test_normalize_whole_string_glm_dialect():
+    """The entire `arguments` string is raw GLM dialect (no valid outer JSON)."""
+    p = importlib.reload(llm_proxy)
+    raw = ('<arg_key>layer_id</arg_key> <arg_value>hardwood</arg_value> '
+           '<arg_key>opacity</arg_key> <arg_value>0.5</arg_value>')
+    out, changed = p._normalize_tool_call_arguments(raw)
+    assert changed
+    parsed = json.loads(out)
+    assert parsed == {"layer_id": "hardwood", "opacity": 0.5}
+
+
+def test_normalize_qwen_parameter_dialect():
+    """The qwen/hermes `<parameter=NAME>VALUE</parameter>` form of the same leak."""
+    p = importlib.reload(llm_proxy)
+    args = json.dumps({"sql": "<parameter=sql>SELECT 1</parameter>"})
+    out, changed = p._normalize_tool_call_arguments(args)
+    assert changed
+    assert json.loads(out)["sql"] == "SELECT 1"
+
+
+def test_normalize_leaves_clean_arguments_untouched():
+    """No dialect markers → byte-identical passthrough, no wasted re-serialize."""
+    p = importlib.reload(llm_proxy)
+    args = json.dumps({"sql": "SELECT * FROM t WHERE a < 5", "n": 3})
+    out, changed = p._normalize_tool_call_arguments(args)
+    assert not changed
+    assert out == args
+
+
+def test_normalize_response_tool_calls_in_place_and_counts():
+    """The response-level pass mutates result in place and returns a repair count;
+    a clean sibling tool call in the same response is left alone."""
+    p = importlib.reload(llm_proxy)
+    result = {"choices": [{"message": {"tool_calls": [
+        {"function": {"name": "add_hex_tile_layer", "arguments": json.dumps(
+            {"value_stats": '<arg_value>{"by_res": {"2": {"max": 1}}}</arg_value>'})}},
+        {"function": {"name": "get_schema", "arguments": '{"dataset": "ca"}'}},
+    ]}}]}
+    n = p._normalize_response_tool_calls(result)
+    assert n == 1
+    tcs = result["choices"][0]["message"]["tool_calls"]
+    assert json.loads(tcs[0]["function"]["arguments"])["value_stats"] == {"by_res": {"2": {"max": 1}}}
+    assert tcs[1]["function"]["arguments"] == '{"dataset": "ca"}'
+
+
+def test_normalize_response_is_defensive_on_garbage():
+    """Malformed shapes never raise — normalization must not break serving."""
+    p = importlib.reload(llm_proxy)
+    for junk in ({}, {"choices": None}, {"choices": [None]},
+                 {"choices": [{"message": {"tool_calls": [{"function": None}]}}]},
+                 {"choices": [{"message": {"tool_calls": "nope"}}]}):
+        assert p._normalize_response_tool_calls(junk) == 0
+
+
+def test_handler_repairs_dialect_and_logs_count():
+    """End-to-end: a glm-5.2 response with a leaked value is repaired before it
+    is returned to the client, and the repair count is recorded in the log."""
+    import asyncio
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    leaked = json.dumps({"value_stats": '<arg_key>value_stats</arg_key> <arg_value>{"by_res": {"2": {"max": 9.45}}}</arg_value>'})
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {
+                        "content": None,
+                        "tool_calls": [{"function": {"name": "add_hex_tile_layer",
+                                                     "arguments": leaked}}]}}],
+                    "usage": {"total_tokens": 5}}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **k):
+            return _FakeResp()
+
+    class _FakeRequest:
+        headers = {"origin": "https://ca-30x30.nrp-nautilus.io"}
+
+    req = p.ChatRequest(model="z-ai/glm-5.2", messages=[{"role": "user", "content": "what fraction of ca hardwood is protected?"}])
+    with patch.object(p, "get_provider_for_model",
+                      return_value=("openrouter", {"endpoint": "http://or", "api_key": "k"})), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+        result = asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+
+    returned = json.loads(result["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert returned["value_stats"] == {"by_res": {"2": {"max": 9.45}}}   # client gets structured data
+    responses = [e for e in p._log_buffer if e.get("type") == "response"]
+    assert responses[0]["tool_call_dialect_repaired"] == 1
+    assert "<arg_key>" not in json.dumps(responses[0])                   # log is clean too
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
