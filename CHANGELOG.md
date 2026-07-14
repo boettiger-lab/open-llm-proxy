@@ -8,6 +8,22 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Fixed
+- **Strip leaked `<arg_key>`/`<arg_value>` (GLM) and `<parameter=…>` (qwen) tool-call
+  arg dialect from responses (#85).** Some open-weight backends (`z-ai/glm-5.2`, the
+  qwen family) intermittently fail to decode their own tool-call argument encoding,
+  leaving raw markup inside the structured `arguments` a well-formed native
+  `tool_calls` entry returns — e.g. a `value_stats` value arriving as
+  `<arg_key>value_stats</arg_key> <arg_value>{…}</arg_value>` instead of the parsed
+  object. The proxy now normalizes both the value-level leak (dialect inside one value
+  of an otherwise-valid JSON object) and the whole-string leak (the entire `arguments`
+  is raw dialect) in `_normalize_response_tool_calls`, applied to each successful
+  response *before* it is returned or logged, so no downstream consumer (client or log)
+  ever sees the markup. Fully defensive — any parse failure leaves the value untouched.
+  The repair count is recorded as `tool_call_dialect_repaired` on the response log so
+  the leak rate stays measurable. Durable server-side fix for the leak class that
+  geo-agent#276 was defending against client-side.
+
 ### Added
 - **Multi-key client auth — accept more than one `PROXY_KEY` so eval/dev keys are
   independently revocable.** New `PROXY_KEYS_EXTRA` env (comma-separated, wired from

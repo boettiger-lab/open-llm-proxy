@@ -95,6 +95,98 @@ def _cap(s: Optional[str], limit: int) -> str:
         return s[:limit]
     return s
 
+# --- Tool-call arg-dialect normalization (#85) -------------------------------
+# Some open-weight backends intermittently fail to decode their own tool-call
+# argument encoding, leaving raw markup inside the structured `arguments` string
+# that an otherwise well-formed native `tool_calls` entry hands back:
+#   GLM (z-ai/glm-5.2):  <arg_key>NAME</arg_key> <arg_value>VALUE</arg_value>
+#   qwen / hermes:       <parameter=NAME>VALUE</parameter>
+# The intended payload is intact *inside* the wrapper, so this is a
+# serialization/parse gap, not lost data (#85; qwen precedent geo-agent#276).
+# We repair it here — before the response is returned or logged — so no
+# downstream consumer (client or log) ever sees the dialect. Fully defensive:
+# any parse failure leaves the value untouched.
+_ARG_DIALECT_MARKERS = ("<arg_key>", "<arg_value>", "<parameter=")
+_GLM_ARG_PAIR_RE   = re.compile(r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)(?:</arg_value>|$)", re.DOTALL)
+_QWEN_ARG_PAIR_RE  = re.compile(r"<parameter=(.*?)>(.*?)(?:</parameter>|$)", re.DOTALL)
+_GLM_ARG_VALUE_RE  = re.compile(r"<arg_value>(.*?)(?:</arg_value>|$)", re.DOTALL)
+_QWEN_ARG_VALUE_RE = re.compile(r"<parameter=[^>]*>(.*?)(?:</parameter>|$)", re.DOTALL)
+
+
+def _coerce_json(s: str):
+    """Parse `s` as JSON when it is structured data, else return it stripped.
+    Lets an unwrapped `{...}`/`[...]`/number value come back structured while a
+    bare scalar string stays a string."""
+    s = s.strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+
+def _unwrap_dialect_value(val):
+    """If a single tool-call argument *value* carries leaked arg-dialect markup,
+    extract the real payload from inside the <arg_value>/<parameter=…> wrapper.
+    Returns (value, changed)."""
+    if not isinstance(val, str) or not any(m in val for m in _ARG_DIALECT_MARKERS):
+        return val, False
+    m = _GLM_ARG_VALUE_RE.search(val) or _QWEN_ARG_VALUE_RE.search(val)
+    if not m:
+        return val, False
+    return _coerce_json(m.group(1)), True
+
+
+def _normalize_tool_call_arguments(arguments):
+    """Strip leaked arg-dialect markup from a tool call's `arguments` string.
+    Handles both the value-level leak (dialect inside one value of an otherwise
+    valid JSON object, the #85 symptom) and the whole-string leak (the entire
+    `arguments` is raw dialect). Returns (arguments_string, changed)."""
+    if not isinstance(arguments, str) or not any(m in arguments for m in _ARG_DIALECT_MARKERS):
+        return arguments, False
+    # Case 1: arguments is valid JSON; dialect leaked into individual values.
+    try:
+        obj = json.loads(arguments)
+    except Exception:
+        obj = None
+    if isinstance(obj, dict):
+        changed = False
+        for k, v in list(obj.items()):
+            new_v, ch = _unwrap_dialect_value(v)
+            if ch:
+                obj[k] = new_v
+                changed = True
+        return (json.dumps(obj), True) if changed else (arguments, False)
+    # Case 2: the whole arguments string is raw dialect — rebuild the object by
+    # pairing each key tag with the value tag that follows it.
+    pairs = _GLM_ARG_PAIR_RE.findall(arguments) or _QWEN_ARG_PAIR_RE.findall(arguments)
+    if pairs:
+        return json.dumps({k.strip(): _coerce_json(v) for k, v in pairs}), True
+    return arguments, False
+
+
+def _normalize_response_tool_calls(result) -> int:
+    """Repair leaked tool-call arg dialect (#85) in an upstream response, in
+    place. Returns the number of tool-call `arguments` repaired. Fully
+    defensive: any error leaves `result` untouched and returns 0 —
+    normalization must never corrupt a response or break serving."""
+    repaired = 0
+    try:
+        for choice in result.get("choices") or []:
+            message = (choice or {}).get("message") or {}
+            for tc in message.get("tool_calls") or []:
+                fn = (tc or {}).get("function")
+                if not isinstance(fn, dict):
+                    continue
+                new_args, changed = _normalize_tool_call_arguments(fn.get("arguments"))
+                if changed:
+                    fn["arguments"] = new_args
+                    repaired += 1
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"⚠️  tool-call dialect normalization skipped: "
+              f"{type(e).__name__}: {e}", flush=True)
+        return 0
+    return repaired
+
 # --- Credential scrubbing ----------------------------------------------------
 # Credentials reach the logs because the geo-agent `query` MCP tool accepts
 # s3_key/s3_secret in its arguments, which flow through `tool_calls`, tool
@@ -405,7 +497,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _emit(log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -453,6 +545,12 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
                     for tc in message["tool_calls"]
                 ]
         
+        # How many tool-call arguments were repaired of leaked arg dialect (#85).
+        # Kept queryable so the leak rate stays measurable even though the markup
+        # itself no longer reaches the logs.
+        if dialect_repaired:
+            log_entry["tool_call_dialect_repaired"] = dialect_repaired
+
         # Extract token usage if available
         if "usage" in response_data:
             log_entry["tokens"] = response_data["usage"]
@@ -595,10 +693,18 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             response = await http_client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             result = response.json()
-            
+
+            # Repair leaked tool-call arg dialect (#85) before returning OR
+            # logging, so neither the client nor the log ever sees the markup.
+            dialect_repaired = _normalize_response_tool_calls(result)
+            if dialect_repaired:
+                print(f"🧹 Normalized {dialect_repaired} tool-call argument(s) with "
+                      f"leaked arg dialect (model={request.model}, request_id={request_id})",
+                      flush=True)
+
             # Log successful response
             latency_ms = int((time.time() - start_time) * 1000)
-            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client)
+            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, dialect_repaired=dialect_repaired)
 
             return result
 
