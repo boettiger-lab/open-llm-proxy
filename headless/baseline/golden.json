@@ -7,8 +7,8 @@
     "grading": "judge each model answer vs `gold`/`accept`; gold is operator-verified via own duckdb-geo queries (NOT model consensus).",
     "pass": "targeted trap fixed AND no regression vs this baseline (per-question, instance-level)."
   },
-  "n_questions": 29,
-  "n_answer": 25,
+  "n_questions": 30,
+  "n_answer": 26,
   "n_clarify": 4,
   "modes": {
     "answer": "gold = the computed answer; grade against `accept`.",
@@ -212,6 +212,22 @@
       ],
       "sql_ref": "gold/global-30x30.md (q4)",
       "bench_mean_acc": 0.75
+    },
+    {
+      "id": "glob-carbon-in-state-h0-not-boundary",
+      "app": "global-30x30",
+      "q_idx": "q5",
+      "question": "How much irrecoverable carbon (2024 layer) is stored in California?",
+      "mode": "answer",
+      "gold": "\u2248 400 Mt C (3.999e8 Mg C) irrecoverable carbon (2024) within California (cross-check FL \u2248 466 Mt C / 4.658e8).",
+      "accept": "~380\u2013420 Mt C (3.8\u20134.2e8 Mg C). MUST clip to the state via the census-2024-state hex mask at the finest shared resolution \u2014 carbon h8 = state h8 (+h0), or `h8 IN (SELECT h8 FROM census WHERE STUSPS='CA')`. REJECT ~2.5e9 Mg C (2,543 Mt), the whole-base-cell total from filtering by h0 alone (h0 is a res-0 partition key ~4.35M km\u00b2, not a boundary); also reject a global/continental total.",
+      "trap": [
+        "h0-not-a-boundary",
+        "region-subset-finest-shared-res"
+      ],
+      "sql_ref": "gold/global-30x30.md (q5)",
+      "bench_mean_acc": null,
+      "note": "Grow-on-fix (added 2026-07-15) from geo-agent #322/#325: models subset a global value dataset to a state via WHERE h0 IN (\u2026) \u2014 h0 is the partition key, so this renders whole base cells (CA 2.5e9 vs 4.0e8 correct; FL, 1 base cell, 1.9e9 vs 4.66e8). Fixed by leading the region-subset guidance with the hN IN (SELECT hN FROM <mask> WHERE <attr>) form. Operator-verified via duckdb-geo 2026-07-15."
     },
     {
       "id": "tplca-cd16-funders",

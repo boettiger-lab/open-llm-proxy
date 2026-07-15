@@ -38,3 +38,16 @@ SEMI JOIN wdpa ON p.h8=wdpa.h8;
 - **Datasets:** `iucn-richness-2025` mammals `s3://public-iucn/hex/mammals_sr/h0=*/data_0.parquet` (native h5); `wdpa` hex (h8→h5); names `s3://public-wdpa/wdpa.parquet`.
 - **SQL:** AVG(mammals_sr) per WDPA `_cng_fid` over h5 cells, filter n_h5_cells>=3. (full query in run log)
 - **Confidence:** MED. **Trap:** without a min-cell threshold, top is 3 single-cell tiny PAs reading exactly 213 (one PA on the global hotspot cell) — an artifact. ≥3-cell threshold gives the meaningful answer. Either accepted, thresholded is gold. **App-coverage caveat:** global-30x30's configured layers don't include a mammal-richness dataset — models may not have had this data.
+
+## Q5. How much irrecoverable carbon (2024 layer) is stored in California?
+- **Answer:** **≈ 400 Mt C** (3.999e8 Mg C) irrecoverable carbon (2024) within California. Cross-check: Florida **≈ 466 Mt C** (4.658e8).
+- **Trap (`h0-not-a-boundary`):** `h0` is the res-0 hive **partition key** (~4.35M km² per base cell), NOT a boundary. Filtering carbon by California's `h0` set alone returns **2,543 Mt C** (2.543e9) — the two whole base cells CA touches, 6.4× too high; Florida (1 base cell) → **1,934 Mt** vs 466 correct (4.2×). Clip via the census state hex mask at the **finest shared resolution**: carbon is native h9 (parents h8…h5), census-state is native h8, so join/filter on `h8` (and `h0` for partition pruning).
+- **Datasets:** `irrecoverable-carbon` 2024 `s3://public-carbon/irrecoverable-carbon-2024/hex/h0=*/data_0.parquet` (col `carbon` Mg C, one row per h9 — SUM directly, no dedup); mask `census-2024-state` `s3://public-census/census-2024/state/hex/h0=*/data_0.parquet` (native h8, `STUSPS`). census not in global-30x30's configured layers → discovered via `browse_stac_catalog`.
+- **SQL:**
+```sql
+SELECT SUM(c.carbon) AS carbon_mg_c
+FROM read_parquet('s3://public-carbon/irrecoverable-carbon-2024/hex/h0=*/data_0.parquet') c
+WHERE c.h0 IN (SELECT DISTINCT h0 FROM read_parquet('s3://public-census/census-2024/state/hex/h0=*/data_0.parquet') WHERE STUSPS='CA')
+  AND c.h8 IN (SELECT DISTINCT h8 FROM read_parquet('s3://public-census/census-2024/state/hex/h0=*/data_0.parquet') WHERE STUSPS='CA');
+```
+- **Confidence:** HIGH. Operator-verified 2026-07-15 (duckdb-geo, v0.8.7): CA correct 3.999e8, FL correct 4.658e8; h0-only trap CA 2.543e9, FL 1.934e9. Guards the geo-agent #322/#325 region-subset guidance (`h0` is not a boundary; lead with the `hN IN (SELECT hN FROM <mask> WHERE <attr>)` form).

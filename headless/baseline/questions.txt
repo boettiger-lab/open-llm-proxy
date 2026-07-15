@@ -18,6 +18,7 @@ What percentage of global land is currently inside a designated protected area?
 How many people live inside existing protected areas?
 Which ecoregions have the lowest share of their area inside a protected area? List those at approximately 0%.
 Show me species richness for mammals and identify the top 5 protected areas by mean richness.
+How much irrecoverable carbon (2024 layer) is stored in California?
 
 # tpl-ca
 Which programs and agencies have funded land conservation in Congressional District 16, and how much?
