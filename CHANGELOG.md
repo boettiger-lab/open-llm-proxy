@@ -24,8 +24,9 @@ See [Releases](README.md#releases) for how a release is cut.
   `error="Client disconnected/cancelled after …ms (upstream still pending)"`, and
   re-raises; and the success path prints a greppable `⚠️  Slow completion` marker when
   `latency_ms > 300000` (case (a) — a logged 200 the user actually saw as a 502).
-  Diagnosis/visibility only; the root-cause fix (end-to-end SSE streaming so bytes keep
-  flowing) is cross-repo and tracked against geo-agent. See #82.
+  Visibility only — this does not change the request path or claim a root cause; it
+  makes the currently-invisible cut requests observable so the mechanism (why the
+  caller sees a 502, not a 504) can be pinned down from real data. See #82.
 - **Strip leaked `<arg_key>`/`<arg_value>` (GLM) and `<parameter=…>` (qwen) tool-call
   arg dialect from responses (#85).** Some open-weight backends (`z-ai/glm-5.2`, the
   qwen family) intermittently fail to decode their own tool-call argument encoding,
