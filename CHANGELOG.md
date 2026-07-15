@@ -9,6 +9,24 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Fixed
+- **Log client-disconnect / cancelled requests so the caller-facing nginx 502s stop
+  being invisible here.** Every geo-agent app fronts this proxy with an nginx sidecar
+  whose `proxy_read_timeout` is 300s (`geo-agent-template` configmap). Because the proxy
+  calls upstream **non-streaming**, zero bytes flow until the whole completion is
+  buffered, so any turn slower than 300s makes nginx return a `nginx/1.29.6` **502** to
+  the browser — while the proxy itself either (a) eventually succeeds and logs a slow
+  **200**, (b) times out at 600s and logs a **504**, or (c) is cancelled by uvicorn when
+  nginx drops the connection. Case (c) raised `asyncio.CancelledError`, which is a
+  `BaseException` and so slipped past the handler's `except Exception` — the request
+  left only a pre-flight request row and no response/error row, which is why the 502s
+  were unobservable from the proxy logs. The chat handler now catches
+  `asyncio.CancelledError`, logs a response row with
+  `error="Client disconnected/cancelled after …ms (upstream still pending)"`, and
+  re-raises; and the success path prints a greppable `⚠️  Slow completion` marker when
+  `latency_ms > 300000` (case (a) — a logged 200 the user actually saw as a 502).
+  Visibility only — this does not change the request path or claim a root cause; it
+  makes the currently-invisible cut requests observable so the mechanism (why the
+  caller sees a 502, not a 504) can be pinned down from real data. See #82.
 - **Strip leaked `<arg_key>`/`<arg_value>` (GLM) and `<parameter=…>` (qwen) tool-call
   arg dialect from responses (#85).** Some open-weight backends (`z-ai/glm-5.2`, the
   qwen family) intermittently fail to decode their own tool-call argument encoding,

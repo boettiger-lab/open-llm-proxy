@@ -454,6 +454,46 @@ def test_error_path_captures_allowlisted_upstream_headers():
     json.dumps(errs[0])   # must stay serializable
 
 
+def test_client_disconnect_is_logged_and_reraised():
+    """When the caller (nginx sidecar, 300s read timeout) drops the connection and
+    uvicorn cancels the handler mid-upstream, we log a response row with a
+    disconnect error AND re-raise CancelledError — so the previously-invisible
+    client-facing nginx 502s become observable in the logs (#82)."""
+    import asyncio
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **k):
+            raise asyncio.CancelledError()  # client went away while we awaited upstream
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+    with patch.object(p, "get_provider_for_model",
+                      return_value=("nrp", {"endpoint": "http://upstream", "api_key": "k"})), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+        try:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+            assert False, "expected CancelledError to propagate"
+        except asyncio.CancelledError:
+            pass  # must re-raise, not swallow
+
+    errs = [e for e in p._log_buffer if e.get("type") == "response" and e.get("error")]
+    assert len(errs) == 1
+    assert "disconnected" in errs[0]["error"].lower()
+    json.dumps(errs[0])   # must stay serializable
+
+
 def test_passthrough_sampling_knobs_forwarded():
     """seed/top_p/stop/max_tokens/response_format reach upstream on any provider (#47)."""
     payload = _run_proxy_capture(dict(
