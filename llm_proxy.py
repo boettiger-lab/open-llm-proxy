@@ -704,9 +704,33 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
 
             # Log successful response
             latency_ms = int((time.time() - start_time) * 1000)
+            # Callers front this proxy with an nginx sidecar whose proxy_read_timeout
+            # is 300s (geo-agent-template configmap). Because we call upstream
+            # non-streaming, zero bytes flow until the whole completion is buffered —
+            # so any turn slower than that already returned an nginx 502 to the
+            # browser even though *we* eventually succeed. Flag it so a logged 200
+            # that the user experienced as a 502 is greppable in pod logs (#82).
+            if latency_ms > 300_000:
+                print(f"⚠️  Slow completion: {latency_ms}ms exceeds the 300s client-side "
+                      f"nginx read timeout (model={request.model}, request_id={request_id}) — "
+                      f"the browser likely already received an nginx 502 for this turn",
+                      flush=True)
             log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, dialect_repaired=dialect_repaired)
 
             return result
+
+        except asyncio.CancelledError:
+            # The caller (the app's nginx sidecar, proxy_read_timeout 300s) gave up
+            # and closed the connection while we were still awaiting upstream, so
+            # uvicorn cancelled this handler. CancelledError is a BaseException, so
+            # the `except Exception` below never caught it — the request vanished
+            # from S3 (only the pre-flight request row remained), which is exactly
+            # why the client-facing nginx 502s were invisible here (#82). Log it,
+            # then re-raise so the cancellation still propagates correctly.
+            latency_ms = int((time.time() - start_time) * 1000)
+            error_detail = f"Client disconnected/cancelled after {latency_ms}ms (upstream still pending)"
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
+            raise
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
