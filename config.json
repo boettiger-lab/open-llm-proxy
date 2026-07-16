@@ -32,7 +32,8 @@
                 "nvidia/",
                 "z-ai/",
                 "minimax/",
-                "moonshotai/"
+                "moonshotai/",
+                "deepseek/"
             ],
             "extra_headers": {
                 "HTTP-Referer": "https://open-llm-proxy.nrp-nautilus.io",
