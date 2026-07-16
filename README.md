@@ -38,7 +38,7 @@ Configured in `config.json`. Most deployments only need NRP:
 | Provider | Models | Notes |
 |---|---|---|
 | **NRP** (`ellm.nrp-nautilus.io`) | `kimi`, `qwen3`, `glm-5`, `minimax-m2`, `gpt-oss`, `gemma` | Default; supports `enable_thinking` for applicable models |
-| **OpenRouter** | `anthropic/…`, `mistralai/…`, `openai/…`, `qwen/…`, `nvidia/…`, `amazon/…`, `z-ai/…`, `minimax/…`, `moonshotai/…` | Prefix match; requires separate API key |
+| **OpenRouter** | `anthropic/…`, `mistralai/…`, `openai/…`, `qwen/…`, `nvidia/…`, `amazon/…`, `z-ai/…`, `minimax/…`, `moonshotai/…`, `deepseek/…` | Prefix match; requires separate API key |
 | **Anthropic** | `claude-…` (default `claude-sonnet-4-6`; `claude-opus-4-8`, `claude-haiku-4-5` also route) | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives. **No prompt caching** — see below |
 | **Nimbus** | `nemotron` | Private vLLM instance; requires separate API key |
 

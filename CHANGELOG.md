@@ -8,6 +8,12 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **Route the `deepseek/` OpenRouter family.** Added `deepseek/` to the OpenRouter
+  provider's prefix allowlist so `deepseek/deepseek-v4-flash` (and other
+  `deepseek/…` models) route instead of silently falling back to NRP. Enables the
+  fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
+
 ### Fixed
 - **Strip leaked `<arg_key>`/`<arg_value>` (GLM) and `<parameter=…>` (qwen) tool-call
   arg dialect from responses (#85).** Some open-weight backends (`z-ai/glm-5.2`, the

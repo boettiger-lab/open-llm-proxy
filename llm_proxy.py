@@ -330,7 +330,7 @@ def load_config() -> dict:
             "openrouter": {
                 "endpoint": "https://openrouter.ai/api/v1/chat/completions",
                 "api_key_env": "OPENROUTER_KEY",
-                "models": ["anthropic/", "mistralai/", "amazon/", "openai/", "qwen/", "nvidia/", "z-ai/", "minimax/", "moonshotai/"],
+                "models": ["anthropic/", "mistralai/", "amazon/", "openai/", "qwen/", "nvidia/", "z-ai/", "minimax/", "moonshotai/", "deepseek/"],
                 "extra_headers": {
                     "HTTP-Referer": "https://wetlands.nrp-nautilus.io",
                     "X-Title": "Wetlands Chatbot"
