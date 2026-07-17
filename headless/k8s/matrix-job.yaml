@@ -81,6 +81,18 @@ spec:
               git clone --depth 1 --branch "$APP_BRANCH" \
                   "https://github.com/$APP_REPO.git" "$APP_NAME"
 
+              # Record the exact stack this run used, as a single grep-able line, so
+              # downstream tooling (e.g. geo-agent-benchmark/scripts/collect_run.py) can
+              # populate a reproducible versions block. SHAs come from the shallow clones;
+              # mcp_url from the app config. Non-allowlisted $vars survive envsubst and
+              # run in-pod. Purely additive — does not affect the matrix run.
+              GEO_SHA="$(git -C /work/geo-agent rev-parse HEAD 2>/dev/null || echo unknown)"
+              APP_SHA="$(git -C "/work/$APP_NAME" rev-parse HEAD 2>/dev/null || echo unknown)"
+              PROXY_SHA="$(git -C /work/open-llm-proxy rev-parse HEAD 2>/dev/null || echo unknown)"
+              MCP_URL="$(python3 -c "import json,sys;print(json.load(open('/work/$APP_NAME/layers-input.json')).get('mcp_url',''))" 2>/dev/null || echo '')"
+              printf '##BENCH-VERSIONS## {"geo_agent":"%s","app_repo":"%s","app_sha":"%s","proxy_sha":"%s","mcp_url":"%s","app_branch":"%s","geo_agent_branch":"%s"}\n' \
+                  "$GEO_SHA" "$APP_REPO" "$APP_SHA" "$PROXY_SHA" "$MCP_URL" "$APP_BRANCH" "$GEO_AGENT_BRANCH"
+
               cd /work/open-llm-proxy/headless
               npm ci --no-audit --no-fund
 
