@@ -9,6 +9,13 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Print a `##BENCH-VERSIONS##` line from the headless matrix Job.** After the Job
+  clones open-llm-proxy + geo-agent + the app repo, it now emits a single grep-able
+  line with the exact geo-agent / app / proxy git SHAs (from the shallow clones), the
+  app repo, both branches, and the app config's `mcp_url`. Lets downstream benchmark
+  tooling (`boettiger-lab/geo-agent-benchmark`, olp#91) capture a reproducible
+  `versions` block per run instead of guessing which stack a score was measured under.
+  Purely additive logging — does not affect the matrix run.
 - **Route the `deepseek/` OpenRouter family.** Added `deepseek/` to the OpenRouter
   provider's prefix allowlist so `deepseek/deepseek-v4-flash` (and other
   `deepseek/…` models) route instead of silently falling back to NRP. Enables the
