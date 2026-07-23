@@ -137,6 +137,37 @@ def test_summary_mode_omits_messages():
     assert "messages" not in p._log_buffer[-1]
 
 
+def test_user_message_this_turn_is_latest_not_opener():
+    # #89: session_id persists across a whole browsing day, so `user_question`
+    # (the FIRST user message) is only the session opener. `user_message_this_turn`
+    # must carry the LAST user message so distinct mid-session requests are
+    # countable and the actual triggering prompt is recoverable.
+    p = _reload(LOG_CAPTURE_MODE="summary")
+    p._log_buffer.clear()
+    msgs = [
+        {"role": "user", "content": "show 3d hex of US vulnerable carbon"},  # opener
+        {"role": "assistant", "content": "..."},
+        {"role": "tool", "tool_call_id": "t1", "content": "result"},
+        {"role": "assistant", "content": "..."},
+        {"role": "user", "content": "now re-render on a log scale"},         # this turn
+    ]
+    p.log_request("nrp", "qwen3", msgs, request_id="r1")
+    entry = p._log_buffer[-1]
+    assert entry["user_question"] == "show 3d hex of US vulnerable carbon"
+    assert entry["user_message_this_turn"] == "now re-render on a log scale"
+
+
+def test_user_message_this_turn_equals_opener_on_first_turn():
+    # On a single-message first turn the two fields coincide (no regression for
+    # the common one-shot case).
+    p = _reload(LOG_CAPTURE_MODE="summary")
+    p._log_buffer.clear()
+    p.log_request("nrp", "qwen3", [{"role": "user", "content": "hi"}], request_id="r1")
+    entry = p._log_buffer[-1]
+    assert entry["user_question"] == "hi"
+    assert entry["user_message_this_turn"] == "hi"
+
+
 def test_request_logs_requested_enable_thinking():
     # #64: the requested thinking mode must be logged so it can be told apart from
     # observed reasoning after the fact. None (not sent) / True / False all round-trip,
