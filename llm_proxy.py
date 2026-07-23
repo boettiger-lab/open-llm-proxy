@@ -459,6 +459,15 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         (m.get("content", "") for m in messages if m.get("role") == "user"),
         ""
     )
+    # Extract THIS turn's user message (the LAST human message). session_id persists
+    # across a whole browsing day, so `user_question` above is only the session
+    # opener, repeated on every subsequent turn; this field carries the actual
+    # prompt that triggered the current turn, making distinct mid-session requests
+    # countable and readable from the logs (#89).
+    user_message_this_turn = next(
+        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+        ""
+    )
     # Extract tool results added in this turn (role=tool messages at the end of history)
     # These capture both local geo-agent tool results and MCP tool results
     tool_results = []
@@ -487,6 +496,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         # the flag / model default; True/False = explicit request override.
         "enable_thinking": enable_thinking,
         "user_question": _scrub_text(_cap(user_question, _USER_QUESTION_MAX)),
+        "user_message_this_turn": _scrub_text(_cap(user_message_this_turn, _USER_QUESTION_MAX)),
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
     }
     # Training-grade fidelity: capture the entire (scrubbed, system-deduped)

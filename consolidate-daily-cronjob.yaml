@@ -136,6 +136,7 @@ spec:
                                       TRY_CAST(json_extract_string(entry,'$.message_count') AS INTEGER) AS message_count,
                                       TRY_CAST(json_extract_string(entry,'$.enable_thinking') AS BOOLEAN) AS enable_thinking,
                                       json_extract_string(entry,'$.user_question') AS user_question,
+                                      json_extract_string(entry,'$.user_message_this_turn') AS user_message_this_turn,
                                       json_extract(entry,'$.tool_results_this_turn') AS tool_results,
                                       TRY_CAST(json_extract_string(entry,'$.latency_ms') AS BIGINT) AS latency_ms,
                                       TRY_CAST(json_extract_string(entry,'$.has_tool_calls') AS BOOLEAN) AS has_tool_calls,
@@ -154,7 +155,7 @@ spec:
                               ),
                               req AS (
                                   SELECT session_key, session_id, request_id, ts, origin, client, provider, model,
-                                         user_question, message_count, enable_thinking, tool_results,
+                                         user_question, user_message_this_turn, message_count, enable_thinking, tool_results,
                                          ROW_NUMBER() OVER (PARTITION BY session_key ORDER BY ts, request_id) AS turn_idx
                                   FROM keyed
                               ),
@@ -166,7 +167,7 @@ spec:
                               SELECT req.session_key, req.session_id, req.turn_idx,
                                      req.ts AS request_ts, resp.response_ts, req.request_id,
                                      req.origin, req.client, req.provider, req.model,
-                                     req.user_question, req.message_count, req.enable_thinking, req.tool_results,
+                                     req.user_question, req.user_message_this_turn, req.message_count, req.enable_thinking, req.tool_results,
                                      resp.assistant_content, resp.reasoning_content, resp.tool_calls,
                                      resp.has_tool_calls, resp.has_content, resp.latency_ms, resp.tokens, resp.error
                               FROM req LEFT JOIN resp USING (request_id)
@@ -185,7 +186,11 @@ spec:
                   # COPY overwrites the source key.
                   def reflatten(path):
                       cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
-                      if 'model' in cols:
+                      # Sentinel = the newest flat column. Guarding on the latest-added
+                      # column (not just 'model') re-flattens wide-but-stale files when a
+                      # new column lands, keeping consolidated/** on one schema so the glob
+                      # composes without union_by_name (see the flatten note below).
+                      if 'user_message_this_turn' in cols:
                           return False
                       con.execute(f"""
                           CREATE OR REPLACE TEMP TABLE _wide AS
@@ -199,6 +204,7 @@ spec:
                                  TRY_CAST(json_extract_string(entry,'$.tools_count')   AS INTEGER) AS tools_count,
                                  TRY_CAST(json_extract_string(entry,'$.enable_thinking') AS BOOLEAN) AS enable_thinking,
                                  json_extract_string(entry,'$.user_question') AS user_question,
+                                 json_extract_string(entry,'$.user_message_this_turn') AS user_message_this_turn,
                                  TRY_CAST(json_extract_string(entry,'$.latency_ms') AS BIGINT) AS latency_ms,
                                  TRY_CAST(json_extract_string(entry,'$.has_tool_calls') AS BOOLEAN) AS has_tool_calls,
                                  TRY_CAST(json_extract_string(entry,'$.has_content')   AS BOOLEAN) AS has_content,
@@ -232,6 +238,7 @@ spec:
                                      TRY_CAST(json->>'tools_count'   AS INTEGER)  AS tools_count,
                                      TRY_CAST(json->>'enable_thinking' AS BOOLEAN) AS enable_thinking,
                                      json->>'user_question'                       AS user_question,
+                                     json->>'user_message_this_turn'              AS user_message_this_turn,
                                      TRY_CAST(json->>'latency_ms' AS BIGINT)      AS latency_ms,
                                      TRY_CAST(json->>'has_tool_calls' AS BOOLEAN) AS has_tool_calls,
                                      TRY_CAST(json->>'has_content'    AS BOOLEAN) AS has_content,

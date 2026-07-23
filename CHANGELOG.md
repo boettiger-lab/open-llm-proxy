@@ -9,6 +9,21 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Log `user_message_this_turn` — the actual per-turn prompt (#89).** `session_id`
+  persists across a whole browsing day, and `user_question` only ever held the
+  *first* user message of the session, repeated verbatim on every subsequent turn —
+  so distinct mid-session requests were uncountable and the follow-up prompt that
+  triggered a given turn was unrecoverable from the logs (you had to reverse-engineer
+  intent from tool calls). `log_request` now also captures the **last** user message
+  as `user_message_this_turn`, alongside the unchanged `user_question` opener. The
+  field is flattened to a typed column in the daily/monthly consolidated Parquet and
+  surfaced per-turn in the session view, so "read the real sequence of what the user
+  asked" is `SELECT turn_idx, user_message_this_turn … ORDER BY turn_idx`. Captured in
+  the default `summary` mode (no need for `LOG_CAPTURE_MODE=full`). Back-compat: the
+  reflatten schema-upgrade pass re-flattens existing consolidated files to add the
+  column (`null` for pre-#89 records, whose raw `entry` never held it), keeping
+  `consolidated/**` on one schema; the guard sentinel moved from `model` to
+  `user_message_this_turn` so the upgrade re-triggers.
 - **Print a `##BENCH-VERSIONS##` line from the headless matrix Job.** After the Job
   clones open-llm-proxy + geo-agent + the app repo, it now emits a single grep-able
   line with the exact geo-agent / app / proxy git SHAs (from the shallow clones), the

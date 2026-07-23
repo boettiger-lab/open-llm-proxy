@@ -41,7 +41,7 @@ SELECT * FROM read_ndjson_auto('/tmp/open-llm-proxy-logs/YYYY-MM-DD/*.jsonl',
 "
 ```
 
-**Parquet schema** (same for daily and monthly tiers): the hot fields are flattened to typed columns — `ts, type, request_id, session_id, origin, client, provider, model, message_count, tools_count, enable_thinking, user_question, latency_ms, has_tool_calls, has_content, tool_calls, tool_results, tokens, error` — plus `entry VARCHAR`, the full original log record as JSON text (kept for fidelity). Prefer the flat columns; for fields not promoted, use `json_extract_string(entry,'$.field')` / `json_extract(entry,'$.field')` (the `entry::JSON->>` form intermittently throws a cast error in aggregates). Legacy files predating the flatten carry only `ts/type/request_id/origin/entry`.
+**Parquet schema** (same for daily and monthly tiers): the hot fields are flattened to typed columns — `ts, type, request_id, session_id, origin, client, provider, model, message_count, tools_count, enable_thinking, user_question, user_message_this_turn, latency_ms, has_tool_calls, has_content, tool_calls, tool_results, tokens, error` — plus `entry VARCHAR`, the full original log record as JSON text (kept for fidelity). Prefer the flat columns; for fields not promoted, use `json_extract_string(entry,'$.field')` / `json_extract(entry,'$.field')` (the `entry::JSON->>` form intermittently throws a cast error in aggregates). Legacy files predating the flatten carry only `ts/type/request_id/origin/entry`.
 
 **Session view** (`s3://logs-open-llm-proxy/sessions/**/*.parquet`): one row per *turn*, request already joined to its response, ordered by `turn_idx` within `session_key`. This is the query-ready artifact — "show me every turn of session X in order, with tool calls and results" is one flat `SELECT`, no manual interleaving. Disjoint from the `consolidated/**` glob. See [LOGGING.md](LOGGING.md#reconstructing-a-conversation).
 
@@ -49,7 +49,7 @@ For automation, one-shot CI queries, or queries that need sub-minute freshness w
 
 Each LLM call produces a `request` row and a `response` row linked by `request_id`. Key fields inside `entry` (Parquet) or as top-level columns (JSONL):
 
-- **Request**: `user_question`, `tool_results_this_turn`, `model`, `origin`, `message_count`
+- **Request**: `user_question` (session opener), `user_message_this_turn` (the actual prompt for *this* turn — use this to count/read distinct follow-up requests within a session), `tool_results_this_turn`, `model`, `origin`, `message_count`
 - **Response**: `tool_calls`, `content_preview`, `tokens`, `latency_ms`, `error` (only on failures)
 
 **Reconstructing a conversation**: for completed days, just query the **session view** (`sessions/**`) by `session_key` and order by `turn_idx` — the interleaving is already done. To reconstruct by hand (e.g. today's raw JSONL): group by `session_id` (exact; falls back to `user_question` for pre-wiring records), filter by `origin`, sort by `ts` (Parquet) / `timestamp` (JSONL). The `tool_results_this_turn` on each request shows what the previous turn's tool calls returned; `tool_calls` on each response shows what the LLM called next.

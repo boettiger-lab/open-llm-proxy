@@ -59,6 +59,7 @@ for fidelity, so old `entry::JSON->>'…'` / `json_extract_string` queries still
 | `tools_count` | `INTEGER` | Request only — tools offered |
 | `enable_thinking` | `BOOLEAN` | Request only — the thinking mode the client **asked for** (`request.enable_thinking`). `null` = flag not sent / model default; `true`/`false` = explicit override. Distinct from the response-side `has_reasoning_content` (what the model actually **did**) — together they disambiguate "reasoning off by request" from "model chose not to think" from "non-thinking model". |
 | `user_question` | `VARCHAR` | Request only — **first** user message (see trap below) |
+| `user_message_this_turn` | `VARCHAR` | Request only — the **last** user message, i.e. the actual prompt that triggered *this* turn. Use this (not `user_question`) to count or read distinct requests within a session. `null` on records written before #89. |
 | `latency_ms` | `BIGINT` | Response only |
 | `has_tool_calls` | `BOOLEAN` | Response only |
 | `has_content` | `BOOLEAN` | Response only |
@@ -95,6 +96,7 @@ request/response interleaving:
 | `request_id` | `VARCHAR` | |
 | `origin`, `client`, `provider`, `model` | `VARCHAR` | |
 | `user_question` | `VARCHAR` | Opening question (same first-message-only caveat) |
+| `user_message_this_turn` | `VARCHAR` | The actual prompt for this turn (last user message). This is the field to read per-turn — `SELECT turn_idx, user_message_this_turn` gives the real sequence of what the user asked. `null` before #89. |
 | `message_count` | `INTEGER` | |
 | `enable_thinking` | `BOOLEAN` | Requested thinking mode this turn (`null` = default / not sent). Pair with `reasoning_content` to compare requested-vs-observed reasoning per turn. |
 | `tool_results` | `JSON` | Tool outputs that came *into* this turn |
@@ -211,7 +213,7 @@ origins), so capture is **training-grade**, controlled by `LOG_CAPTURE_MODE`:
 
 | Mode | What's captured | Use |
 |---|---|---|
-| `summary` (default) | Full response `content`/`reasoning_content`, generously-capped `user_question` and tool results, full `tool_calls`. **No** raw prompt. | Observability + most analysis; the response target is faithful. |
+| `summary` (default) | Full response `content`/`reasoning_content`, generously-capped `user_question` **and per-turn `user_message_this_turn`** and tool results, full `tool_calls`. **No** raw prompt (the full `messages` array). | Observability + most analysis; the response target is faithful, and follow-up prompts are captured per turn. |
 | `full` | Everything in `summary`, **plus** the entire `messages` array per request (system prompt de-duplicated by hash). | Reconstructing exact `(messages → completion)` training pairs. |
 
 Caps are tunable per field via env vars (`0` = uncapped): `LOG_CONTENT_MAX`
@@ -273,7 +275,8 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
 | `enable_thinking` | The thinking mode the client **requested** for this turn (`request.enable_thinking`): `null` when the flag wasn't sent (model default), `true`/`false` on an explicit override. The request-side counterpart to the response's `has_reasoning_content`/`reasoning_content` (what the model actually did). Lets you tell "reasoning off by request" apart from "model chose not to think" and from "non-thinking model" — needed to evaluate a user-facing reasoning toggle from live traffic. |
-| `user_question` | First `role: user` message in the conversation. ⚠️ **First-message-only — this is a trap.** It is the human's *original* opening question and is stable across all turns of a tool-use loop, but it does **not** update when the user asks a follow-up in the same session. A session where the user opens with "Tell me about datasets" and later asks "now map the hardwood woodland" logs **both** turns under `user_question = "Tell me about datasets"`; the follow-up text lives only inside the `messages` array (`full` mode) and is invisible to any `user_question` filter. To find follow-ups, full-text-search the whole record or capture `session_id`. Capped at `LOG_USER_QUESTION_MAX` chars (default 4000). |
+| `user_question` | First `role: user` message in the conversation. ⚠️ **First-message-only — this is a trap.** It is the human's *original* opening question and is stable across all turns of a tool-use loop, but it does **not** update when the user asks a follow-up in the same session. A session where the user opens with "Tell me about datasets" and later asks "now map the hardwood woodland" logs **both** turns under `user_question = "Tell me about datasets"`. **To read the actual per-turn prompt, use `user_message_this_turn` instead** (below) — the trap only applies if you filter on `user_question`. Capped at `LOG_USER_QUESTION_MAX` chars (default 4000). |
+| `user_message_this_turn` | Last `role: user` message in the conversation — the actual prompt that triggered **this** turn (#89). This is the field to group/count/read distinct requests within a session, since `session_id` persists across a whole browsing day. On a one-shot first turn it equals `user_question`; on a follow-up it carries the new prompt ("now map the hardwood woodland") that `user_question` misses. `null` on records written before #89. Capped at `LOG_USER_QUESTION_MAX` chars. |
 | `tool_results_this_turn` | Array of `{tool_call_id, content}` for any `role: tool` messages appended since the last assistant turn. Captures results from both local geo-agent tools (e.g. `list_datasets`, `get_dataset_details`) and remote MCP tools (e.g. `query`). Each `content` is capped at `LOG_TOOL_RESULT_MAX` chars (default 20000). `null` on the first turn. |
 | `messages` | **Only when `LOG_CAPTURE_MODE=full`.** The entire scrubbed `messages` array sent to the provider — training-grade fidelity. The large system prompt is de-duplicated: each `role: system` message is replaced by `{role, system_sha256, content_len, _dedup: true}` and the full body is emitted once (per worker) as a separate `type: "system_prompt"` entry. Join `messages[].system_sha256` → the `system_prompt` entry to rehydrate. |
 
@@ -336,7 +339,7 @@ Records written before this wiring have `session_id = null`; group those by the
 > ordered by `turn_idx`. No manual pairing, no JSON casting:
 >
 > ```sql
-> SELECT turn_idx, model, user_question,
+> SELECT turn_idx, model, user_message_this_turn,   -- the real prompt each turn (not the stale opener)
 >        json_array_length(tool_results) AS results_in,
 >        json_array_length(tool_calls)   AS calls_out,
 >        assistant_content, latency_ms
@@ -358,7 +361,7 @@ Each POST to `/v1/chat/completions` is one LLM turn. A single user session produ
 
 Use `request_id` to pair each request with its response when log lines are interleaved under concurrent load.
 
-> ⚠️ **`user_question` groups by *opening* question, not by session.** Step 2 is a heuristic with two failure modes: (a) two different users who happen to open with the same question collapse into one apparent session, and (b) a single user's **follow-up questions never get their own group** — they stay pinned to the opening `user_question` (see the field note above). When `session_id` is populated, group by it instead — it is exact and survives follow-ups. Until then, treat a single `user_question` group as "one opening question and everything that followed it," not "one atomic question."
+> ⚠️ **`user_question` groups by *opening* question, not by session.** Step 2 is a heuristic with two failure modes: (a) two different users who happen to open with the same question collapse into one apparent session, and (b) a single user's **follow-up questions never get their own group** — they stay pinned to the opening `user_question` (see the field note above). When `session_id` is populated, group by it instead — it is exact and survives follow-ups. Until then, treat a single `user_question` group as "one opening question and everything that followed it," not "one atomic question." **To recover the distinct user requests *within* a session, read/segment on `user_message_this_turn` (#89), which carries each turn's actual prompt** — `user_question` cannot distinguish them.
 
 > 📋 **Brittle-JSON caveat (consolidated Parquet).** `entry::JSON->>'field'` intermittently throws `Conversion Error: Failed to cast value to numerical` — DuckDB mis-infers an all-`null` or numeric-looking JSON path and tries to cast the whole `entry` blob. It is load-bearing-flaky: the same expression works in a bare `SELECT` but fails inside a `GROUP BY`/aggregate. Use `json_extract_string(entry, '$.field')` (for text) and `json_extract(entry, '$.field')` (for JSON) instead — they never throw.
 
