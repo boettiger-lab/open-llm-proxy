@@ -230,3 +230,11 @@ ENABLE_THINKING=true  node run.js "…" --model qwen3 …                       
 Pair each mode with gold grading (`baseline/`) for an accuracy-vs-latency table.
 Pilot (qwen3, bosl seamounts Q, geo-agent#283): both modes answered correctly
 (141), reasoning-off cut LLM time ~2× (198s→98s). See geo-agent#283.
+
+## Running during an NRP Ceph (s3-west) outage
+
+Point the run's config at the MinIO mirror and the mirror-configured MCP head —
+one runbook, in mcp-data-server: `docs/guide/mirror-failover.md`
+([published](https://boettiger-lab.github.io/mcp-data-server/guide/mirror-failover)).
+Its "For agents querying through MCP" section covers tool choice; the normal STAC
+tools work on a mirror head, so no system-prompt addendum is needed.
