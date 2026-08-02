@@ -9,6 +9,16 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Route OpenRouter floating aliases (`~…`).** OpenRouter publishes always-latest
+  aliases whose model id carries a literal leading tilde — e.g.
+  `~deepseek/deepseek-v4-flash-latest` (canonical slug identical), as distinct from
+  the pinned `deepseek/deepseek-v4-flash-0731`. Because `get_provider_for_model`
+  matches by `str.startswith`, such an id matched *no* vendor prefix and silently
+  fell back to NRP, which does not serve it. Added `~` to the OpenRouter prefix
+  allowlist (`config.json` plus the in-code default), so any floating alias routes
+  to OpenRouter. No other provider's model ids begin with `~`, so the broad prefix
+  is unambiguous.
+
 - **Log `user_message_this_turn` — the actual per-turn prompt (#89).** `session_id`
   persists across a whole browsing day, and `user_question` only ever held the
   *first* user message of the session, repeated verbatim on every subsequent turn —
