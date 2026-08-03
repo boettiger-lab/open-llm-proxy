@@ -12,6 +12,21 @@ This is an LLM proxy service that routes chat completion requests to NRP, OpenRo
 
 > **CORS gotcha:** browser CORS is enforced by the **haproxy ingress** (`ingress.yaml` annotations), *not* the app's `CORSMiddleware` (which is effectively dead config). `cors-allow-headers` is an explicit list — a new custom request header (e.g. `X-Client`) must be added there or the browser preflight blocks the whole request. See the comment in `ingress.yaml`.
 
+## Two deployments
+
+The canonical deployment is on **NRP** (`open-llm-proxy.nrp-nautilus.io`,
+namespace `biodiversity`) — that is what the manifests at the repo root, and
+everything below, describe. A second, narrower deployment runs on the lab's
+**self-hosted k3s cluster** (`llm-proxy.carlboettiger.info`, namespace
+`llm-proxy`): OpenRouter + DSE-nimbus only, logs in the in-cluster MinIO mirror,
+Traefik instead of HAProxy. Its manifests and log-query recipes live in
+[cirrus/](cirrus/README.md). Note that a laptop with `kubectl` pointed at cirrus
+generally **cannot** reach the NRP cluster, and vice versa — check
+`kubectl config current-context` before assuming which one you're touching.
+Shared code (`llm_proxy.py`, `consolidate_logs.py`) serves both; a change there
+lands on both deployments at their next pod restart, so keep it
+config-parameterized rather than cluster-specific.
+
 ## Evaluating Logs
 
 Logs land in three tiers by age (see [LOGGING.md](LOGGING.md) for the full spec):

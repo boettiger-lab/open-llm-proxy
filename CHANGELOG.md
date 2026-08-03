@@ -34,6 +34,31 @@ See [Releases](README.md#releases) for how a release is cut.
   dialect (as `kimi` does, not `qwen3`'s `enable_thinking`, which it ignores), so its
   reasoning can actually be toggled. Prefix matching remains provider-declaration-ordered;
   the `gemma4-nimbus` / `qwen3-cirrus` shadowing noted in #105 is left as-is.
+- **Second deployment on the self-hosted k3s cluster (cirrus):
+  `https://llm-proxy.carlboettiger.info`.** Manifests in `cirrus/` (namespace
+  `llm-proxy`), documented in [cirrus/README.md](cirrus/README.md). Same app,
+  same log schema and rollup tiers, deliberately narrower surface:
+  - **Providers: OpenRouter + DSE-nimbus (`qwen`) only**, via the new
+    `config.cirrus.json` selected with the new `PROXY_CONFIG` env var (default
+    remains `config.json`, so NRP is untouched). No NRP ELLM, no Anthropic direct.
+  - **Logs to the in-cluster MinIO mirror** (`minio-svc.minio.svc.cluster.local:9000`,
+    bucket `logs-open-llm-proxy`), written by a MinIO service account scoped to that
+    bucket — not the MinIO root user. Full parity on the rollup: both CronJobs run
+    on the same schedules and produce the same `consolidated/**` + `sessions/**`
+    tiers.
+  - **Traefik replaces HAProxy** for ingress: CORS and the 600s backend timeouts
+    become `Middleware` / `ServersTransport` CRDs (`cirrus/middleware.yaml`), with
+    cert-manager + external-dns provisioning TLS and the A record. Because Traefik
+    (not HAProxy) is now the CORS authority *and* would collide with the app's own
+    `CORSMiddleware`, the app's copy is switchable: `APP_CORS=off`.
+  - No dns-cache sidecar / `dnsPolicy: None` (that works around NRP CoreDNS
+    flakiness, #28); pinned to the `cirrus` node, where MinIO and Traefik live.
+
+- **`AWS_S3_ADDRESSING_STYLE` env var for the log flush.** MinIO behind a
+  cluster-DNS name needs path-style addressing; boto3's virtual-host default would
+  prepend the bucket to the hostname and fail resolution. Unset by default, so
+  NRP/Ceph behavior is unchanged.
+
 - **Route OpenRouter floating aliases (`~…`).** OpenRouter publishes always-latest
   aliases whose model id carries a literal leading tilde — e.g.
   `~deepseek/deepseek-v4-flash-latest` (canonical slug identical), as distinct from
@@ -70,6 +95,25 @@ See [Releases](README.md#releases) for how a release is cut.
   provider's prefix allowlist so `deepseek/deepseek-v4-flash` (and other
   `deepseek/…` models) route instead of silently falling back to NRP. Enables the
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
+
+### Changed
+- **Consolidation logic extracted from the CronJob YAML into
+  `consolidate_logs.py` (`--tier daily|monthly`).** The two jobs previously
+  embedded ~550 lines of Python as heredocs inside their manifests; standing up a
+  second deployment would have meant a third and fourth copy. Both NRP CronJobs
+  now git-clone the repo (as the Deployment already does) and run the shared
+  script, parameterized by `LOG_BUCKET` / `S3_ENDPOINT_URL` / `S3_URL_STYLE` whose
+  defaults reproduce the previous hard-coded NRP values. Behavior, schedules,
+  idempotence, and the self-healing schema-upgrade / session-backfill passes are
+  unchanged. Verified end-to-end (both tiers, against MinIO) on cirrus.
+
+- **`get_provider_for_model` no longer hard-codes the NRP fallback.** The
+  unmatched-model path indexed `PROVIDERS["nrp"]` unconditionally, which is a
+  `KeyError` → unlogged 500 on any deployment that doesn't configure nrp. The
+  fallback provider is now the config's top-level `"default_provider"` (set to
+  `"nrp"` in `config.json`, preserving current behavior); with no such key, an
+  unroutable model id returns a `400` naming the routable prefixes instead of
+  being silently forwarded to a billed provider.
 
 ### Fixed
 - **Fail a matrix Job that can't establish its own provenance, and emit the versions
