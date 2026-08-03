@@ -1,0 +1,67 @@
+# Traefik CRDs backing the cirrus ingress.
+#
+# On NRP, CORS and the long timeouts are HAProxy ingress annotations
+# (../ingress.yaml); Traefik expresses the same behaviour as first-class CRDs
+# referenced from the Ingress via `router.middlewares` /
+# `service.servertransport`. Same split as mcp-data-server's cirrus recipe.
+---
+# CORS. This is the ONLY layer that answers browser preflights for the cirrus
+# deployment — the app's own CORSMiddleware is switched off there (APP_CORS=off)
+# so the two can't emit duplicate headers. Unlike HAProxy's cors-allow-headers,
+# Traefik's list is also explicit: a new custom request header (e.g. X-Client,
+# X-Session-Id) must be added below or the preflight fails and the ENTIRE
+# request is blocked, not just that header. Verify with:
+#   curl -i -X OPTIONS https://llm-proxy.carlboettiger.info/v1/chat/completions \
+#     -H "Origin: https://example.org" \
+#     -H "Access-Control-Request-Method: POST" \
+#     -H "Access-Control-Request-Headers: authorization,content-type,x-client,x-session-id"
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: llm-proxy-cors
+  namespace: llm-proxy
+spec:
+  headers:
+    accessControlAllowMethods:
+      - GET
+      - POST
+      - OPTIONS
+    accessControlAllowHeaders:
+      - DNT
+      - User-Agent
+      - X-Requested-With
+      - If-Modified-Since
+      - Cache-Control
+      - Content-Type
+      - Range
+      - Accept
+      - Accept-Encoding
+      - Accept-Language
+      - Origin
+      - Referer
+      - Priority
+      - Authorization
+      - X-Client
+      - X-Session-Id
+    accessControlAllowOriginList:
+      - "*"
+    # Mirrors the NRP ingress: credentials off, since auth is a bearer token in
+    # the Authorization header, not a cookie.
+    accessControlAllowCredentials: false
+    accessControlMaxAge: 600
+    addVaryHeader: true
+---
+# Long backend timeouts. The proxy calls upstream NON-streaming, so a long
+# generation leaves the backend silent for minutes; anything under ~600s cuts
+# real completions off mid-answer (cf. #82 on the NRP side).
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: llm-proxy-long-timeout
+  namespace: llm-proxy
+spec:
+  forwardingTimeouts:
+    dialTimeout: 30s
+    idleConnTimeout: 600s
+    readIdleTimeout: 600s
+    responseHeaderTimeout: 600s

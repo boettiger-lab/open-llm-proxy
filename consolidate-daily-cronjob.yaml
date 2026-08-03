@@ -9,6 +9,10 @@ spec:
   # of JSONL chunks into one consolidated/daily/YYYY-MM-DD.parquet and deletes
   # the originals. Idempotent: skips days that already have a Parquet and
   # always skips today (still being written).
+  #
+  # The logic lives in consolidate_logs.py in this repo (git-cloned at start),
+  # NOT inline here, so this job and the cirrus one (cirrus/) run the same code
+  # and differ only in env. Editing the script changes both on the next run.
   schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
@@ -29,259 +33,42 @@ spec:
                       - key: feature.node.kubernetes.io/pci-10de.present
                         operator: NotIn
                         values: ["true"]
+          initContainers:
+            - name: git-sync
+              image: alpine/git:latest
+              command:
+                - sh
+                - -c
+                - git clone --depth 1 https://github.com/boettiger-lab/open-llm-proxy.git /app
+              volumeMounts:
+                - name: app-code
+                  mountPath: /app
           containers:
             - name: consolidate
               image: python:3.12-slim
+              workingDir: /app
               env:
                 - name: AWS_ACCESS_KEY_ID
                   valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
                 - name: AWS_SECRET_ACCESS_KEY
                   valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+                # NRP: Rook/Ceph RGW, in-cluster plain HTTP, path-style.
+                - name: LOG_BUCKET
+                  value: "logs-open-llm-proxy"
+                - name: S3_ENDPOINT_URL
+                  value: "http://rook-ceph-rgw-nautiluss3.rook"
+                - name: S3_URL_STYLE
+                  value: "path"
               command:
                 - /bin/bash
                 - -c
                 - |
                   set -euo pipefail
                   pip install --quiet duckdb boto3
-                  python - <<'PY'
-                  import os, datetime, boto3, duckdb
-                  from botocore.client import Config
-
-                  BUCKET   = 'logs-open-llm-proxy'
-                  ENDPOINT = 'http://rook-ceph-rgw-nautiluss3.rook'
-
-                  s3 = boto3.client(
-                      's3',
-                      endpoint_url=ENDPOINT,
-                      aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
-                      aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
-                      config=Config(s3={'addressing_style': 'path'}),
-                  )
-
-                  today = datetime.datetime.utcnow().date().isoformat()
-                  paginator = s3.get_paginator('list_objects_v2')
-
-                  # Discover all YYYY-MM-DD/ prefixes at the bucket root
-                  date_prefixes = set()
-                  for page in paginator.paginate(Bucket=BUCKET, Delimiter='/'):
-                      for p in page.get('CommonPrefixes', []):
-                          pref = p['Prefix'].rstrip('/')
-                          try:
-                              datetime.date.fromisoformat(pref)
-                              date_prefixes.add(pref)
-                          except ValueError:
-                              pass
-
-                  def _parquet_days(prefix):
-                      days = set()
-                      for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
-                          for obj in page.get('Contents', []):
-                              name = obj['Key'].split('/')[-1]
-                              if name.endswith('.parquet'):
-                                  days.add(name[:-len('.parquet')])
-                      return days
-
-                  # Existing consolidated daily Parquet files, and existing session views
-                  existing          = _parquet_days('consolidated/daily/')
-                  existing_sessions = _parquet_days('sessions/daily/')
-
-                  to_do = sorted(d for d in date_prefixes if d != today and d not in existing)
-                  # Days already consolidated but missing a session view (e.g. files
-                  # written before the session view existed) — backfill from Parquet.
-                  backfill_sessions = sorted(existing - existing_sessions - set(to_do))
-                  print(f"Days to consolidate ({len(to_do)}): {to_do}")
-                  print(f"Session views to backfill ({len(backfill_sessions)}): {backfill_sessions}")
-                  # Note: we always continue to the schema-upgrade pass below, which
-                  # re-flattens any legacy consolidated daily file — it must run even on
-                  # days with nothing new to consolidate or backfill.
-
-                  con = duckdb.connect()
-                  # In a container DuckDB sees every node core and spawns that many
-                  # worker threads — each with its own buffers — while CPU is throttled
-                  # to the pod request, so memory balloons and OOMs the pod. Pin a small
-                  # thread count and drop insertion-order buffering to keep COPY/sort
-                  # memory bounded (the data is re-sorted by ts on read anyway).
-                  con.execute("SET threads=2")
-                  con.execute("SET preserve_insertion_order=false")
-                  con.execute(f"""
-                      CREATE SECRET s3_logs (
-                          TYPE S3,
-                          KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
-                          SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
-                          ENDPOINT 'rook-ceph-rgw-nautiluss3.rook',
-                          USE_SSL false,
-                          URL_STYLE 'path'
-                      )
-                  """)
-
-                  # Materialize the per-turn session view from a consolidated Parquet
-                  # glob (one row per request_id = one turn, request joined to its
-                  # response). Reads only the raw `entry` JSON via json_extract_string
-                  # / json_extract — the cast-safe access form — so it works on both
-                  # legacy (entry-only) and new (flattened) consolidated files.
-                  # turn_idx is assigned within `src` ordered by ts; for the daily
-                  # tier that means within-day (a session spanning UTC midnight
-                  # restarts at 1 in the next day's file — ordering by ts is still
-                  # correct, only the index resets). The monthly rollup recomputes it
-                  # over the whole month.
-                  def build_session_view(src, dest):
-                      con.execute(f"""
-                          COPY (
-                              WITH base AS (
-                                  SELECT ts, type, request_id, origin,
-                                      json_extract_string(entry,'$.session_id')    AS session_id,
-                                      json_extract_string(entry,'$.client')        AS client,
-                                      json_extract_string(entry,'$.provider')      AS provider,
-                                      json_extract_string(entry,'$.model')         AS model,
-                                      TRY_CAST(json_extract_string(entry,'$.message_count') AS INTEGER) AS message_count,
-                                      TRY_CAST(json_extract_string(entry,'$.enable_thinking') AS BOOLEAN) AS enable_thinking,
-                                      json_extract_string(entry,'$.user_question') AS user_question,
-                                      json_extract_string(entry,'$.user_message_this_turn') AS user_message_this_turn,
-                                      json_extract(entry,'$.tool_results_this_turn') AS tool_results,
-                                      TRY_CAST(json_extract_string(entry,'$.latency_ms') AS BIGINT) AS latency_ms,
-                                      TRY_CAST(json_extract_string(entry,'$.has_tool_calls') AS BOOLEAN) AS has_tool_calls,
-                                      TRY_CAST(json_extract_string(entry,'$.has_content')   AS BOOLEAN) AS has_content,
-                                      json_extract(entry,'$.tool_calls')           AS tool_calls,
-                                      json_extract(entry,'$.tokens')               AS tokens,
-                                      json_extract_string(entry,'$.content')       AS assistant_content,
-                                      json_extract_string(entry,'$.reasoning_content') AS reasoning_content,
-                                      json_extract_string(entry,'$.error')         AS error
-                                  FROM read_parquet('{src}')
-                              ),
-                              keyed AS (
-                                  SELECT *, COALESCE(session_id,
-                                      'anon:' || md5(COALESCE(origin,'') || '|' || COALESCE(user_question,''))) AS session_key
-                                  FROM base WHERE type='request'
-                              ),
-                              req AS (
-                                  SELECT session_key, session_id, request_id, ts, origin, client, provider, model,
-                                         user_question, user_message_this_turn, message_count, enable_thinking, tool_results,
-                                         ROW_NUMBER() OVER (PARTITION BY session_key ORDER BY ts, request_id) AS turn_idx
-                                  FROM keyed
-                              ),
-                              resp AS (
-                                  SELECT request_id, ts AS response_ts, latency_ms, has_tool_calls, has_content,
-                                         tool_calls, tokens, assistant_content, reasoning_content, error
-                                  FROM base WHERE type='response'
-                              )
-                              SELECT req.session_key, req.session_id, req.turn_idx,
-                                     req.ts AS request_ts, resp.response_ts, req.request_id,
-                                     req.origin, req.client, req.provider, req.model,
-                                     req.user_question, req.user_message_this_turn, req.message_count, req.enable_thinking, req.tool_results,
-                                     resp.assistant_content, resp.reasoning_content, resp.tool_calls,
-                                     resp.has_tool_calls, resp.has_content, resp.latency_ms, resp.tokens, resp.error
-                              FROM req LEFT JOIN resp USING (request_id)
-                              ORDER BY req.session_key, req.turn_idx
-                          ) TO '{dest}' (FORMAT PARQUET, COMPRESSION zstd)
-                      """)
-
-                  # Upgrade a legacy (entry-only, 5-column) consolidated Parquet file
-                  # to the flattened wide schema in place, reconstructing the typed
-                  # columns from its own `entry` blob. Lossless (`entry` is preserved
-                  # verbatim) and idempotent: a no-op once the file already has the
-                  # wide schema. Keeps the whole consolidated/** corpus on one schema so
-                  # legacy and new files compose in a single glob without union_by_name
-                  # and without the "column not found" gap on the new flat columns.
-                  # Materializes to a TEMP table first so the read completes before the
-                  # COPY overwrites the source key.
-                  def reflatten(path):
-                      cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()]
-                      # Sentinel = the newest flat column. Guarding on the latest-added
-                      # column (not just 'model') re-flattens wide-but-stale files when a
-                      # new column lands, keeping consolidated/** on one schema so the glob
-                      # composes without union_by_name (see the flatten note below).
-                      if 'user_message_this_turn' in cols:
-                          return False
-                      con.execute(f"""
-                          CREATE OR REPLACE TEMP TABLE _wide AS
-                          SELECT ts, type, request_id,
-                                 json_extract_string(entry,'$.session_id')    AS session_id,
-                                 origin,
-                                 json_extract_string(entry,'$.client')        AS client,
-                                 json_extract_string(entry,'$.provider')      AS provider,
-                                 json_extract_string(entry,'$.model')         AS model,
-                                 TRY_CAST(json_extract_string(entry,'$.message_count') AS INTEGER) AS message_count,
-                                 TRY_CAST(json_extract_string(entry,'$.tools_count')   AS INTEGER) AS tools_count,
-                                 TRY_CAST(json_extract_string(entry,'$.enable_thinking') AS BOOLEAN) AS enable_thinking,
-                                 json_extract_string(entry,'$.user_question') AS user_question,
-                                 json_extract_string(entry,'$.user_message_this_turn') AS user_message_this_turn,
-                                 TRY_CAST(json_extract_string(entry,'$.latency_ms') AS BIGINT) AS latency_ms,
-                                 TRY_CAST(json_extract_string(entry,'$.has_tool_calls') AS BOOLEAN) AS has_tool_calls,
-                                 TRY_CAST(json_extract_string(entry,'$.has_content')   AS BOOLEAN) AS has_content,
-                                 json_extract(entry, '$.tool_calls')             AS tool_calls,
-                                 json_extract(entry, '$.tool_results_this_turn')  AS tool_results,
-                                 json_extract(entry, '$.tokens')                  AS tokens,
-                                 json_extract_string(entry,'$.error')         AS error,
-                                 entry
-                          FROM read_parquet('{path}')
-                          ORDER BY ts
-                      """)
-                      con.execute(f"COPY _wide TO '{path}' (FORMAT PARQUET, COMPRESSION zstd)")
-                      return True
-
-                  for day in to_do:
-                      print(f"→ {day}")
-                      # Flatten the hot fields to typed columns alongside the raw
-                      # `entry` blob (kept verbatim for fidelity). Direct queries no
-                      # longer need entry::JSON-> casting; `entry` is still there.
-                      con.execute(f"""
-                          COPY (
-                              SELECT (json->>'timestamp')::TIMESTAMPTZ            AS ts,
-                                     json->>'type'                                AS type,
-                                     json->>'request_id'                          AS request_id,
-                                     json->>'session_id'                          AS session_id,
-                                     json->>'origin'                              AS origin,
-                                     json->>'client'                              AS client,
-                                     json->>'provider'                            AS provider,
-                                     json->>'model'                               AS model,
-                                     TRY_CAST(json->>'message_count' AS INTEGER)  AS message_count,
-                                     TRY_CAST(json->>'tools_count'   AS INTEGER)  AS tools_count,
-                                     TRY_CAST(json->>'enable_thinking' AS BOOLEAN) AS enable_thinking,
-                                     json->>'user_question'                       AS user_question,
-                                     json->>'user_message_this_turn'              AS user_message_this_turn,
-                                     TRY_CAST(json->>'latency_ms' AS BIGINT)      AS latency_ms,
-                                     TRY_CAST(json->>'has_tool_calls' AS BOOLEAN) AS has_tool_calls,
-                                     TRY_CAST(json->>'has_content'    AS BOOLEAN) AS has_content,
-                                     json_extract(json, '$.tool_calls')              AS tool_calls,
-                                     json_extract(json, '$.tool_results_this_turn')  AS tool_results,
-                                     json_extract(json, '$.tokens')                  AS tokens,
-                                     json->>'error'                               AS error,
-                                     json::VARCHAR                                AS entry
-                              FROM read_ndjson_objects('s3://{BUCKET}/{day}/*.jsonl')
-                              ORDER BY ts
-                          ) TO 's3://{BUCKET}/consolidated/daily/{day}.parquet'
-                            (FORMAT PARQUET, COMPRESSION zstd)
-                      """)
-                      # Verify Parquet exists before destroying inputs
-                      s3.head_object(Bucket=BUCKET, Key=f'consolidated/daily/{day}.parquet')
-                      # Build the per-turn session view from the just-written Parquet.
-                      build_session_view(f's3://{BUCKET}/consolidated/daily/{day}.parquet',
-                                         f's3://{BUCKET}/sessions/daily/{day}.parquet')
-                      s3.head_object(Bucket=BUCKET, Key=f'sessions/daily/{day}.parquet')
-                      to_delete = []
-                      for page in paginator.paginate(Bucket=BUCKET, Prefix=f'{day}/'):
-                          for obj in page.get('Contents', []):
-                              to_delete.append({'Key': obj['Key']})
-                      for i in range(0, len(to_delete), 1000):
-                          s3.delete_objects(Bucket=BUCKET, Delete={'Objects': to_delete[i:i+1000]})
-                      print(f"  ✓ {len(to_delete)} JSONL chunks removed; session view written")
-
-                  for day in backfill_sessions:
-                      print(f"↺ backfill session view: {day}")
-                      build_session_view(f's3://{BUCKET}/consolidated/daily/{day}.parquet',
-                                         f's3://{BUCKET}/sessions/daily/{day}.parquet')
-
-                  # Schema-upgrade pass: bring any legacy-schema consolidated daily file
-                  # (current month — older months live in monthly files, upgraded by the
-                  # monthly job) up to the wide schema. Self-healing no-op once uniform.
-                  upgraded = 0
-                  for day in sorted(_parquet_days('consolidated/daily/')):
-                      if reflatten(f's3://{BUCKET}/consolidated/daily/{day}.parquet'):
-                          upgraded += 1
-                          print(f"  ⬆ re-flattened {day} to wide schema")
-                  print(f"Legacy daily files upgraded to wide schema: {upgraded}")
-                  print("Done.")
-                  PY
+                  python consolidate_logs.py --tier daily
+              volumeMounts:
+                - name: app-code
+                  mountPath: /app
               resources:
                 requests:
                   cpu: "500m"
@@ -289,3 +76,6 @@ spec:
                 limits:
                   cpu: "500m"
                   memory: "1Gi"
+          volumes:
+            - name: app-code
+              emptyDir: {}

@@ -26,6 +26,11 @@ from pathlib import Path
 _log_buffer: List[dict] = []
 _LOG_BUCKET = os.getenv("LOG_BUCKET", "logs-open-llm-proxy")
 _S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "http://rook-ceph-rgw-nautiluss3.rook")
+# S3 addressing style. Rook/Ceph (NRP) is happy with boto3's default; MinIO
+# behind a cluster-DNS name (cirrus) is NOT — virtual-host style would prepend
+# the bucket to the hostname (logs-open-llm-proxy.minio-svc.minio.svc...) and
+# fail to resolve. Set AWS_S3_ADDRESSING_STYLE=path for MinIO-style backends.
+_S3_ADDRESSING_STYLE = os.getenv("AWS_S3_ADDRESSING_STYLE")
 _S3_ENABLED = bool(os.getenv("AWS_ACCESS_KEY_ID"))
 _FLUSH_INTERVAL = int(os.getenv("FLUSH_INTERVAL", "60"))
 # Cap the in-memory buffer so a prolonged S3 outage (entries re-queued on each
@@ -265,11 +270,18 @@ async def _flush_to_s3():
            f"-{host}-{os.getpid()}-{uuid.uuid4().hex[:8]}.jsonl")
     try:
         import boto3
+        boto_kwargs = {}
+        if _S3_ADDRESSING_STYLE:
+            from botocore.client import Config as _BotoConfig
+            boto_kwargs["config"] = _BotoConfig(
+                s3={"addressing_style": _S3_ADDRESSING_STYLE}
+            )
         client = boto3.client(
             "s3",
             endpoint_url=_S3_ENDPOINT,
             aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
             aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            **boto_kwargs,
         )
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
@@ -304,23 +316,39 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Multi-Provider LLM Proxy", lifespan=lifespan)
 
-# Enable CORS - allow requests from GitHub Pages and k8s deployment
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[],
-    allow_origin_regex=r"https://.*\.nrp-nautilus\.io",
-    allow_credentials=True,  # Required for Authorization header
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],  # Allow all headers to prevent preflight failures
-)
+# CORS. On NRP this is effectively dead config — the haproxy ingress answers the
+# preflight and wins (see ingress.yaml). On cirrus, Traefik's CORS Middleware CRD
+# plays that role, and there it is NOT harmless: for an `*.nrp-nautilus.io`
+# origin both layers would emit Access-Control-Allow-Origin and the browser
+# rejects the duplicate. Set APP_CORS=off wherever the ingress owns CORS.
+if os.getenv("APP_CORS", "on").lower() not in ("off", "0", "false"):
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[],
+        allow_origin_regex=r"https://.*\.nrp-nautilus\.io",
+        allow_credentials=True,  # Required for Authorization header
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],  # Allow all headers to prevent preflight failures
+    )
 
 # Load configuration from config.json
 def load_config() -> dict:
-    """Load provider configuration from config.json file"""
-    config_path = Path(__file__).parent / "config.json"
-    
-    # Default configuration if config.json doesn't exist
+    """Load provider configuration from a JSON config file.
+
+    Defaults to `config.json` next to this module. Set PROXY_CONFIG to run a
+    different provider set from the same image/checkout — e.g. the cirrus
+    deployment sets PROXY_CONFIG=config.cirrus.json (OpenRouter + DSE-nimbus
+    only). Relative values resolve against this module's directory; absolute
+    paths (e.g. a mounted ConfigMap) are used as given.
+    """
+    config_name = os.getenv("PROXY_CONFIG", "config.json")
+    config_path = Path(config_name)
+    if not config_path.is_absolute():
+        config_path = Path(__file__).parent / config_path
+
+    # Default configuration if the config file doesn't exist
     default_config = {
+        "default_provider": "nrp",
         "providers": {
             "nrp": {
                 "endpoint": "https://ellm.nrp-nautilus.io/v1/chat/completions",
@@ -380,6 +408,13 @@ def compute_valid_keys(primary, extra):
 # PROXY_KEYS_EXTRA this is exactly {PROXY_KEY}, identical to the old behavior.
 VALID_PROXY_KEYS = compute_valid_keys(PROXY_KEY, os.getenv("PROXY_KEYS_EXTRA", ""))
 
+# Provider used for a model name that matches no provider's models list. The
+# NRP config sets "nrp" (historical behavior: unknown models fall through to the
+# ELLM endpoint, which knows aliases the config may not list). A deployment that
+# has no such catch-all — e.g. cirrus, where an unknown name would otherwise be
+# billed to OpenRouter — omits the key and gets a 400 instead.
+DEFAULT_PROVIDER = config.get("default_provider")
+
 # Build PROVIDERS dictionary from config
 PROVIDERS = {}
 for provider_name, provider_config in config["providers"].items():
@@ -429,9 +464,20 @@ def get_provider_for_model(model: str) -> tuple[str, dict]:
             if model.startswith(model_prefix):
                 return provider_name, config
     
-    # Default to NRP
-    print(f"⚠️  Unknown model '{model}', defaulting to NRP")
-    return "nrp", PROVIDERS["nrp"]
+    # Nothing matched: fall through to the configured catch-all provider, or
+    # reject. Never index PROVIDERS["nrp"] blindly — a deployment may not
+    # configure nrp at all (cirrus), and a KeyError here would surface as an
+    # unlogged 500 on every typo'd model name.
+    if DEFAULT_PROVIDER and DEFAULT_PROVIDER in PROVIDERS:
+        print(f"⚠️  Unknown model '{model}', defaulting to {DEFAULT_PROVIDER.upper()}")
+        return DEFAULT_PROVIDER, PROVIDERS[DEFAULT_PROVIDER]
+
+    routable = sorted(m for c in PROVIDERS.values() for m in c["models"])
+    raise HTTPException(
+        status_code=400,
+        detail=(f"Unknown model '{model}': no provider configured for it on this "
+                f"deployment. Routable models/prefixes: {routable}")
+    )
 
 def _never_raises(fn):
     """Logging must never break request serving.

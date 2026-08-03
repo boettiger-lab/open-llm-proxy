@@ -1,4 +1,5 @@
 {
+    "default_provider": "nrp",
     "providers": {
         "nrp": {
             "endpoint": "https://ellm.nrp-nautilus.io/v1/chat/completions",

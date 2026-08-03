@@ -1,18 +1,19 @@
+# Daily log consolidation for the cirrus deployment. Same script as NRP
+# (../consolidate_logs.py, git-cloned at start) — only the env differs: MinIO
+# instead of Rook/Ceph, and the scoped `logs-s3` service account instead of the
+# namespace `aws` secret.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: logs-consolidate-monthly
+  name: logs-consolidate-daily
+  namespace: llm-proxy
   labels:
     app: logs-consolidate
 spec:
-  # 04:00 UTC on day 2 of every month — merges the just-closed month's daily
-  # Parquet files into consolidated/monthly/YYYY-MM.parquet, then deletes the
-  # daily inputs. Day 2 (not day 1) so the daily job for the 1st of the new
-  # month has already run and consolidated the final day of the previous month.
-  #
-  # Logic lives in consolidate_logs.py in this repo (git-cloned at start) —
-  # shared with the daily job and with the cirrus deployment (cirrus/).
-  schedule: "0 4 2 * *"
+  # 03:00 UTC daily: each completed YYYY-MM-DD/ of JSONL chunks becomes one
+  # consolidated/daily/YYYY-MM-DD.parquet + sessions/daily/YYYY-MM-DD.parquet,
+  # then the chunks are deleted. Idempotent; always skips today.
+  schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -22,16 +23,10 @@ spec:
       ttlSecondsAfterFinished: 604800
       template:
         spec:
-          priorityClassName: opportunistic
           restartPolicy: Never
-          affinity:
-            nodeAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                nodeSelectorTerms:
-                  - matchExpressions:
-                      - key: feature.node.kubernetes.io/pci-10de.present
-                        operator: NotIn
-                        values: ["true"]
+          # MinIO is pinned to cirrus; keep the read/write traffic on-node.
+          nodeSelector:
+            kubernetes.io/hostname: cirrus
           initContainers:
             - name: git-sync
               image: alpine/git:latest
@@ -43,19 +38,18 @@ spec:
                 - name: app-code
                   mountPath: /app
           containers:
-            - name: rollup
+            - name: consolidate
               image: python:3.12-slim
               workingDir: /app
               env:
                 - name: AWS_ACCESS_KEY_ID
-                  valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+                  valueFrom: { secretKeyRef: { name: logs-s3, key: AWS_ACCESS_KEY_ID } }
                 - name: AWS_SECRET_ACCESS_KEY
-                  valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
-                # NRP: Rook/Ceph RGW, in-cluster plain HTTP, path-style.
+                  valueFrom: { secretKeyRef: { name: logs-s3, key: AWS_SECRET_ACCESS_KEY } }
                 - name: LOG_BUCKET
                   value: "logs-open-llm-proxy"
                 - name: S3_ENDPOINT_URL
-                  value: "http://rook-ceph-rgw-nautiluss3.rook"
+                  value: "http://minio-svc.minio.svc.cluster.local:9000"
                 - name: S3_URL_STYLE
                   value: "path"
               command:
@@ -64,14 +58,14 @@ spec:
                 - |
                   set -euo pipefail
                   pip install --quiet duckdb boto3
-                  python consolidate_logs.py --tier monthly
+                  python consolidate_logs.py --tier daily
               volumeMounts:
                 - name: app-code
                   mountPath: /app
               resources:
                 requests:
                   cpu: "500m"
-                  memory: "2Gi"
+                  memory: "1Gi"
                 limits:
                   cpu: "500m"
                   memory: "2Gi"
