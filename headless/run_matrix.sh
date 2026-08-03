@@ -14,6 +14,11 @@
 #   RUNS_DIR            output directory — default runs/<APP_NAME>
 #   MODELS              space-separated override for the model list
 #   QUESTIONS_FILE      path to a file with one question per line (blank lines and #-comments ignored)
+#   MCP_URL             MCP endpoint override — default the app config's mcp_url.
+#                       Set it to the dev server when gating an mcp-data-server
+#                       guidance change: the injected guides come from whichever
+#                       MCP the run talks to, and every committed app config
+#                       points at a production head.
 set -u
 cd "$(dirname "$0")"
 
@@ -105,10 +110,16 @@ ORIGIN="${ORIGIN:-https://${APP_NAME}.nrp-nautilus.io/agent_runner}"
 RUNS_DIR="${RUNS_DIR:-runs/${APP_NAME}}"
 mkdir -p "$RUNS_DIR"
 
+# Optional MCP endpoint override, forwarded to run.js only when set so an unset
+# value keeps the app config's own mcp_url.
+MCP_ARGS=()
+[ -n "${MCP_URL:-}" ] && MCP_ARGS=(--mcp-url "$MCP_URL")
+
 TOTAL=$(( ${#MODEL_ARR[@]} * ${#QUESTIONS[@]} * TRIALS ))
 echo "=== matrix: app=${APP_NAME} models=${#MODEL_ARR[@]} questions=${#QUESTIONS[@]} trials=${TRIALS} → ${TOTAL} runs ==="
 echo "models: ${MODEL_ARR[*]}"
 echo "origin=${ORIGIN}  run-timeout=${PER_RUN_TIMEOUT_SEC}s/${BASH_TIMEOUT_SEC}s  max-turns=${MAX_TURNS}"
+echo "mcp:    ${MCP_URL:-<from app config>}"
 echo "runs:   ${RUNS_DIR}/"
 
 START="$(date +%s)"
@@ -139,6 +150,7 @@ for trial in $(seq 1 "$TRIALS"); do
                 node run.js "$q" \
                     --config "$CONFIG" \
                     --system-prompt "$SYSTEM_PROMPT" \
+                    ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
                     --model "$m" \
                     --origin "$ORIGIN" \
                     --max-turns "$MAX_TURNS" \
