@@ -91,9 +91,13 @@ spec:
               GEO_SHA="$(git -C /work/geo-agent rev-parse HEAD 2>/dev/null || echo unknown)"
               APP_SHA="$(git -C "/work/$APP_NAME" rev-parse HEAD 2>/dev/null || echo unknown)"
               PROXY_SHA="$(git -C /work/open-llm-proxy rev-parse HEAD 2>/dev/null || echo unknown)"
-              MCP_URL="$(python3 -c "import json,sys;print(json.load(open('/work/$APP_NAME/layers-input.json')).get('mcp_url',''))" 2>/dev/null || echo '')"
+              # The reported mcp_url is the one the run will actually use: the MCP_URL
+              # override when set, else the app config's. Keep it out of MCP_URL itself —
+              # assigning the app value there would silently disable the override.
+              APP_MCP_URL="$(python3 -c "import json,sys;print(json.load(open('/work/$APP_NAME/layers-input.json')).get('mcp_url',''))" 2>/dev/null || echo '')"
+              EFFECTIVE_MCP_URL="${MCP_URL:-$APP_MCP_URL}"
               printf '##BENCH-VERSIONS## {"geo_agent":"%s","app_repo":"%s","app_sha":"%s","proxy_sha":"%s","mcp_url":"%s","app_branch":"%s","geo_agent_branch":"%s"}\n' \
-                  "$GEO_SHA" "$APP_REPO" "$APP_SHA" "$PROXY_SHA" "$MCP_URL" "$APP_BRANCH" "$GEO_AGENT_BRANCH"
+                  "$GEO_SHA" "$APP_REPO" "$APP_SHA" "$PROXY_SHA" "$EFFECTIVE_MCP_URL" "$APP_BRANCH" "$GEO_AGENT_BRANCH"
 
               cd /work/open-llm-proxy/headless
               npm ci --no-audit --no-fund
@@ -120,7 +124,7 @@ spec:
               echo "--- questions ---"
               cat "$QFILE"
               echo "--- models override: ${MODELS:-<from configmap>} ---"
-              echo "--- mcp: ${MCP_URL:-<from app config>} ---"
+              echo "--- mcp: $EFFECTIVE_MCP_URL ${MCP_URL:+(MCP_URL override)} ---"
               echo
 
               # Delegate to the existing matrix script. RUNS_DIR is pod-local;
