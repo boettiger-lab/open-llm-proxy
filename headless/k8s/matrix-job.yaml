@@ -53,6 +53,8 @@ spec:
               value: "${MODELS}"
             - name: ENABLE_THINKING
               value: "${ENABLE_THINKING}"
+            - name: MCP_URL
+              value: "${MCP_URL}"
             - name: QUESTIONS_B64
               value: "${QUESTIONS_B64}"
             - name: SYSTEM_PROMPT_APPEND_B64
@@ -118,6 +120,7 @@ spec:
               echo "--- questions ---"
               cat "$QFILE"
               echo "--- models override: ${MODELS:-<from configmap>} ---"
+              echo "--- mcp: ${MCP_URL:-<from app config>} ---"
               echo
 
               # Delegate to the existing matrix script. RUNS_DIR is pod-local;
@@ -129,6 +132,7 @@ spec:
               TRIALS="$TRIALS" \
               MAX_TURNS="$MAX_TURNS" \
               MODELS="$MODELS" \
+              MCP_URL="$MCP_URL" \
               RUNS_DIR="$RUNS_DIR_REL" \
                   ./run_matrix.sh "/work/$APP_NAME" || rc=$?
 

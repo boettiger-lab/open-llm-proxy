@@ -29,6 +29,13 @@
 #                          this checkout, so set it to A/B-test a code-level
 #                          change (e.g. a tool-description variant) on the open
 #                          model collection before it ships in a pinned release.
+#   MCP_URL                MCP endpoint override (default: the app config's own
+#                          mcp_url, which every app commits pointing at a
+#                          production head). Set it to
+#                          https://dev-duckdb-mcp.nrp-nautilus.io/mcp to gate an
+#                          mcp-data-server guidance change — the injected guides
+#                          come from whichever MCP the run talks to, so a run
+#                          against prod measures the old guidance.
 #   NAMESPACE              k8s namespace (default biodiversity)
 #   SYSTEM_PROMPT_APPEND_FILE
 #                          path to a local file whose contents are appended to
@@ -73,6 +80,7 @@ ENABLE_THINKING="${ENABLE_THINKING:-true}"
 case "$ENABLE_THINKING" in true|false) ;; *) echo "ERROR: ENABLE_THINKING must be 'true' or 'false' (got: '$ENABLE_THINKING')" >&2; exit 2;; esac
 APP_BRANCH="${APP_BRANCH:-main}"
 GEO_AGENT_BRANCH="${GEO_AGENT_BRANCH:-main}"
+MCP_URL="${MCP_URL:-}"
 NAMESPACE="${NAMESPACE:-biodiversity}"
 
 TS="$(date -u +%Y%m%d-%H%M%S)"
@@ -91,18 +99,19 @@ if [ -n "${SYSTEM_PROMPT_APPEND_FILE:-}" ]; then
 fi
 
 export APP_REPO APP_BRANCH GEO_AGENT_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
-    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 ENABLE_THINKING
+    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 ENABLE_THINKING MCP_URL
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING}' \
+envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING} ${MCP_URL}' \
     < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF
 
 job:    $JOB_NAME
 origin: $ORIGIN
+mcp:    ${MCP_URL:-<from app config>}
 
 follow:
   kubectl -n $NAMESPACE logs -f job/$JOB_NAME
