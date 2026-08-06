@@ -4,7 +4,7 @@ OpenAI-compatible LLM proxy for NRP Nautilus. Routes requests to LLM providers, 
 
 The canonical deployment lives at `https://open-llm-proxy.nrp-nautilus.io` in the `biodiversity` namespace, but the proxy is designed to be deployed independently into any namespace — each instance writes logs to its own namespace-scoped S3 bucket.
 
-A second deployment runs on the lab's self-hosted k3s cluster at `https://llm-proxy.carlboettiger.info` — OpenRouter + DSE-nimbus only, logging to the in-cluster MinIO mirror. Manifests and operations for it live in [cirrus/](cirrus/README.md).
+A second deployment runs on the lab's self-hosted k3s cluster at `https://llm-proxy.carlboettiger.info` (OpenRouter + DSE-nimbus only, logging to the in-cluster MinIO mirror). It is **config-only** — it runs this repo's unmodified code from `main` with a ConfigMap mounted over `config.json`, and changes nothing the NRP deployment reads. Manifests and operations: [cirrus/](cirrus/README.md).
 
 ## Architecture
 
@@ -44,9 +44,7 @@ Configured in `config.json`. Most deployments only need NRP:
 | **Anthropic** | `claude-…` (default `claude-sonnet-4-6`; `claude-opus-4-8`, `claude-haiku-4-5` also route) | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives. **No prompt caching** — see below |
 | **Nimbus** | `nemotron` | Private vLLM instance; requires separate API key |
 
-Unknown models fall back to the provider named by the top-level `"default_provider"` key (`nrp` in the shipped `config.json`). Omit that key and an unroutable model id gets a `400` listing the routable prefixes instead — which is what you want on a deployment with no catch-all provider, so a typo can't be forwarded to (and billed by) OpenRouter. To customize the model list, edit `config.json` — no code change needed.
-
-Set `PROXY_CONFIG` to run a different provider set from the same checkout: the cirrus deployment uses `PROXY_CONFIG=config.cirrus.json` (see [cirrus/README.md](cirrus/README.md)).
+Unknown models fall back to NRP. To customize the model list, edit `config.json` — no code change needed.
 
 #### Claude: direct vs. OpenRouter (prompt caching)
 

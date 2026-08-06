@@ -1,10 +1,15 @@
 # open-llm-proxy on the self-hosted k3s cluster (cirrus).
 #
-# Same app as the NRP deployment (../deployment.yaml), same git-sync-at-boot
-# pattern, but a narrower provider set and a different log store:
-#   * PROXY_CONFIG=config.cirrus.json → OpenRouter + DSE-nimbus only, no NRP
-#     ELLM and no Anthropic direct (see ../config.cirrus.json).
-#   * logs flush to the in-cluster MinIO mirror, not NRP Ceph.
+# CONFIG-ONLY DEPLOYMENT: this directory contains no application code and
+# requires no change to any file the NRP deployment reads. Same `llm_proxy.py`
+# from `main`, driven entirely by env vars that already exist upstream plus a
+# ConfigMap mounted over `config.json`. Nothing here can alter NRP behavior.
+#
+# Differences from ../deployment.yaml:
+#   * config.json is replaced by the mounted ConfigMap → OpenRouter +
+#     DSE-nimbus only (see config-configmap.yaml).
+#   * logs flush to the in-cluster MinIO mirror, not NRP Ceph (LOG_BUCKET +
+#     AWS_S3_ENDPOINT_URL, both pre-existing env vars).
 #   * no dns-cache sidecar / dnsPolicy:None: that works around NRP CoreDNS
 #     flakiness (#28). k3s CoreDNS on one node has not shown it, so this runs
 #     plain ClusterFirst — add the sidecar here only if EAI_AGAIN 502s appear.
@@ -38,9 +43,10 @@ spec:
         kubernetes.io/hostname: cirrus
       initContainers:
       # The app is not baked into an image; it is cloned at boot, exactly as on
-      # NRP. Restarting the deployment is therefore how you deploy a code or
-      # config.cirrus.json change:
+      # NRP. Restarting the deployment is therefore how you deploy:
       #   kubectl -n llm-proxy rollout restart deployment/open-llm-proxy
+      # Corollary: a restart picks up whatever is on `main` at that moment —
+      # the same code NRP runs, which is the point.
       - name: git-sync
         image: alpine/git:latest
         command:
@@ -60,17 +66,6 @@ spec:
         ports:
         - containerPort: 8002
         env:
-        # Provider set: OpenRouter + DSE-nimbus. An unknown model name gets a
-        # 400 here (no default_provider in this config) rather than being
-        # forwarded — and billed — to OpenRouter.
-        - name: PROXY_CONFIG
-          value: "config.cirrus.json"
-        # Traefik's CORS Middleware owns CORS on this cluster (see
-        # middleware.yaml). Leaving the app's CORSMiddleware on would emit a
-        # duplicate Access-Control-Allow-Origin for *.nrp-nautilus.io origins,
-        # which browsers reject.
-        - name: APP_CORS
-          value: "off"
         - name: PROXY_KEY
           valueFrom:
             secretKeyRef:
@@ -93,15 +88,13 @@ spec:
               name: nimbus-api-key
               key: NIMBUS_API_KEY
         # --- Logging (see ../LOGGING.md) ---------------------------------
-        # In-cluster MinIO mirror. Path-style addressing is REQUIRED: boto3's
-        # virtual-host default would prepend the bucket to the hostname
-        # (logs-open-llm-proxy.minio-svc.minio.svc.cluster.local) and fail DNS.
+        # In-cluster MinIO mirror. boto3 uses path-style addressing for a custom
+        # endpoint_url, which is what MinIO behind a cluster-DNS name needs — so
+        # the stock flush path works here unmodified.
         - name: LOG_BUCKET
           value: "logs-open-llm-proxy"
         - name: AWS_S3_ENDPOINT_URL
           value: "http://minio-svc.minio.svc.cluster.local:9000"
-        - name: AWS_S3_ADDRESSING_STYLE
-          value: "path"
         - name: LOG_CAPTURE_MODE
           value: "summary"
         - name: LOG_REASONING_MAX
@@ -124,6 +117,14 @@ spec:
         volumeMounts:
         - name: app-code
           mountPath: /app
+        # Replaces the repo's config.json with the cirrus provider set. Mounted
+        # over the file inside the app-code volume, so the git checkout supplies
+        # the code and this supplies the config. Changing the ConfigMap requires
+        # a rollout restart (subPath mounts do not live-update).
+        - name: config
+          mountPath: /app/config.json
+          subPath: config.json
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /health
@@ -151,3 +152,6 @@ spec:
       volumes:
       - name: app-code
         emptyDir: {}
+      - name: config
+        configMap:
+          name: open-llm-proxy-config

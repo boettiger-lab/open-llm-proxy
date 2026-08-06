@@ -5,56 +5,89 @@ NRP. Public endpoint:
 
     https://llm-proxy.carlboettiger.info
 
-It is **not** a mirror of the NRP deployment — deliberately narrower:
+## Config-only, by design
+
+**This directory contains no application code and changes nothing the NRP
+deployment reads.** The pods clone `main` and run the *same* `llm_proxy.py` as
+NRP; everything cirrus-specific is expressed as deployment config:
+
+- the provider set comes from a **ConfigMap mounted over `/app/config.json`**
+  (`config-configmap.yaml`) — no `config.json` edit, no new config file in the
+  repo, no code change;
+- the log destination comes from `LOG_BUCKET` + `AWS_S3_ENDPOINT_URL`, env vars
+  the app already supported;
+- ingress/CORS/timeouts are Traefik CRDs, entirely outside the app.
+
+The upside is that **there is nothing to diverge**: cirrus cannot drift from
+NRP's code, because it has none of its own, and a change made for cirrus cannot
+regress NRP, because there is nothing to change. The cost is that cirrus gets
+only what upstream `llm_proxy.py` already does — see *Known limitations* below.
+That trade is deliberate: features cirrus wants should land in the shared app
+through the normal release cycle, not as a cirrus fork.
+
+Keep it that way. If a future cirrus need seems to require an app change, the
+right move is to propose that change on its own merits for both deployments —
+not to point these manifests at a branch.
+
+## How it differs from NRP
 
 | | NRP (`../deployment.yaml`) | cirrus (this directory) |
 |---|---|---|
 | Host | `open-llm-proxy.nrp-nautilus.io` | `llm-proxy.carlboettiger.info` |
 | Namespace | `biodiversity` | `llm-proxy` |
-| Providers | nrp ELLM, OpenRouter, Anthropic, nimbus, gemma4-nimbus, qwen3-cirrus | **OpenRouter + DSE-nimbus only** (`../config.cirrus.json`) |
-| Unknown model | falls through to nrp ELLM | `400` (no `default_provider`) |
+| Providers | nrp ELLM, OpenRouter, Anthropic, nimbus, gemma4-nimbus, qwen3-cirrus | **OpenRouter + DSE-nimbus only** |
 | Ingress / CORS | HAProxy annotations | Traefik `Middleware` CRD (`middleware.yaml`) |
 | Log store | NRP Ceph `s3://logs-open-llm-proxy` | in-cluster MinIO `s3://logs-open-llm-proxy` |
+| Log tiers | raw JSONL → daily Parquet → monthly Parquet + `sessions/**` | **raw JSONL only** (see below) |
 | Replicas | 3, spread across nodes | 2, pinned to `cirrus` |
-
-Everything else — the app, the log schema, the three-tier
-JSONL → daily Parquet → monthly Parquet rollup, the `sessions/**` per-turn view
-— is identical, running the same `llm_proxy.py` and `consolidate_logs.py` from
-this repo.
 
 ## Models
 
-Routing is exact-match-then-prefix over `config.cirrus.json`:
+Routing is exact-match-then-prefix over the mounted config:
 
 - `qwen` → DSE-nimbus (`https://vllm-nimbus.carlboettiger.info`,
   `nvidia/Qwen3.6-35B-A3B-NVFP4`), with `enable_thinking` supported.
-- `anthropic/…`, `openai/…`, `qwen/…`, `deepseek/…` and the rest of the vendor
+- `anthropic/…`, `openai/…`, `qwen/…`, `deepseek/…` and the other vendor
   prefixes, plus `~…` floating aliases → OpenRouter.
-- anything else → `400 Unknown model` listing the routable prefixes. This is the
-  point of omitting `default_provider`: a typo can't be silently forwarded to a
-  billed provider.
+
+## Known limitations
+
+Both follow directly from the config-only rule, and both are fixable upstream
+whenever the shared app is touched for other reasons:
+
+1. **An unrecognized model id returns `500`, not a helpful `400`.** Upstream
+   `get_provider_for_model` falls back to `PROVIDERS["nrp"]` unconditionally,
+   and cirrus has no `nrp` provider, so the lookup raises. It only affects
+   typo'd/unrouted model names; correct ids are unaffected. (Fixing it properly
+   means making the fallback provider configurable in the shared app.)
+2. **No Parquet consolidation.** The daily/monthly rollup and the `sessions/**`
+   per-turn view are implemented as ~550 lines of Python embedded in the NRP
+   CronJob manifests, which cannot be reused without extracting them into the
+   repo — an NRP-affecting change. So cirrus keeps **raw JSONL indefinitely**:
+   nothing is lost, queries just get slower as volume grows, and the
+   query-ready session view isn't available. Revisit when that extraction
+   happens upstream.
 
 ## Deploy
 
 ```bash
 kubectl apply -f cirrus/namespace.yaml
 # secrets — see below, one time
+kubectl apply -f cirrus/config-configmap.yaml
 kubectl apply -f cirrus/middleware.yaml
 kubectl apply -f cirrus/service.yaml
 kubectl apply -f cirrus/deployment.yaml
 kubectl apply -f cirrus/ingress.yaml
-kubectl apply -f cirrus/consolidate-daily-cronjob.yaml
-kubectl apply -f cirrus/consolidate-monthly-cronjob.yaml
 ```
 
-The app is **git-cloned at pod boot** (no image build), so shipping a code or
-`config.cirrus.json` change to cirrus is:
+The app is **git-cloned at pod boot** (no image build), so shipping a change is:
 
 ```bash
 kubectl -n llm-proxy rollout restart deployment/open-llm-proxy
 ```
 
-Note the corollary: a pod restart picks up whatever is on `main` at that moment.
+That picks up whatever is on `main` — the same code NRP runs. A ConfigMap edit
+also needs a restart (subPath mounts don't live-update).
 
 ## Secrets (one time)
 
@@ -112,14 +145,22 @@ EOF
 '
 ```
 
-`DeleteObject` is required: the consolidation job deletes the raw JSONL chunks
-once their Parquet file is verified.
+(`DeleteObject` is not needed today — nothing prunes the raw tier — but is
+included so a future consolidation job can delete chunks after rolling them up.)
 
 ## Querying the logs
 
-Same schema and same three tiers as NRP (see [../LOGGING.md](../LOGGING.md)) —
-only the endpoint differs. From outside the cluster, MinIO is reachable at
-`https://minio.carlboettiger.info`:
+Raw JSONL only, same record format as NRP (see [../LOGGING.md](../LOGGING.md)):
+
+```
+logs-open-llm-proxy/
+└── 2026-08-06/
+    ├── 02-08-45-<pod>-<pid>-<uuid>.jsonl
+    └── ...
+```
+
+MinIO is reachable at `https://minio.carlboettiger.info` from outside the
+cluster:
 
 ```bash
 export AWS_ACCESS_KEY_ID=llm-proxy-logs
@@ -129,19 +170,16 @@ duckdb -s "
 CREATE SECRET minio (TYPE S3, KEY_ID getenv('AWS_ACCESS_KEY_ID'),
                      SECRET getenv('AWS_SECRET_ACCESS_KEY'),
                      ENDPOINT 'minio.carlboettiger.info', URL_STYLE 'path');
-SELECT ts, model, user_message_this_turn, latency_ms
-FROM read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet')
-ORDER BY ts DESC LIMIT 20;
+SELECT timestamp, model, user_message_this_turn, latency_ms
+FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-*/*.jsonl', union_by_name=true)
+ORDER BY timestamp DESC LIMIT 20;
 "
 ```
 
-For an rclone-then-query workflow like `../sync-logs.sh`, add a remote pointing
-at `https://minio.carlboettiger.info` with those credentials and sync
-`logs-open-llm-proxy`.
+`union_by_name=true` matters here: request and response records have different
+field sets, and the raw tier never went through the schema-flattening step.
 
-Today's not-yet-consolidated traffic is raw JSONL under
-`s3://logs-open-llm-proxy/YYYY-MM-DD/*.jsonl` (`read_ndjson_auto`,
-`union_by_name=true`), or live:
+Live tail:
 
 ```bash
 kubectl -n llm-proxy logs deployment/open-llm-proxy -f

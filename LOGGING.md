@@ -7,12 +7,11 @@ Logs are written to two places:
 1. **Pod stdout** — available immediately via `kubectl`, lost on pod restart
 2. **S3 bucket `logs-open-llm-proxy`** — flushed every 60 seconds (configurable via `FLUSH_INTERVAL` env var) as JSONL chunk files, persisted indefinitely
 
-Everything below describes the NRP deployment, whose bucket lives on NRP Ceph.
-The cirrus deployment (`llm-proxy.carlboettiger.info`) uses the **same layout,
-schema, rollup schedule, and `consolidate_logs.py`**, in a same-named bucket on
-the in-cluster MinIO mirror (`minio.carlboettiger.info` externally) — only the
-endpoint and credentials differ. See [cirrus/README.md](cirrus/README.md) for how
-to query it.
+> This document describes the **NRP** deployment (bucket on NRP Ceph). The cirrus
+> deployment writes the same record format to a same-named bucket on the
+> in-cluster MinIO mirror, but has **only the raw JSONL tier** — the Parquet
+> rollup and `sessions/**` view below are NRP-only for now. See
+> [cirrus/README.md](cirrus/README.md).
 
 ### S3 layout (tiered rollup)
 

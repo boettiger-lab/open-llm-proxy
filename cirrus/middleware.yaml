@@ -5,10 +5,12 @@
 # referenced from the Ingress via `router.middlewares` /
 # `service.servertransport`. Same split as mcp-data-server's cirrus recipe.
 ---
-# CORS. This is the ONLY layer that answers browser preflights for the cirrus
-# deployment — the app's own CORSMiddleware is switched off there (APP_CORS=off)
-# so the two can't emit duplicate headers. Unlike HAProxy's cors-allow-headers,
-# Traefik's list is also explicit: a new custom request header (e.g. X-Client,
+# CORS. As on NRP, the ingress is the effective authority: Traefik *sets* (not
+# appends) these headers, so it overwrites anything the app's own CORSMiddleware
+# produced — verified with an `*.nrp-nautilus.io` Origin, the one case where that
+# middleware is active, which returns a single `access-control-allow-origin: *`.
+# Unlike HAProxy's cors-allow-headers, Traefik's list is explicit too: a new
+# custom request header (e.g. X-Client,
 # X-Session-Id) must be added below or the preflight fails and the ENTIRE
 # request is blocked, not just that header. Verify with:
 #   curl -i -X OPTIONS https://llm-proxy.carlboettiger.info/v1/chat/completions \

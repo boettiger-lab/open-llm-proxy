@@ -1,0 +1,51 @@
+# Provider set for the cirrus deployment, mounted OVER /app/config.json in the
+# pod (see deployment.yaml). This is why the cirrus deployment needs no code
+# change and no repo-level config change: `llm_proxy.py` always reads
+# `config.json` next to itself, and this ConfigMap replaces that one file after
+# the git-sync initContainer has laid down the checkout.
+#
+# Keep this list a strict subset of the NRP config.json's providers — it exists
+# to *narrow* the surface (OpenRouter + DSE-nimbus), not to diverge from it. If
+# a provider's endpoint or model list changes upstream, mirror it here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: open-llm-proxy-config
+  namespace: llm-proxy
+data:
+  config.json: |
+    {
+      "providers": {
+        "openrouter": {
+          "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+          "api_key_env": "OPENROUTER_KEY",
+          "models": [
+            "anthropic/",
+            "mistralai/",
+            "amazon/",
+            "openai/",
+            "qwen/",
+            "nvidia/",
+            "z-ai/",
+            "minimax/",
+            "moonshotai/",
+            "deepseek/",
+            "~"
+          ],
+          "extra_headers": {
+            "HTTP-Referer": "https://llm-proxy.carlboettiger.info",
+            "X-Title": "Open LLM Proxy (cirrus)"
+          }
+        },
+        "nimbus": {
+          "endpoint": "https://vllm-nimbus.carlboettiger.info/v1/chat/completions",
+          "api_key_env": "NIMBUS_API_KEY",
+          "models": [
+            "qwen"
+          ],
+          "thinking_models": {
+            "qwen": "enable_thinking"
+          }
+        }
+      }
+    }
