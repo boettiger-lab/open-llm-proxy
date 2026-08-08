@@ -325,7 +325,8 @@ def load_config() -> dict:
             "nrp": {
                 "endpoint": "https://ellm.nrp-nautilus.io/v1/chat/completions",
                 "api_key_env": "NRP_API_KEY",
-                "models": ["kimi", "qwen3", "glm-5"]
+                "models": ["kimi", "qwen3", "qwen3-small", "glm-5", "minimax-m2",
+                           "deepseek-v4-flash", "gpt-oss", "gemma", "gemma-small"]
             },
             "openrouter": {
                 "endpoint": "https://openrouter.ai/api/v1/chat/completions",

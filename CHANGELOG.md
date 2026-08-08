@@ -9,6 +9,36 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Sync the NRP model list — `deepseek-v4-flash` and the newer `gemma`/`qwen3`
+  variants.** `config.json`'s `nrp.models` had drifted behind
+  `GET https://ellm.nrp-nautilus.io/v1/models`. Added `deepseek-v4-flash`
+  (`deepseek-ai/DeepSeek-V4-Flash-0731`, 304B, ~1.04M context — the same weights
+  as OpenRouter's pinned `deepseek/deepseek-v4-flash-0731`, now served natively on
+  NRP, so a request can skip OpenRouter and its budget cap), plus `qwen3-small`,
+  `qwen3-4bit`, `gemma-small`, `gemma4-small`, and `gemma4-12b`. The list now
+  mirrors the live endpoint's chat models; `qwen3-embedding` is deliberately
+  omitted (this proxy serves chat completions only).
+
+  Only `deepseek-v4-flash` was previously *unroutable-by-name*: no exact entry and
+  no matching prefix (note `deepseek/` does **not** prefix-match the bare NRP
+  alias), so it hit the unknown-model fallback and logged
+  `⚠️  Unknown model … defaulting to NRP` on every request. It reached NRP by luck
+  of that default; it is now an explicit route. The `gemma*`/`qwen3*` variants were
+  already resolving via the `gemma`/`qwen3` prefixes — listing them explicitly is
+  documentation plus insurance against a future prefix change. Verified that every
+  id the live endpoint reports now routes to `nrp`, and that exact-match precedence
+  still sends `gemma4` → `gemma4-nimbus`, `qwen` → `nimbus`, and `qwen3-6` →
+  `qwen3-cirrus` rather than to NRP.
+
+  `thinking_models` gained `enable_thinking` for `qwen3-small`, `gemma-small`,
+  `gemma4-small`, and `gemma4-12b` (same chat templates as the `qwen3`/`gemma`
+  entries already mapped). `deepseek-v4-flash` is reasoning-capable per NRP's
+  feature matrix but is **not** mapped: its chat-template kwarg name is unverified
+  (the DeepSeek family uses `thinking`, not `enable_thinking`) and probing it needs
+  a live key. Until someone confirms it, a client sending `enable_thinking` for
+  that model gets the documented no-op (`no thinking_key configured — ignoring`)
+  and the model's own default, which is the safe failure.
+
 - **Route OpenRouter floating aliases (`~…`).** OpenRouter publishes always-latest
   aliases whose model id carries a literal leading tilde — e.g.
   `~deepseek/deepseek-v4-flash-latest` (canonical slug identical), as distinct from

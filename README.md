@@ -37,10 +37,10 @@ Configured in `config.json`. Most deployments only need NRP:
 
 | Provider | Models | Notes |
 |---|---|---|
-| **NRP** (`ellm.nrp-nautilus.io`) | `kimi`, `qwen3`, `glm-5`, `minimax-m2`, `gpt-oss`, `gemma` | Default; supports `enable_thinking` for applicable models |
+| **NRP** (`ellm.nrp-nautilus.io`) | `kimi`, `qwen3`, `qwen3-small`, `qwen3-4bit`, `glm-5`, `minimax-m2`, `deepseek-v4-flash`, `gpt-oss`, `gemma`, `gemma-small`, `gemma4-small`, `gemma4-12b`, `gemma-small-e4b` | Default; supports `enable_thinking` for applicable models. The list mirrors `GET https://ellm.nrp-nautilus.io/v1/models` (chat models only — `qwen3-embedding` is omitted); NRP adds and retires aliases as the open-weights frontier moves, so re-check it when a model 404s |
 | **OpenRouter** | `anthropic/…`, `mistralai/…`, `openai/…`, `qwen/…`, `nvidia/…`, `amazon/…`, `z-ai/…`, `minimax/…`, `moonshotai/…`, `deepseek/…`, `~…` | Prefix match; requires separate API key. The `~` prefix catches OpenRouter's *floating aliases* (e.g. `~deepseek/deepseek-v4-flash-latest`), whose ids are literally `~`-prefixed and so never match a vendor prefix |
 | **Anthropic** | `claude-…` (default `claude-sonnet-4-6`; `claude-opus-4-8`, `claude-haiku-4-5` also route) | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives. **No prompt caching** — see below |
-| **Nimbus** | `nemotron` | Private vLLM instance; requires separate API key |
+| **Nimbus** | `qwen`, plus `gemma4` and `qwen3-6` on their own endpoints | Private vLLM instances; require separate API key |
 
 Unknown models fall back to NRP. To customize the model list, edit `config.json` — no code change needed.
 

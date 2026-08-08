@@ -6,17 +6,27 @@
             "models": [
                 "kimi",
                 "qwen3",
+                "qwen3-small",
+                "qwen3-4bit",
                 "glm-5",
                 "minimax-m2",
+                "deepseek-v4-flash",
                 "gpt-oss",
                 "gemma",
+                "gemma-small",
+                "gemma4-small",
+                "gemma4-12b",
                 "gemma-small-e4b"
             ],
             "thinking_models": {
                 "kimi":   "thinking",
                 "qwen3":  "enable_thinking",
+                "qwen3-small": "enable_thinking",
                 "glm-5": "enable_thinking",
                 "gemma": "enable_thinking",
+                "gemma-small": "enable_thinking",
+                "gemma4-small": "enable_thinking",
+                "gemma4-12b": "enable_thinking",
                 "gemma-small-e4b": "enable_thinking"
             }
         },
