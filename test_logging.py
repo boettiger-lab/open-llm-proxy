@@ -665,6 +665,37 @@ def test_handler_repairs_dialect_and_logs_count():
     assert "<arg_key>" not in json.dumps(responses[0])                   # log is clean too
 
 
+def test_nrp_models_route_by_declaration_not_fallback():
+    """Every model NRP actually serves must be *declared* in config.json (#105).
+
+    `get_provider_for_model` still lands unknown ids on NRP via its default branch,
+    so an undeclared-but-live model (e.g. `deepseek-v4-flash`) "works" while emitting
+    the unknown-model warning and remaining one prefix-edit away from silently
+    rerouting elsewhere. Assert the routing is intentional: declared, and warning-free.
+    """
+    import contextlib
+    import io
+
+    p = importlib.reload(llm_proxy)
+    # The model ids ellm.nrp-nautilus.io/v1/models serves. Refresh when NRP changes.
+    live = [
+        "gpt-oss", "gemma", "kimi", "minimax-m2", "deepseek-v4-flash", "gemma-small",
+        "gemma4-small", "gemma4-12b", "glm-5", "qwen3", "qwen3-embedding",
+        "qwen3-small", "qwen3-4bit", "gemma-small-e4b",
+    ]
+    for model in live:
+        assert model in p.PROVIDERS["nrp"]["models"], f"{model} is live on NRP but undeclared"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            provider, _ = p.get_provider_for_model(model)
+        assert provider == "nrp", f"{model} routed to {provider}, not nrp"
+        assert "Unknown model" not in buf.getvalue(), f"{model} reached NRP via the fallback"
+
+    # deepseek-v4-flash ignores `enable_thinking` and honors `thinking` (probed
+    # against the endpoint in #105) — the same dialect kimi uses.
+    assert p.PROVIDERS["nrp"]["thinking_models"]["deepseek-v4-flash"] == "thinking"
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

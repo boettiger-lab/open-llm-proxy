@@ -9,6 +9,20 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Declare every model NRP actually serves, including `deepseek-v4-flash` (#105).**
+  `nrp.models` listed 7 ids while `ellm.nrp-nautilus.io/v1/models` serves 14. The
+  undeclared ones still reached NRP, but only incidentally — `gemma4-small`,
+  `gemma4-12b`, `gemma-small`, `qwen3-small`, `qwen3-4bit` and `qwen3-embedding` rode
+  the broad `gemma`/`qwen3` prefixes, and `deepseek-v4-flash` matched nothing at all,
+  landing on the `⚠️ Unknown model` fallback (log noise on every request, and one
+  prefix edit away from silently rerouting: OpenRouter already carries `deepseek/`).
+  All 14 are now declared explicitly, so the list describes what the provider serves
+  and each routes by intent rather than by luck. Routing is unchanged for every model
+  — the new entries are exact matches for ids that already resolved to NRP.
+  `deepseek-v4-flash` also gains a `thinking_models` entry using the **`thinking`**
+  dialect (as `kimi` does, not `qwen3`'s `enable_thinking`, which it ignores), so its
+  reasoning can actually be toggled. Prefix matching remains provider-declaration-ordered;
+  the `gemma4-nimbus` / `qwen3-cirrus` shadowing noted in #105 is left as-is.
 - **Route OpenRouter floating aliases (`~…`).** OpenRouter publishes always-latest
   aliases whose model id carries a literal leading tilde — e.g.
   `~deepseek/deepseek-v4-flash-latest` (canonical slug identical), as distinct from
