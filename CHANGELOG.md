@@ -9,6 +9,17 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Thinking toggle for `qwen3-small` and `qwen3-4bit` (#105 follow-up).** Both honor
+  `chat_template_kwargs: {"enable_thinking": false}` at the endpoint, but had no
+  `thinking_models` entry — so a client's `enable_thinking` flag was silently dropped
+  (`thinking_models.get(model)` missed and the proxy only logged an info line). Probed
+  every NRP model that lacked an entry; results now pinned in a test:
+  `qwen3-small`/`qwen3-4bit` honor `enable_thinking` (entries added); `gemma-small`,
+  `gemma4-small` and `gemma4-12b` emit no `reasoning` at any setting, so there is
+  nothing to toggle; `gpt-oss` and `minimax-m2` reason unconditionally and ignore both
+  boolean dialects — `gpt-oss` takes an OpenAI-style `reasoning_effort` *level*, which
+  the boolean `thinking_models` map cannot express. Verified end-to-end through the
+  deployed proxy that `deepseek-v4-flash` now toggles as intended.
 - **Declare every model NRP actually serves, including `deepseek-v4-flash` (#105).**
   `nrp.models` listed 7 ids while `ellm.nrp-nautilus.io/v1/models` serves 14. The
   undeclared ones still reached NRP, but only incidentally — `gemma4-small`,

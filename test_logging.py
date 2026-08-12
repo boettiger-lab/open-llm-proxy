@@ -696,6 +696,37 @@ def test_nrp_models_route_by_declaration_not_fallback():
     assert p.PROVIDERS["nrp"]["thinking_models"]["deepseek-v4-flash"] == "thinking"
 
 
+def test_nrp_thinking_dialects_match_probed_behavior():
+    """The `thinking_models` map records a *probed* fact, not a guess (#105).
+
+    Each live NRP model was sent `{"enable_thinking": false}` and `{"thinking": false}`
+    as `chat_template_kwargs` and checked for a suppressed `reasoning` field. A wrong
+    or missing dialect is silent — `thinking_models.get(model)` misses and the client's
+    `enable_thinking` flag is dropped with only an info log — so pin the map here.
+    """
+    p = importlib.reload(llm_proxy)
+    thinking = p.PROVIDERS["nrp"]["thinking_models"]
+
+    # Honors `thinking`, ignores `enable_thinking`.
+    for model in ["kimi", "deepseek-v4-flash"]:
+        assert thinking[model] == "thinking"
+    # Honors `enable_thinking`.
+    for model in ["qwen3", "qwen3-small", "qwen3-4bit", "glm-5", "gemma"]:
+        assert thinking[model] == "enable_thinking"
+    # Emits no reasoning at any setting, so nothing to toggle. `gemma-small-e4b`
+    # keeps its inert entry (harmless, predates the probe); the rest stay absent
+    # so the client flag is dropped loudly rather than sent as a no-op kwarg.
+    for model in ["gemma-small", "gemma4-small", "gemma4-12b"]:
+        assert model not in thinking
+    # Reasoning is unconditional — neither dialect suppresses it. gpt-oss instead
+    # takes an OpenAI-style `reasoning_effort` *level*, which this boolean map
+    # cannot express; minimax-m2 exposes no off switch at all.
+    for model in ["gpt-oss", "minimax-m2"]:
+        assert model not in thinking
+    # Embedding model — not a chat endpoint.
+    assert "qwen3-embedding" not in thinking
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
