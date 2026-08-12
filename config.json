@@ -10,10 +10,18 @@
                 "minimax-m2",
                 "gpt-oss",
                 "gemma",
-                "gemma-small-e4b"
+                "gemma-small-e4b",
+                "deepseek-v4-flash",
+                "gemma-small",
+                "gemma4-small",
+                "gemma4-12b",
+                "qwen3-small",
+                "qwen3-4bit",
+                "qwen3-embedding"
             ],
             "thinking_models": {
                 "kimi":   "thinking",
+                "deepseek-v4-flash": "thinking",
                 "qwen3":  "enable_thinking",
                 "glm-5": "enable_thinking",
                 "gemma": "enable_thinking",
