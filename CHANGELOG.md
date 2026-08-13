@@ -72,6 +72,47 @@ See [Releases](README.md#releases) for how a release is cut.
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
 ### Fixed
+- **Fail a matrix Job that can't establish its own provenance, and emit the versions
+  line twice (#103).** A 7-Job full-tier sweep on 2026-08-01 emitted **zero**
+  `##BENCH-VERSIONS##` lines, so 130 graded cells were published to the benchmark store
+  with `{"geo_agent": null, "proxy": null, "app_config_sha": null}` — permanently
+  unreproducible, because the SHAs can only be read from the shallow clones the Job
+  made and those are long gone. Nothing anywhere raised. `matrix-job.yaml` now builds
+  the line into `$BENCH_VERSIONS`, checks that each of `geo_agent`/`app_sha`/`proxy_sha`
+  resolved to something other than empty-or-`unknown`, and on failure prints a
+  `##BENCH-VERSIONS-MISSING##` marker naming the unresolved fields and **exits 1** —
+  before `npm ci`, so an unreproducible benchmark costs nothing instead of a full
+  matrix. This is the last point in the Job that can still see the clones. The line is
+  also echoed a second time in the trailer beside `summary.tsv` (and before `exit $rc`,
+  so a failed matrix still carries it), leaving provenance recoverable from a truncated
+  or rotated log. An empty `mcp_url` warns but does not fail.
+
+  The line now also records **which MCP build the run actually hit**, closing the last
+  provenance gap: `mcp_url` is stable across MCP upgrades, so two runs with identical
+  versions blocks could have queried different servers. The Job GETs `<mcp_root>/version`
+  — public and auth-exempt on mcp-data-server (mcp-data-server#221) — and adds
+  `mcp_server` (e.g. `mcp-data-server v0.8.15`) and `mcp_git_sha` (the running image's
+  full git SHA). This resolves for any head (NRP, dev, cirrus, a mirror) with no cluster
+  access or RBAC, and reports what actually *serves*, unlike a pod `imageID`, which reads
+  stale on disrupted-node orphans (mcp-data-server#383). It replaces the hand-passed
+  `--mcp-server 'mcp-data-server v0.8.10'`, which was exactly the kind of thing that goes
+  stale. Deliberately non-fatal — it is a network call to a third party, so a transient
+  failure records the explicit string `unknown` and warns rather than burning a 130-cell
+  matrix. `mcp_server` fills a key `collect_run.py` already reads (falling back to it when
+  `--mcp-server` is absent), and every pre-existing key is byte-identical, so nothing
+  downstream needs changing; verified against that parser, including the twice-emitted
+  line, which it dedupes idempotently. Root cause of the 08-01 silence itself is still
+  open — this makes a recurrence loud rather than silent.
+- **LOGGING.md: `get_schema` *does* reach the MCP server (#63).** The session-
+  reconstruction note claimed `list_datasets` and `get_schema` are both local geo-agent
+  tools whose calls "never reach the MCP server." True of `list_datasets`, wrong of
+  `get_schema`: its `execute()` delegates to the MCP `get_stac_details` tool, forwarding
+  the cached STAC collection inline (`geo-agent/app/map-tools.js`). Because the proxy
+  logs the name the *LLM* called and the delegated request never passes through here,
+  anyone counting MCP tool load from these logs undercounts `get_stac_details` badly —
+  in the June 2026 corpus, 339 direct calls versus ~3,255 actual, the #2 MCP tool. The
+  note now distinguishes local-only from local-delegate and says to attribute every
+  `get_schema` call to `get_stac_details` when estimating server load.
 - **Strip leaked `<arg_key>`/`<arg_value>` (GLM) and `<parameter=…>` (qwen) tool-call
   arg dialect from responses (#85).** Some open-weight backends (`z-ai/glm-5.2`, the
   qwen family) intermittently fail to decode their own tool-call argument encoding,

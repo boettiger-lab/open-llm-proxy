@@ -378,7 +378,12 @@ REQUEST  msg=6  user_question="Tell me about datasets"  tool_results=[{content: 
 RESPONSE has_content=true  content_preview="The PAD-US dataset contains..."
 ```
 
-Note: `list_datasets` and `get_schema` are local geo-agent tools — their results appear in `tool_results_this_turn` on the proxy but never reach the MCP server.
+Note: `list_datasets` and `get_schema` are both client-side geo-agent tools, but only one of them stays client-side.
+
+- **`list_datasets` is local-only.** It is answered from the in-browser catalog and never reaches the MCP server.
+- **`get_schema` is a local *delegate*.** Its `execute()` forwards to the MCP server as a **`get_stac_details`** call, passing the cached STAC collection inline (`geo-agent/app/map-tools.js`, `callTool('get_stac_details', …)`).
+
+> ⚠️ **Counting MCP tool load from proxy logs undercounts `get_stac_details`.** The proxy logs the name the *LLM* called (`get_schema`); the delegated MCP request does not pass through this proxy, so it is invisible here. To estimate real MCP-server load, attribute every `get_schema` tool-call to `get_stac_details` as well. In the June 2026 corpus that is the difference between 339 direct `get_stac_details` calls and ~3,255 actual ones (~2,916 arriving via `get_schema`) — i.e. the #2 MCP tool, not a minor one.
 
 ## What the MCP server logs add
 
