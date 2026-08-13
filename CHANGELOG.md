@@ -97,6 +97,15 @@ See [Releases](README.md#releases) for how a release is cut.
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
 ### Fixed
+- **LOGGING.md wrongly described the log-read keys as scoped (#113).** The direct-S3
+  section said `LOG_S3_KEY`/`LOG_S3_SECRET` were "scoped keys for this bucket — distinct
+  from your general NRP credentials." There is exactly **one** credential for NRP bucket
+  access, so they are that credential: read/write/delete across every NRP bucket. The
+  claim was wrong in the dangerous direction — it made an over-broad key look already
+  contained, so handing it to an agent for a read-only log query looked safe. Both
+  LOGGING.md and AGENTS.md now state the real scope and steer to `./sync-logs.sh`, whose
+  local copy needs no secret at query time. Read-only single-bucket access is tracked in
+  #113, with the rustfs mirror/mint half in `geo-agent-ops#117`.
 - **Configurable `default_provider`; unroutable models get a 400, not a 500.** The
   fallback for a model id matching no provider entry was a hard-coded
   `return "nrp", PROVIDERS["nrp"]`. On NRP that is load-bearing — most of `nrp.models`
