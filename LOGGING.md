@@ -159,7 +159,11 @@ For queries that span today + history, UNION raw JSONL and consolidated Parquet 
 
 ### Direct S3 (one-shot queries, automation, or inside NRP pods)
 
-When you don't want a local copy — e.g. a single CI query, a k8s job, or always-current reads inside a pod — query S3 directly with a DuckDB secret. Set `LOG_S3_KEY` and `LOG_S3_SECRET` in your shell (scoped keys for this bucket — distinct from your general NRP credentials) and let the shell expand them. Agents should use the Bash tool so shell expansion keeps the secret values out of the conversation transcript.
+When you don't want a local copy — e.g. a single CI query, a k8s job, or always-current reads inside a pod — query S3 directly with a DuckDB secret. Set `LOG_S3_KEY` and `LOG_S3_SECRET` in your shell and let the shell expand them. Agents should use the Bash tool so shell expansion keeps the secret values out of the conversation transcript.
+
+> ⚠️ **These are not scoped, read-only keys.** There is exactly **one** credential for NRP bucket access, so `LOG_S3_KEY`/`LOG_S3_SECRET` are that same credential: **read/write/delete across every NRP bucket**, not just this one. (An earlier version of this note claimed they were "scoped keys for this bucket — distinct from your general NRP credentials." That was wrong, and wrong in the dangerous direction: it made an over-broad key look already-contained.)
+>
+> Treat this path as privileged. Prefer [`./sync-logs.sh`](#local-sync-recommended-for-interactive-analysis) — the local copy needs no secret at query time — and reach for direct S3 only when you genuinely need sub-minute freshness or an in-pod read. A read-only, single-bucket credential is tracked in #113 (with the mirror/mint half in `geo-agent-ops`); until it exists, sharing this key for log reads grants delete on everything it reaches.
 
 ```bash
 duckdb -s "
