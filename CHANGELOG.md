@@ -97,6 +97,16 @@ See [Releases](README.md#releases) for how a release is cut.
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
 ### Fixed
+- **`geo-agent-training` skill: log collection was broken and over-privileged.** Its
+  Step 1 selector was `app=llm-proxy`, which matches **no pods** — the label is
+  `app=open-llm-proxy` — so an agent following the skill collected zero proxy logs and
+  could conclude an app had no traffic. It then described a log schema three field-
+  generations stale (`user_message`, since replaced by `user_question` +
+  `user_message_this_turn`, #89) and listed "no `request_id`" and "responses lack
+  `origin`" as known limitations, both fixed long ago (#1, #2, closed). For history it
+  reached for `rclone copy nrp:logs-wetlands/` — the wrong bucket, via the broad NRP
+  credential (#113). Rewritten around `./sync-logs.sh` and the `sessions/**` view, with
+  the correct label, the current field list, and the credential warning. Skill 2.0 → 2.1.
 - **LOGGING.md wrongly described the log-read keys as scoped (#113).** The direct-S3
   section said `LOG_S3_KEY`/`LOG_S3_SECRET` were "scoped keys for this bucket — distinct
   from your general NRP credentials." There is exactly **one** credential for NRP bucket

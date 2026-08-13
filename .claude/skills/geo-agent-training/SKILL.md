@@ -4,7 +4,7 @@ description: "Analyze geo-agent app behavior from LLM proxy and MCP server logs,
 license: Apache-2.0
 metadata:
   author: boettiger-lab
-  version: "2.0"
+  version: "2.1"
 ---
 
 # Geo-Agent Training Workflow
@@ -78,21 +78,48 @@ You need **both** proxy and MCP logs to see the full picture.
 
 ### LLM Proxy logs (what the model decided)
 
+**Default: sync the bucket once, then query locally.** From an `open-llm-proxy` checkout:
+
 ```bash
-# All pods, filtered to app origin — must check all pods
-for pod in $(kubectl -n biodiversity get pods -l app=llm-proxy -o name); do
-  kubectl -n biodiversity logs $pod --since=168h 2>/dev/null | grep '"origin":"https://APP.nrp-nautilus.io"'
-done | sort
+./sync-logs.sh          # -> /tmp/open-llm-proxy-logs (whole bucket, a few MiB, ~1s)
 ```
 
-Request log fields: `timestamp`, `type`, `provider`, `model`, `origin`, `client` (`X-Client` app+version, e.g. `geo-agent/v3.13.1`; `null` until the client sends it — filter on it to correlate behavior with a release), `message_count`, `tools_count`, `user_message`
+Then query the tier you need. For a *completed* session the **session view** is the
+right one — request already joined to response, one row per turn, in order:
 
-Response log format: `✓ RESPONSE: {...}` with `latency_ms`, `has_tool_calls`, `tool_calls`, `tokens`
+```bash
+duckdb -s "
+SELECT turn_idx, user_message_this_turn, tool_calls, tool_results
+FROM read_parquet('/tmp/open-llm-proxy-logs/sessions/**/*.parquet')
+WHERE origin = 'https://APP.nrp-nautilus.io'
+ORDER BY session_key, turn_idx;
+"
+```
 
-**Known limitations:**
-- `user_message` captures the last message in the conversation, which in a tool-use loop is usually a tool result — not the human's question
-- Responses lack an `origin` field (fix tracked in boettiger-lab/open-llm-proxy#2)
-- No request_id to correlate request/response pairs (fix tracked in boettiger-lab/open-llm-proxy#1)
+For history across sessions use `consolidated/**/*.parquet`; for *today* use the raw
+JSONL at `YYYY-MM-DD/*.jsonl`. See [LOGGING.md](../../../LOGGING.md) for the full schema.
+
+**Live tail** (the last ~60s, before the next S3 flush) — note the label is
+`app=open-llm-proxy`, not `app=llm-proxy`:
+
+```bash
+kubectl -n biodiversity logs deployment/open-llm-proxy --since=10m \
+  | grep '"origin":"https://APP.nrp-nautilus.io"'
+```
+
+Key request fields: `ts`, `type`, `provider`, `model`, `origin`, `session_id`,
+`request_id`, `client` (`X-Client` app+version, e.g. `geo-agent/v3.13.1` — filter on it
+to correlate behavior with a release), `message_count`, `tools_count`,
+`user_question` (the session *opener*), `user_message_this_turn` (this turn's actual
+prompt), `tool_results_this_turn`.
+
+Response fields: `latency_ms`, `has_tool_calls`, `tool_calls`, `tokens`, `error`.
+
+**Read `user_message_this_turn`, not `user_question`.** `user_question` holds only the
+first message of the session and is repeated verbatim on every later turn, so follow-up
+questions are invisible in it. Pair requests with responses via `request_id`, and group
+a session via `session_id` (both exact — `origin` + `user_question` grouping is a
+fallback for old records only).
 
 ### MCP Server logs (what SQL was executed)
 
@@ -102,11 +129,18 @@ for pod in $(kubectl -n biodiversity get pods -l app=duckdb-mcp -o name); do
 done | sort
 ```
 
-### Historical logs (S3 backup)
+### Historical logs
 
-```bash
-rclone copy nrp:logs-wetlands/ ./logs
-```
+Covered by `./sync-logs.sh` above — it pulls the whole `logs-open-llm-proxy` bucket,
+including the `consolidated/**` and `sessions/**` rollups, so there is no separate
+backup step.
+
+> ⚠️ **Don't reach for `rclone … nrp:` or `LOG_S3_KEY`/`LOG_S3_SECRET` to read logs.**
+> There is exactly one credential for NRP bucket access and it carries
+> **read/write/delete on every NRP bucket** — far beyond what reading a few MiB of logs
+> needs. `sync-logs.sh` uses the already-configured remote and its local copy needs no
+> secret at query time. A read-only, single-bucket credential is tracked in
+> boettiger-lab/open-llm-proxy#113.
 
 ## Step 2: Reconstruct Conversations
 
