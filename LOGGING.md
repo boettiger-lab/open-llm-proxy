@@ -117,6 +117,19 @@ request/response interleaving:
 
 ## Access pattern
 
+> 🔜 **A read-only rustfs mirror is being stood up (#116).** The consolidation CronJobs now
+> copy `consolidated/**` and `sessions/**` to `logs-open-llm-proxy` on rustfs after each run,
+> so those tiers can be read with a credential scoped to that one bucket — Get/List only —
+> instead of the single NRP key that carries read/write/delete on *every* NRP bucket (#113).
+> The credential lives in the `rustfs-logs-read` Secret in `biodiversity`; reference it by
+> **name**, never by value, so rotation touches nothing here.
+>
+> **Not yet the recommended path.** The sections below still describe the NRP-key workflow,
+> and stay that way until the mirror has run and been confirmed non-empty — retargeting
+> sooner would make the recommended path return *nothing* rather than too much. NRP Ceph
+> remains the system of record either way; rustfs shares the same rook Ceph, so the mirror
+> is a convenience copy, not a second failure domain.
+
 ### Local sync (recommended for interactive analysis)
 
 The bucket is **private**, but `rclone` already has credentials configured under the `nrp` remote. Sync the bucket to a local scratch dir once per session, then query the local files — no S3 secret, no shell-expanded credentials, and orders of magnitude faster iteration:
