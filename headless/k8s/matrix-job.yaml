@@ -96,8 +96,36 @@ spec:
               # assigning the app value there would silently disable the override.
               APP_MCP_URL="$(python3 -c "import json,sys;print(json.load(open('/work/$APP_NAME/layers-input.json')).get('mcp_url',''))" 2>/dev/null || echo '')"
               EFFECTIVE_MCP_URL="${MCP_URL:-$APP_MCP_URL}"
-              BENCH_VERSIONS="$(printf '##BENCH-VERSIONS## {"geo_agent":"%s","app_repo":"%s","app_sha":"%s","proxy_sha":"%s","mcp_url":"%s","app_branch":"%s","geo_agent_branch":"%s"}' \
-                  "$GEO_SHA" "$APP_REPO" "$APP_SHA" "$PROXY_SHA" "$EFFECTIVE_MCP_URL" "$APP_BRANCH" "$GEO_AGENT_BRANCH")"
+
+              # Resolve what the MCP head is actually *running* (#103). mcp_url is stable
+              # across MCP upgrades, so two runs with identical versions blocks can still
+              # have hit different builds — which is why the server version was previously
+              # passed by hand (`--mcp-server 'mcp-data-server v0.8.10'`) and went stale.
+              # mcp-data-server serves a public, auth-exempt /version carrying the running
+              # image's version + git SHA (mcp-data-server#221), so this resolves for any
+              # head — NRP, dev, cirrus, a mirror — with no cluster access or RBAC. It also
+              # reports what actually *serves*, unlike a pod imageID, which reads stale on
+              # disrupted-node orphans (mcp-data-server#383).
+              # Non-fatal, unlike the SHAs above: this is a network call to a third party,
+              # and a transient failure must not burn a 130-cell matrix. It records the
+              # explicit string "unknown" (visible downstream, not absent) and warns.
+              MCP_SERVER=unknown
+              MCP_GIT_SHA=unknown
+              if [ -n "$EFFECTIVE_MCP_URL" ]; then
+                  MCP_PROBE="$(python3 -c 'import json,sys,urllib.parse,urllib.request;u=urllib.parse.urlsplit(sys.argv[1]);r=urllib.parse.urlunsplit((u.scheme,u.netloc,"","",""));d=json.load(urllib.request.urlopen(r+"/version",timeout=20));print("%s|%s"%(d.get("version") or "unknown",d.get("git_sha") or "unknown"))' "$EFFECTIVE_MCP_URL" 2>/dev/null || echo '')"
+                  if [ -n "$MCP_PROBE" ]; then
+                      MCP_SERVER="mcp-data-server ${MCP_PROBE%%|*}"
+                      MCP_GIT_SHA="${MCP_PROBE##*|}"
+                  else
+                      echo "WARNING: no /version from ${EFFECTIVE_MCP_URL} — MCP build recorded as unknown" >&2
+                  fi
+              fi
+
+              # mcp_server fills a key collect_run.py already reads (it falls back to this
+              # when --mcp-server isn't passed), so adding these two keys needs no change
+              # downstream; every other consumer key is byte-identical to before.
+              BENCH_VERSIONS="$(printf '##BENCH-VERSIONS## {"geo_agent":"%s","app_repo":"%s","app_sha":"%s","proxy_sha":"%s","mcp_url":"%s","mcp_server":"%s","mcp_git_sha":"%s","app_branch":"%s","geo_agent_branch":"%s"}' \
+                  "$GEO_SHA" "$APP_REPO" "$APP_SHA" "$PROXY_SHA" "$EFFECTIVE_MCP_URL" "$MCP_SERVER" "$MCP_GIT_SHA" "$APP_BRANCH" "$GEO_AGENT_BRANCH")"
 
               # A run whose provenance is missing is not a valid measurement, so refuse
               # to spend the matrix on one (#103). On 2026-08-01 a 7-Job sweep emitted no

@@ -85,9 +85,24 @@ See [Releases](README.md#releases) for how a release is cut.
   matrix. This is the last point in the Job that can still see the clones. The line is
   also echoed a second time in the trailer beside `summary.tsv` (and before `exit $rc`,
   so a failed matrix still carries it), leaving provenance recoverable from a truncated
-  or rotated log. An empty `mcp_url` warns but does not fail. The emitted JSON is
-  byte-identical to before, so `collect_run.py` needs no change. Root cause of the
-  08-01 silence itself is still open — this makes a recurrence loud rather than silent.
+  or rotated log. An empty `mcp_url` warns but does not fail.
+
+  The line now also records **which MCP build the run actually hit**, closing the last
+  provenance gap: `mcp_url` is stable across MCP upgrades, so two runs with identical
+  versions blocks could have queried different servers. The Job GETs `<mcp_root>/version`
+  — public and auth-exempt on mcp-data-server (mcp-data-server#221) — and adds
+  `mcp_server` (e.g. `mcp-data-server v0.8.15`) and `mcp_git_sha` (the running image's
+  full git SHA). This resolves for any head (NRP, dev, cirrus, a mirror) with no cluster
+  access or RBAC, and reports what actually *serves*, unlike a pod `imageID`, which reads
+  stale on disrupted-node orphans (mcp-data-server#383). It replaces the hand-passed
+  `--mcp-server 'mcp-data-server v0.8.10'`, which was exactly the kind of thing that goes
+  stale. Deliberately non-fatal — it is a network call to a third party, so a transient
+  failure records the explicit string `unknown` and warns rather than burning a 130-cell
+  matrix. `mcp_server` fills a key `collect_run.py` already reads (falling back to it when
+  `--mcp-server` is absent), and every pre-existing key is byte-identical, so nothing
+  downstream needs changing; verified against that parser, including the twice-emitted
+  line, which it dedupes idempotently. Root cause of the 08-01 silence itself is still
+  open — this makes a recurrence loud rather than silent.
 - **LOGGING.md: `get_schema` *does* reach the MCP server (#63).** The session-
   reconstruction note claimed `list_datasets` and `get_schema` are both local geo-agent
   tools whose calls "never reach the MCP server." True of `list_datasets`, wrong of
