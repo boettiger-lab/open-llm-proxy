@@ -1,0 +1,157 @@
+# open-llm-proxy on the self-hosted k3s cluster (cirrus).
+#
+# CONFIG-ONLY DEPLOYMENT: this directory contains no application code and
+# requires no change to any file the NRP deployment reads. Same `llm_proxy.py`
+# from `main`, driven entirely by env vars that already exist upstream plus a
+# ConfigMap mounted over `config.json`. Nothing here can alter NRP behavior.
+#
+# Differences from ../deployment.yaml:
+#   * config.json is replaced by the mounted ConfigMap → OpenRouter +
+#     DSE-nimbus only (see config-configmap.yaml).
+#   * logs flush to the in-cluster MinIO mirror, not NRP Ceph (LOG_BUCKET +
+#     AWS_S3_ENDPOINT_URL, both pre-existing env vars).
+#   * no dns-cache sidecar / dnsPolicy:None: that works around NRP CoreDNS
+#     flakiness (#28). k3s CoreDNS on one node has not shown it, so this runs
+#     plain ClusterFirst — add the sidecar here only if EAI_AGAIN 502s appear.
+#   * no NRP node affinity / tolerations; pinned to cirrus instead (that is
+#     where MinIO and Traefik live, so log flushes stay on-node).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-llm-proxy
+  namespace: llm-proxy
+  labels:
+    app: open-llm-proxy
+spec:
+  # Two replicas on a one-worker cluster: enough for a zero-downtime rollout
+  # (maxUnavailable: 0 + surge) without pretending to be multi-node HA.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: open-llm-proxy
+  template:
+    metadata:
+      labels:
+        app: open-llm-proxy
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: cirrus
+      initContainers:
+      # The app is not baked into an image; it is cloned at boot, exactly as on
+      # NRP. Restarting the deployment is therefore how you deploy:
+      #   kubectl -n llm-proxy rollout restart deployment/open-llm-proxy
+      # Corollary: a restart picks up whatever is on `main` at that moment —
+      # the same code NRP runs, which is the point.
+      - name: git-sync
+        image: alpine/git:latest
+        command:
+        - sh
+        - -c
+        - |
+          git clone --depth 1 https://github.com/boettiger-lab/open-llm-proxy.git /tmp/repo
+          cp -r /tmp/repo/. /app/
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      containers:
+      - name: open-llm-proxy
+        image: astral/uv:python3.12-bookworm-slim
+        command: ["uvx", "--from", "uvicorn", "--with", "fastapi", "--with", "httpx", "--with", "pydantic", "--with", "boto3", "uvicorn", "llm_proxy:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
+        workingDir: /app
+        ports:
+        - containerPort: 8002
+        env:
+        - name: PROXY_KEY
+          valueFrom:
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: proxy-key
+        - name: PROXY_KEYS_EXTRA
+          valueFrom:
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: proxy-keys-extra
+              optional: true
+        - name: OPENROUTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openrouter-key
+              key: OPENROUTER_KEY
+        - name: NIMBUS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: nimbus-api-key
+              key: NIMBUS_API_KEY
+        # --- Logging (see ../LOGGING.md) ---------------------------------
+        # In-cluster MinIO mirror. boto3 uses path-style addressing for a custom
+        # endpoint_url, which is what MinIO behind a cluster-DNS name needs — so
+        # the stock flush path works here unmodified.
+        - name: LOG_BUCKET
+          value: "logs-open-llm-proxy"
+        - name: AWS_S3_ENDPOINT_URL
+          value: "http://minio-svc.minio.svc.cluster.local:9000"
+        - name: LOG_CAPTURE_MODE
+          value: "summary"
+        - name: LOG_REASONING_MAX
+          value: "4000"
+        # Scoped MinIO service account (read/write on the log bucket only —
+        # NOT the MinIO root user). See README.md in this directory.
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef: { name: logs-s3, key: AWS_ACCESS_KEY_ID }
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef: { name: logs-s3, key: AWS_SECRET_ACCESS_KEY }
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        # Replaces the repo's config.json with the cirrus provider set. Mounted
+        # over the file inside the app-code volume, so the git checkout supplies
+        # the code and this supplies the config. Changing the ConfigMap requires
+        # a rollout restart (subPath mounts do not live-update).
+        - name: config
+          mountPath: /app/config.json
+          subPath: config.json
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 30
+      volumes:
+      - name: app-code
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: open-llm-proxy-config

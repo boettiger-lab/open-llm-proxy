@@ -34,6 +34,31 @@ See [Releases](README.md#releases) for how a release is cut.
   dialect (as `kimi` does, not `qwen3`'s `enable_thinking`, which it ignores), so its
   reasoning can actually be toggled. Prefix matching remains provider-declaration-ordered;
   the `gemma4-nimbus` / `qwen3-cirrus` shadowing noted in #105 is left as-is.
+- **Second deployment on the self-hosted k3s cluster (cirrus):
+  `https://llm-proxy.carlboettiger.info`.** Manifests in `cirrus/` (namespace
+  `llm-proxy`), documented in [cirrus/README.md](cirrus/README.md).
+  **Config-only and NRP-inert:** it runs this repo's unmodified `llm_proxy.py`
+  from `main`, and adds no file the NRP deployment reads — no application code,
+  no `config.json` change, no CronJob change. Everything cirrus-specific is
+  deployment config:
+  - **Providers: OpenRouter + DSE-nimbus (`qwen`) only**, from a ConfigMap
+    mounted over `/app/config.json` in the pod. No NRP ELLM, no Anthropic direct.
+  - **Logs to the in-cluster MinIO mirror** (`minio-svc.minio.svc.cluster.local:9000`,
+    bucket `logs-open-llm-proxy`), via the existing `LOG_BUCKET` /
+    `AWS_S3_ENDPOINT_URL` env vars and a MinIO service account scoped to that
+    bucket — not the MinIO root user. **Raw JSONL tier only:** the Parquet rollup
+    and `sessions/**` view live inside the NRP CronJob manifests and can't be
+    reused without extracting them, which would touch NRP. Deferred.
+  - **Traefik replaces HAProxy** for ingress: CORS and the 600s backend timeouts
+    become `Middleware` / `ServersTransport` CRDs (`cirrus/middleware.yaml`), with
+    cert-manager + external-dns provisioning TLS and the A record.
+  - No dns-cache sidecar / `dnsPolicy: None` (that works around NRP CoreDNS
+    flakiness, #28); pinned to the `cirrus` node, where MinIO and Traefik live.
+  - Known limitation, inherent to staying config-only: an unrouted model id
+    returns `500` rather than a useful `400`, because
+    `get_provider_for_model`'s fallback is a hard-coded `PROVIDERS["nrp"]` and
+    cirrus has no `nrp` provider. Correct model ids are unaffected.
+
 - **Route OpenRouter floating aliases (`~…`).** OpenRouter publishes always-latest
   aliases whose model id carries a literal leading tilde — e.g.
   `~deepseek/deepseek-v4-flash-latest` (canonical slug identical), as distinct from

@@ -12,6 +12,28 @@ This is an LLM proxy service that routes chat completion requests to NRP, OpenRo
 
 > **CORS gotcha:** browser CORS is enforced by the **haproxy ingress** (`ingress.yaml` annotations), *not* the app's `CORSMiddleware` (which is effectively dead config). `cors-allow-headers` is an explicit list — a new custom request header (e.g. `X-Client`) must be added there or the browser preflight blocks the whole request. See the comment in `ingress.yaml`.
 
+## Two deployments
+
+The canonical deployment is on **NRP** (`open-llm-proxy.nrp-nautilus.io`,
+namespace `biodiversity`) — that is what the manifests at the repo root, and
+everything below, describe. A second, narrower deployment runs on the lab's
+**self-hosted k3s cluster** (`llm-proxy.carlboettiger.info`, namespace
+`llm-proxy`): OpenRouter + DSE-nimbus only, raw-JSONL logs in the in-cluster
+MinIO mirror, Traefik instead of HAProxy. See [cirrus/](cirrus/README.md).
+
+Two rules for agents working on it:
+
+1. **cirrus is config-only.** Everything cirrus-specific lives in `cirrus/` as
+   deployment config (a ConfigMap mounted over `config.json`, env vars, Traefik
+   CRDs). It runs this repo's unmodified code. Do **not** make an app change
+   "for cirrus" and do **not** point its manifests at a branch — both deployments
+   git-clone `main` at pod boot, so a shared-code edit reaches NRP at its next
+   restart whether or not that was the intent. If cirrus genuinely needs an app
+   change, propose it on its own merits for both deployments.
+2. **Check which cluster `kubectl` is pointed at** (`kubectl config
+   current-context`) before touching anything — a laptop configured for cirrus
+   generally cannot reach NRP, and vice versa.
+
 ## Evaluating Logs
 
 Logs land in three tiers by age (see [LOGGING.md](LOGGING.md) for the full spec):

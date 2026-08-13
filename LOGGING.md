@@ -7,6 +7,12 @@ Logs are written to two places:
 1. **Pod stdout** — available immediately via `kubectl`, lost on pod restart
 2. **S3 bucket `logs-open-llm-proxy`** — flushed every 60 seconds (configurable via `FLUSH_INTERVAL` env var) as JSONL chunk files, persisted indefinitely
 
+> This document describes the **NRP** deployment (bucket on NRP Ceph). The cirrus
+> deployment writes the same record format to a same-named bucket on the
+> in-cluster MinIO mirror, but has **only the raw JSONL tier** — the Parquet
+> rollup and `sessions/**` view below are NRP-only for now. See
+> [cirrus/README.md](cirrus/README.md).
+
 ### S3 layout (tiered rollup)
 
 Three tiers, each holding a different age of data. A daily CronJob rolls
