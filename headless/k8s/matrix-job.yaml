@@ -96,8 +96,29 @@ spec:
               # assigning the app value there would silently disable the override.
               APP_MCP_URL="$(python3 -c "import json,sys;print(json.load(open('/work/$APP_NAME/layers-input.json')).get('mcp_url',''))" 2>/dev/null || echo '')"
               EFFECTIVE_MCP_URL="${MCP_URL:-$APP_MCP_URL}"
-              printf '##BENCH-VERSIONS## {"geo_agent":"%s","app_repo":"%s","app_sha":"%s","proxy_sha":"%s","mcp_url":"%s","app_branch":"%s","geo_agent_branch":"%s"}\n' \
-                  "$GEO_SHA" "$APP_REPO" "$APP_SHA" "$PROXY_SHA" "$EFFECTIVE_MCP_URL" "$APP_BRANCH" "$GEO_AGENT_BRANCH"
+              BENCH_VERSIONS="$(printf '##BENCH-VERSIONS## {"geo_agent":"%s","app_repo":"%s","app_sha":"%s","proxy_sha":"%s","mcp_url":"%s","app_branch":"%s","geo_agent_branch":"%s"}' \
+                  "$GEO_SHA" "$APP_REPO" "$APP_SHA" "$PROXY_SHA" "$EFFECTIVE_MCP_URL" "$APP_BRANCH" "$GEO_AGENT_BRANCH")"
+
+              # A run whose provenance is missing is not a valid measurement, so refuse
+              # to spend the matrix on one (#103). On 2026-08-01 a 7-Job sweep emitted no
+              # versions line at all and 130 graded cells were published with null SHAs —
+              # unrecoverable after the fact, because the clones are gone. This is the last
+              # point that can still see them. Fail here, before npm ci and the run.
+              MISSING=""
+              for pair in "geo_agent:$GEO_SHA" "app_sha:$APP_SHA" "proxy_sha:$PROXY_SHA"; do
+                  case "${pair#*:}" in
+                      ""|unknown) MISSING="$MISSING ${pair%%:*}" ;;
+                  esac
+              done
+              if [ -n "$MISSING" ] || [ -z "$BENCH_VERSIONS" ]; then
+                  echo "##BENCH-VERSIONS-MISSING## unresolved:${MISSING:- <printf produced nothing>}"
+                  echo "ERROR: cannot establish stack provenance; refusing to run an" >&2
+                  echo "       unreproducible benchmark. See open-llm-proxy#103." >&2
+                  exit 1
+              fi
+              [ -n "$EFFECTIVE_MCP_URL" ] || \
+                  echo "WARNING: mcp_url is empty (no MCP_URL override, none in layers-input.json)" >&2
+              echo "$BENCH_VERSIONS"
 
               cd /work/open-llm-proxy/headless
               npm ci --no-audit --no-fund
@@ -151,6 +172,12 @@ spec:
 
               echo "=== summary.tsv ==="
               cat "$RUNS_DIR_REL/summary.tsv" 2>/dev/null || echo "(no summary written)"
+
+              # Emit provenance a second time, in the trailer beside summary.tsv, so a
+              # truncated or rotated log still carries it (#103). Consumers grep for the
+              # marker and take either copy — the two are byte-identical.
+              echo
+              echo "$BENCH_VERSIONS"
 
               echo
               echo "=== filter proxy logs by origin: $ORIGIN ==="
