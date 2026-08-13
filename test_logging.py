@@ -739,3 +739,110 @@ if __name__ == "__main__":
             failed += 1
             print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
     sys.exit(1 if failed else 0)
+
+
+# ---------------------------------------------------------------------------
+# default_provider / unroutable-model handling
+# ---------------------------------------------------------------------------
+
+CIRRUS_LIKE = {
+    "openrouter": {"endpoint": "https://openrouter.ai/x", "api_key": "k",
+                   "models": ["anthropic/", "z-ai/", "~"], "extra_headers": {},
+                   "thinking_models": {}, "no_sampling_params": []},
+    "nimbus": {"endpoint": "https://nimbus/x", "api_key": "k", "models": ["qwen"],
+               "extra_headers": {}, "thinking_models": {}, "no_sampling_params": []},
+}
+
+
+def test_default_provider_absent_key_is_nrp_backward_compat():
+    """No `default_provider` in config must behave exactly as the old hard-coded
+    "nrp" branch did — this is what every NRP model id relies on, since most of
+    `nrp.models` is redundant with the fallback."""
+    p = importlib.reload(llm_proxy)
+    assert p.resolve_default_provider({}, {"nrp": {}, "openrouter": {}}) == "nrp"
+    # ...and the shipped config.json still resolves to nrp
+    assert p.DEFAULT_PROVIDER == "nrp"
+
+
+def test_default_provider_is_configurable_and_can_be_disabled():
+    p = importlib.reload(llm_proxy)
+    r = p.resolve_default_provider
+    assert r({"default_provider": "openrouter"}, {"nrp": {}, "openrouter": {}}) == "openrouter"
+    # explicit null/"" -> no fallback, reject unroutable ids
+    assert r({"default_provider": None}, {"nrp": {}}) is None
+    assert r({"default_provider": ""}, {"nrp": {}}) is None
+
+
+def test_default_provider_unconfigured_name_degrades_to_none_not_keyerror():
+    """The cirrus case: config names (or defaults to) a provider this deployment
+    doesn't serve. Previously this reached `PROVIDERS["nrp"]` and raised KeyError
+    inside the request handler -> opaque 500. It must degrade to "no fallback"."""
+    p = importlib.reload(llm_proxy)
+    # cirrus's ConfigMap sets no default_provider at all, so the "nrp" default
+    # applies to a deployment with no nrp provider -> None, not an exception.
+    assert p.resolve_default_provider({}, CIRRUS_LIKE) is None
+    assert p.resolve_default_provider({"default_provider": "typo"}, CIRRUS_LIKE) is None
+
+
+def test_unroutable_model_raises_unknown_model_error_naming_what_is_served():
+    p = importlib.reload(llm_proxy)
+    p.PROVIDERS = CIRRUS_LIKE
+    p.DEFAULT_PROVIDER = None
+
+    # ids that DO route on a cirrus-like deployment still route
+    assert p.get_provider_for_model("z-ai/glm-5")[0] == "openrouter"
+    assert p.get_provider_for_model("qwen")[0] == "nimbus"
+
+    # bare NRP ids have nowhere to go -> a typed error, not KeyError
+    for model in ("glm-5", "kimi", "minimax-m2", "gpt-oss", "claude-sonnet-4-6"):
+        try:
+            p.get_provider_for_model(model)
+        except p.UnknownModelError as e:
+            assert model in str(e)
+            assert "openrouter" in str(e) and "nimbus" in str(e)   # says what IS served
+        else:
+            raise AssertionError(f"{model} should not have routed anywhere")
+
+
+def test_fallback_still_used_when_a_default_exists():
+    """With a default configured, an unknown id lands there and says so (unchanged
+    behavior on NRP, where this is how undeclared-but-live models have always run)."""
+    import contextlib
+    import io
+
+    p = importlib.reload(llm_proxy)
+    p.PROVIDERS = dict(CIRRUS_LIKE)
+    p.DEFAULT_PROVIDER = "openrouter"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        name, _ = p.get_provider_for_model("some-new-model")
+    assert name == "openrouter"
+    assert "Unknown model" in buf.getvalue()
+
+
+def test_unroutable_model_returns_400_and_is_logged():
+    """End-to-end: the handler turns UnknownModelError into a 400 (not the old
+    KeyError-driven 500) and leaves a log row so the miss is visible."""
+    import asyncio
+
+    import pytest
+    from fastapi import HTTPException
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    req = p.ChatRequest(model="glm-5", messages=[{"role": "user", "content": "hi"}])
+    with patch.object(p, "PROVIDERS", CIRRUS_LIKE), \
+         patch.object(p, "DEFAULT_PROVIDER", None):
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+
+    assert ei.value.status_code == 400
+    assert "glm-5" in ei.value.detail
+    responses = [e for e in p._log_buffer if e.get("type") == "response"]
+    assert len(responses) == 1 and responses[0]["provider"] == "unrouted"
+    assert "glm-5" in responses[0]["error"]

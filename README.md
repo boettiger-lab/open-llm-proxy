@@ -116,6 +116,32 @@ Copy `config.json` or use it as-is. To use only NRP (the common case), you can t
 }
 ```
 
+#### `default_provider` (optional)
+
+A model id matching no provider entry goes to the **default provider**, which is
+`nrp` unless you say otherwise:
+
+```json
+{
+  "default_provider": "openrouter",
+  "providers": { "…": {} }
+}
+```
+
+This is why an NRP model id works whether or not it appears in `nrp.models` —
+the fallback catches it. Two other values are useful:
+
+- **another provider name** — for a deployment that doesn't serve NRP at all
+  (e.g. `cirrus/`), so unlisted ids land somewhere that exists;
+- **`null`** — no fallback. An unroutable id is rejected with a **400** naming
+  what the deployment *does* serve, instead of being forwarded to a provider
+  that will reject it less clearly.
+
+A `default_provider` naming a provider this deployment doesn't configure is not
+fatal: it logs a note at startup and behaves as `null`. That is also what
+happens on a deployment with no `nrp` provider and no `default_provider` set —
+it gets clear 400s rather than an opaque 500.
+
 ### 3. Set your log bucket
 
 In `deployment.yaml`, set `LOG_BUCKET` to a bucket in your namespace:

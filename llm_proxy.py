@@ -398,6 +398,58 @@ for provider_name, provider_config in config["providers"].items():
         "no_sampling_params": provider_config.get("no_sampling_params", [])
     }
 
+# Provider that serves a model id matching no explicit entry.
+#
+# This was a hard-coded "nrp" for the life of the proxy, which is load-bearing on
+# the NRP deployment: most of `nrp.models` is redundant with this fallback, and
+# undeclared-but-live ids have always reached NRP through it. Keeping "nrp" as the
+# default preserves that behavior exactly.
+#
+# It also *only* worked on a deployment that serves NRP. Anywhere else the lookup
+# raised KeyError inside the request handler — a 500 with no useful body — which is
+# what the cirrus deployment hits for every bare NRP model id. Deployments that
+# don't serve NRP now name their own fallback, or set it to null/"" to reject
+# unroutable ids outright with a 400 that says what *is* served.
+def resolve_default_provider(cfg: dict, providers: dict):
+    """Pick the fallback provider, or None to reject unroutable ids with a 400.
+
+    Absent key -> "nrp", preserving the historical hard-coded behavior on NRP.
+    A named-but-unconfigured provider degrades to None with a warning rather than
+    blowing up at request time — which is exactly how a deployment that doesn't
+    serve NRP (cirrus) behaves with no `default_provider` set at all.
+    """
+    name = cfg.get("default_provider", "nrp")
+    if not name:
+        return None
+    if name not in providers:
+        print(f"ℹ️  default_provider '{name}' is not configured here — "
+              f"unroutable model ids will be rejected with 400")
+        return None
+    return name
+
+
+DEFAULT_PROVIDER = resolve_default_provider(config, PROVIDERS)
+
+
+class UnknownModelError(Exception):
+    """No provider matches this model id, and the deployment has no usable default.
+
+    Carried as an exception rather than a sentinel return so the request handler can
+    turn it into a 400 (client asked for something we don't serve) instead of the
+    KeyError-driven 500 this used to be.
+    """
+
+    def __init__(self, model: str):
+        self.model = model
+        served = "; ".join(
+            f"{name} ({', '.join(cfg['models'][:6])}{'…' if len(cfg['models']) > 6 else ''})"
+            for name, cfg in PROVIDERS.items()
+        )
+        super().__init__(
+            f"Unknown model '{model}'. This deployment serves: {served}"
+        )
+
+
 # Log configuration status
 print("=" * 60)
 print("🚀 Multi-Provider LLM Proxy Starting")
@@ -429,9 +481,11 @@ def get_provider_for_model(model: str) -> tuple[str, dict]:
             if model.startswith(model_prefix):
                 return provider_name, config
     
-    # Default to NRP
-    print(f"⚠️  Unknown model '{model}', defaulting to NRP")
-    return "nrp", PROVIDERS["nrp"]
+    # Fall back to the deployment's default provider, if it has one.
+    if DEFAULT_PROVIDER:
+        print(f"⚠️  Unknown model '{model}', defaulting to {DEFAULT_PROVIDER.upper()}")
+        return DEFAULT_PROVIDER, PROVIDERS[DEFAULT_PROVIDER]
+    raise UnknownModelError(model)
 
 def _never_raises(fn):
     """Logging must never break request serving.
@@ -612,7 +666,14 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
     
     # Determine provider based on model
-    provider_name, provider_config = get_provider_for_model(request.model)
+    try:
+        provider_name, provider_config = get_provider_for_model(request.model)
+    except UnknownModelError as e:
+        # Client asked for something this deployment doesn't serve. Log it against a
+        # synthetic provider so the miss is visible in the logs (the request never
+        # reaches log_request, which runs after routing succeeds).
+        log_response("unrouted", request.model, {}, 0, error=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     endpoint = provider_config["endpoint"]
     api_key = provider_config["api_key"]
     

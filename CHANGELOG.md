@@ -72,6 +72,22 @@ See [Releases](README.md#releases) for how a release is cut.
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
 ### Fixed
+- **Configurable `default_provider`; unroutable models get a 400, not a 500.** The
+  fallback for a model id matching no provider entry was a hard-coded
+  `return "nrp", PROVIDERS["nrp"]`. On NRP that is load-bearing — most of `nrp.models`
+  is redundant with it, and undeclared-but-live ids have always arrived this way. On a
+  deployment that doesn't serve NRP it was a latent `KeyError` *inside the request
+  handler*: an opaque 500 with no body, which is what the cirrus deployment returns
+  today for every bare NRP model id. The fallback is now the optional top-level
+  `default_provider` key (absent → `"nrp"`, so NRP behavior is untouched), and a
+  deployment with no usable default raises a typed `UnknownModelError` that the handler
+  renders as a **400 listing what this deployment actually serves**, logged against a
+  synthetic `unrouted` provider so the miss is visible. A `default_provider` naming an
+  unconfigured provider degrades to that same 400 path with a startup note rather than
+  failing at request time — which is also how a cirrus-style config (no `nrp` provider,
+  no `default_provider`) now behaves, so it needs no config change to stop 500ing.
+  Verified no behavior change on NRP by diffing resolved providers for all 37 ids in
+  `config.json` plus unknown/empty/floating-alias cases against `origin/main`: identical.
 - **Fail a matrix Job that can't establish its own provenance, and emit the versions
   line twice (#103).** A 7-Job full-tier sweep on 2026-08-01 emitted **zero**
   `##BENCH-VERSIONS##` lines, so 130 graded cells were published to the benchmark store
