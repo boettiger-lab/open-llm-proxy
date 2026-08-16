@@ -39,12 +39,15 @@ Configured in `config.json`. Most deployments only need NRP:
 
 | Provider | Models | Notes |
 |---|---|---|
-| **NRP** (`ellm.nrp-nautilus.io`) | `kimi`, `qwen3`, `glm-5`, `minimax-m2`, `gpt-oss`, `gemma` | Default; supports `enable_thinking` for applicable models |
+| **NRP** (`ellm.nrp-nautilus.io`) | anything unmatched — e.g. `kimi`, `qwen3`, `glm-5`, `minimax-m2`, `deepseek-v4-flash`, `gemma…` | The `default_provider`, so its ids are **not** listed in `config.json`; ask the endpoint (`/v1/models`) for the live set rather than trusting this table. Supports `enable_thinking` for applicable models |
 | **OpenRouter** | `anthropic/…`, `mistralai/…`, `openai/…`, `qwen/…`, `nvidia/…`, `amazon/…`, `z-ai/…`, `minimax/…`, `moonshotai/…`, `deepseek/…`, `~…` | Prefix match; requires separate API key. The `~` prefix catches OpenRouter's *floating aliases* (e.g. `~deepseek/deepseek-v4-flash-latest`), whose ids are literally `~`-prefixed and so never match a vendor prefix |
-| **Anthropic** | `claude-…` (default `claude-sonnet-4-6`; `claude-opus-4-8`, `claude-haiku-4-5` also route) | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives. **No prompt caching** — see below |
-| **Nimbus** | `nemotron` | Private vLLM instance; requires separate API key |
+| **Anthropic** | `claude-…` — the whole family by prefix, including releases newer than this table | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives. **No prompt caching** — see below |
+| **Nimbus** | `qwen` (exact id only) | Private vLLM instance; requires separate API key. Exact-match so the broader `qwen…` family still goes to NRP |
 
-Unknown models fall back to NRP. To customize the model list, edit `config.json` — no code change needed.
+Unknown models fall back to NRP (`default_provider`). NRP's own ids are deliberately **not** enumerated in
+`config.json` — they all reach NRP through that fallback, so a new NRP model needs no config change.
+You only list a model to route it somewhere *other* than the default. See
+[`models` vs `model_prefixes`](#models-vs-model_prefixes).
 
 #### Claude: direct vs. OpenRouter (prompt caching)
 
@@ -108,15 +111,43 @@ Copy `config.json` or use it as-is. To use only NRP (the common case), you can t
 
 ```json
 {
+  "default_provider": "nrp",
   "providers": {
     "nrp": {
       "endpoint": "https://ellm.nrp-nautilus.io/v1/chat/completions",
-      "api_key_env": "NRP_API_KEY",
-      "models": ["kimi", "qwen3", "glm-4.7"]
+      "api_key_env": "NRP_API_KEY"
     }
   }
 }
 ```
+
+Note there is no model list: everything routes to `default_provider`. You only
+enumerate models to send *specific* ids somewhere other than the default.
+
+#### `models` vs `model_prefixes`
+
+Routing tries **exact ids first, then prefixes**, and the two are declared
+separately:
+
+```json
+"nimbus":     { "models": ["qwen"], "model_prefixes": [] },
+"openrouter": { "models": [], "model_prefixes": ["z-ai/", "deepseek/", "~"] },
+"anthropic":  { "models": [], "model_prefixes": ["claude-"] }
+```
+
+- **`models`** — exact ids only. Use for a single-model endpoint.
+- **`model_prefixes`** — vendor families (`z-ai/`, `deepseek/`), OpenRouter's
+  floating aliases (`~`), or a version family (`claude-`, which routes
+  `claude-sonnet-5` and every future release without a config edit).
+
+Exact beats prefix, so a private single-model endpoint is never swallowed by a
+broader family declared elsewhere.
+
+> ⚠️ **A provider that omits `model_prefixes` keeps the legacy behavior**, where
+> every `models` entry *also* acts as a prefix. That's kept for back-compat, but
+> it is a trap worth knowing: nimbus's exact id `qwen` would then also claim
+> `qwen3`, `qwen3-small` and friends. Declare `model_prefixes` (even as `[]`) to
+> opt into exact-only matching.
 
 #### `default_provider` (optional)
 

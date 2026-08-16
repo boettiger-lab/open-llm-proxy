@@ -381,15 +381,29 @@ def compute_valid_keys(primary, extra):
 VALID_PROXY_KEYS = compute_valid_keys(PROXY_KEY, os.getenv("PROXY_KEYS_EXTRA", ""))
 
 # Build PROVIDERS dictionary from config
-PROVIDERS = {}
-for provider_name, provider_config in config["providers"].items():
+def build_provider_entry(provider_config: dict) -> dict:
+    """Normalize one provider's config into the dict used at request time."""
     api_key_env = provider_config.get("api_key_env")
     api_key = os.getenv(api_key_env) if api_key_env else None
 
-    PROVIDERS[provider_name] = {
+    return {
         "endpoint": provider_config["endpoint"],
         "api_key": api_key,
-        "models": provider_config["models"],
+        # Exact model ids this provider serves.
+        "models": provider_config.get("models", []),
+        # Prefixes it claims, declared separately (#110). Historically `models`
+        # did double duty — every bare entry also acted as a prefix — which is
+        # subtle and was actively dangerous: nimbus declaring the exact id
+        # `qwen` silently claimed `qwen3`, `qwen3-small`, `qwen3-4bit` and
+        # `qwen3-embedding` too, and the only thing stopping it was NRP listing
+        # each of those explicitly so the exact pass matched first. Deleting
+        # those "redundant" NRP entries would have rerouted four production
+        # models to a different backend, with no error.
+        #
+        # A provider that declares `model_prefixes` gets the new semantics:
+        # `models` is exact-only. One that doesn't keeps the old double duty,
+        # so third-party/legacy configs (and cirrus's ConfigMap) are unaffected.
+        "prefixes": provider_config.get("model_prefixes", provider_config.get("models", [])),
         "extra_headers": provider_config.get("extra_headers", {}),
         "thinking_models": provider_config.get("thinking_models", {}),
         # Models that 400 on sampling params (temperature/top_p) — e.g. the newest
@@ -397,6 +411,11 @@ for provider_name, provider_config in config["providers"].items():
         # raw config) is what get_provider_for_model returns at request time.
         "no_sampling_params": provider_config.get("no_sampling_params", [])
     }
+
+
+PROVIDERS = {
+    name: build_provider_entry(cfg) for name, cfg in config["providers"].items()
+}
 
 # Provider that serves a model id matching no explicit entry.
 #
@@ -469,21 +488,32 @@ else:
 print("=" * 60)
 
 def get_provider_for_model(model: str) -> tuple[str, dict]:
-    """Determine which provider to use based on model name"""
-    # Check exact matches first (NRP and Nimbus)
+    """Route a model id to a provider: exact ids first, then declared prefixes,
+    then the deployment's default provider (#110)."""
+    # Exact ids win over any prefix — this is what keeps a private endpoint
+    # (`qwen` on nimbus, `gemma4`, `qwen3-6`) from being swallowed by a broader
+    # vendor prefix declared elsewhere.
     for provider_name, config in PROVIDERS.items():
         if model in config["models"]:
             return provider_name, config
-    
-    # Check prefix matches (OpenRouter)
+
+    # Then declared prefixes — vendor families like `anthropic/`, `z-ai/`, `~`
+    # for OpenRouter's floating aliases, and `claude-` for direct Anthropic.
     for provider_name, config in PROVIDERS.items():
-        for model_prefix in config["models"]:
+        for model_prefix in config["prefixes"]:
             if model.startswith(model_prefix):
                 return provider_name, config
-    
-    # Fall back to the deployment's default provider, if it has one.
+
+    # Fall back to the deployment's default provider. This is the *designed*
+    # route for the default provider's own models, not an anomaly: `nrp.models`
+    # is deliberately empty, because listing NRP's ids bought nothing (they all
+    # land here anyway) while making the config a maintenance treadmill — most
+    # of the churn in this file's history was model-list edits. So no per-request
+    # warning: it would fire on every single NRP call.
+    #
+    # The cost is that a typo'd id also lands here and fails upstream instead of
+    # being caught locally. `GET /v1/models` (#111) is the real fix for that.
     if DEFAULT_PROVIDER:
-        print(f"⚠️  Unknown model '{model}', defaulting to {DEFAULT_PROVIDER.upper()}")
         return DEFAULT_PROVIDER, PROVIDERS[DEFAULT_PROVIDER]
     raise UnknownModelError(model)
 
