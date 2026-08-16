@@ -956,3 +956,160 @@ def test_unroutable_model_returns_400_and_is_logged():
     responses = [e for e in p._log_buffer if e.get("type") == "response"]
     assert len(responses) == 1 and responses[0]["provider"] == "unrouted"
     assert "glm-5" in responses[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# Logging guardrails (#39) — surface a one-sided pipeline failure
+# ---------------------------------------------------------------------------
+
+def _reset_log_health(p):
+    p._log_buffer.clear()
+    p._log_counters.update({"requests": 0, "responses": 0})
+    p._log_health.update({"last_window": None, "windows_checked": 0,
+                          "imbalance_windows": 0, "swallowed_exceptions": 0,
+                          "swallowed_by_fn": {}})
+
+
+def test_emit_counts_by_type_at_the_buffer_not_the_call_site():
+    """Counting must happen where an entry actually lands in the buffer.
+
+    If it happened on entry to log_request/log_response, a log_response that
+    threw would still be counted — masking the exact failure this detects.
+    """
+    p = importlib.reload(llm_proxy)
+    _reset_log_health(p)
+    p._emit({"type": "request"})
+    p._emit({"type": "response"})
+    p._emit({"type": "response"})
+    p._emit({"type": "something-else"})
+    assert p._log_counters == {"requests": 1, "responses": 2}
+
+
+def test_balance_check_is_quiet_when_healthy_and_when_idle():
+    import contextlib, io
+    p = importlib.reload(llm_proxy)
+
+    _reset_log_health(p)
+    assert p.check_log_balance() is None, "idle window should report nothing"
+
+    _reset_log_health(p)
+    for _ in range(50):
+        p._emit({"type": "request"})
+        p._emit({"type": "response"})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        window = p.check_log_balance()
+    assert window == {"requests": 50, "responses": 50, "ratio": 1.0}
+    assert "imbalance" not in buf.getvalue().lower()
+    # counters reset for the next window
+    assert p._log_counters == {"requests": 0, "responses": 0}
+
+
+def test_balance_check_ignores_low_volume_windows():
+    """A single in-flight turn straddling the window boundary must not alarm."""
+    import contextlib, io
+    p = importlib.reload(llm_proxy)
+    _reset_log_health(p)
+    for _ in range(3):
+        p._emit({"type": "request"})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        p.check_log_balance()
+    assert "imbalance" not in buf.getvalue().lower()
+    assert p._log_health["imbalance_windows"] == 0
+
+
+def test_one_sided_outage_is_detected_through_the_handler_path():
+    """The #37 acceptance test.
+
+    Reproduces the real shape: log_response raises inside @_never_raises, so
+    responses never reach the buffer while requests keep logging normally. The
+    request is still served (that is the wrapper's job) — but the imbalance must
+    now be visible instead of silent for hours.
+
+    Driven through proxy_chat with a mocked upstream, per #39's testing note: a
+    direct call to log_response would not reproduce a call-site failure.
+    """
+    import asyncio, contextlib, io
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    _reset_log_health(p)
+
+    class _FakeResp:
+        status_code = 200
+        headers = {}
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {"content": "hi"}}]}
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return _FakeResp()
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    def _boom(*a, **k):
+        raise NameError("name 'client' is not defined")   # the #37 bug, near enough
+
+    buf = io.StringIO()
+    with patch.object(p, "get_provider_for_model",
+                      return_value=("nrp", {"endpoint": "http://up", "api_key": "k"})), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient), \
+         patch.object(p, "log_response", p._never_raises(_boom)), \
+         contextlib.redirect_stdout(buf):
+        for i in range(25):
+            req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+        window = p.check_log_balance()
+
+    out = buf.getvalue()
+    # requests kept flowing and were served
+    assert window["requests"] == 25 and window["responses"] == 0
+    assert window["ratio"] == 0.0
+    # ...and the failure is now loud, on both channels
+    assert "Logging imbalance" in out
+    assert p._log_health["imbalance_windows"] == 1
+    assert p._log_health["swallowed_exceptions"] == 25
+    assert p._log_health["swallowed_by_fn"]["_boom"] == 25
+
+
+def test_swallowed_logging_exceptions_are_counted_and_escalate():
+    import contextlib, io
+    p = importlib.reload(llm_proxy)
+    _reset_log_health(p)
+
+    @p._never_raises
+    def always_fails():
+        raise ValueError("nope")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        for _ in range(10):
+            always_fails()
+    assert p._log_health["swallowed_exceptions"] == 10
+    assert p._log_health["swallowed_by_fn"]["always_fails"] == 10
+    # escalates at 10 — a pattern, not a one-off
+    assert "persistently broken" in buf.getvalue()
+    # ...and the caller never sees the exception
+    assert always_fails() is None
+
+
+def test_health_reports_logging_state_without_ever_degrading_status():
+    """/health backs liveness, readiness AND startup probes. A logging fault must
+    never restart or de-rotate a pod that is serving traffic fine."""
+    import asyncio
+    p = _reload(PROXY_KEY="testkey")
+    _reset_log_health(p)
+    for _ in range(30):
+        p._emit({"type": "request"})
+    p.check_log_balance()          # trips the imbalance path
+
+    h = asyncio.run(p.health_check())
+    assert h["status"] == "healthy", "logging health must not gate the probes"
+    assert h["logging"]["imbalance_windows"] == 1
+    assert h["logging"]["last_window"] == {"requests": 30, "responses": 0, "ratio": 0.0}
+    assert "swallowed_exceptions" in h["logging"]
+    assert h["logging"]["buffer_depth"] == 30

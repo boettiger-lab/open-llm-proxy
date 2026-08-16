@@ -96,6 +96,30 @@ See [Releases](README.md#releases) for how a release is cut.
   `deepseek/…` models) route instead of silently falling back to NRP. Enables the
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
+### Added
+- **Guardrails against a silent one-sided logging outage (#39, follow-up to #37).** In #37
+  a variable-shadowing bug made `log_response` throw inside `@_never_raises`, so every
+  response was dropped from S3 for hours while requests logged normally — no request
+  failed, nothing alerted, and the corpus just quietly went lopsided. Two signals now
+  surface that class of failure. **(1) Request:response balance:** each flush window the
+  proxy compares how many request and response entries actually reached the buffer, and
+  prints a `🚨 Logging imbalance` line when the ratio falls below `LOG_RATIO_FLOOR`
+  (default 0.5) with at least `LOG_RATIO_MIN_REQUESTS` (default 20) requests — the volume
+  floor stops a single turn straddling a window boundary from tripping it. Counting is
+  done in `_emit`, where an entry actually lands in the buffer, *not* on entry to the log
+  functions: a `log_response` that throws must go uncounted, or the check would mask the
+  very failure it exists to catch. **(2) Swallowed logging exceptions** are now counted
+  per function and escalate at 10/100/1000 occurrences, so a systematic fault can't hide
+  among one-off serialization edge cases. Both are exposed under a new `logging` key on
+  `/health` (last window, imbalance count, swallowed totals, buffer depth).
+  `/health`'s `status` is deliberately **unchanged** by all of this — it backs the
+  liveness, readiness *and* startup probes, and a logging fault must never restart or
+  de-rotate a pod that is serving fine. `log_request`/`log_response` also now share a
+  single `_log()` print+buffer path so the two sides can't drift (tidiness; it would not
+  have prevented #37, which was a call-site bug). Verified by reproducing #37's shape
+  through `proxy_chat` with a mocked upstream — 25 served requests, zero logged responses,
+  alarm fires — and by mutation-testing the guard: disabling the alarm fails the suite.
+
 ### Changed
 - **Routing declares exact ids and prefixes separately; NRP's model list is gone (#110).**
   `models` entries used to do double duty — every bare id also acted as a prefix. That was
