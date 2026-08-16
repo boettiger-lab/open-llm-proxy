@@ -196,9 +196,83 @@ def _normalize_response_tool_calls(result) -> int:
 # job (scrub-historical-logs.py) share one source of truth and never diverge.
 from scrub import scrub as _scrub, scrub_text as _scrub_text, REDACTED as _REDACTED
 
+# --- Logging health (#39) -------------------------------------------------
+# A *one-sided* pipeline failure is invisible from the outside: the corpus just
+# quietly goes lopsided. In #37 a variable-shadowing bug made `log_response`
+# throw inside `@_never_raises`, so every response was dropped from S3 for hours
+# while requests logged normally, and nobody noticed until the data looked odd.
+#
+# Both guardrails below are observability only — they never change what is
+# served, and never change /health's `status` field, which backs the liveness,
+# readiness *and* startup probes. A logging fault must not restart a pod that is
+# happily serving traffic.
+_LOG_RATIO_MIN_REQUESTS = int(os.getenv("LOG_RATIO_MIN_REQUESTS", "20"))
+_LOG_RATIO_FLOOR = float(os.getenv("LOG_RATIO_FLOOR", "0.5"))
+
+_log_counters = {"requests": 0, "responses": 0}      # current window, reset per flush
+_log_health = {
+    "last_window": None,
+    "windows_checked": 0,
+    "imbalance_windows": 0,
+    "swallowed_exceptions": 0,
+    "swallowed_by_fn": {},
+}
+
+
 def _emit(log_entry: dict):
     """Print log entry and add to S3 buffer."""
     _log_buffer.append(log_entry)
+    # Count here, not at the call sites. This is the one point where an entry
+    # actually lands in the buffer, so a `log_response` that throws *before*
+    # reaching it goes uncounted — which is precisely the #37 signature we want
+    # the ratio to expose. Counting on entry to the log functions would mask it.
+    kind = log_entry.get("type")
+    if kind == "request":
+        _log_counters["requests"] += 1
+    elif kind == "response":
+        _log_counters["responses"] += 1
+
+
+def _log(prefix: str, log_entry: dict):
+    """Single print + buffer path for both log_request and log_response (#39).
+
+    They previously did this independently, which let the two sides drift.
+    Note this would NOT have prevented #37 — that bug was at the call site,
+    passing a bad `client` — so it is robustness, not a fix for that failure.
+    """
+    print(f"{prefix}: {json.dumps(log_entry if not _S3_ENABLED else _stdout_view(log_entry))}",
+          flush=True)
+    _emit(log_entry)
+
+
+def check_log_balance():
+    """Evaluate request:response balance for the window just elapsed (#39).
+
+    Healthy traffic emits ~1 response per request. A sustained shortfall means
+    one side stopped writing. Returns the window summary (or None if idle), and
+    resets the counters.
+    """
+    reqs, resps = _log_counters["requests"], _log_counters["responses"]
+    _log_counters["requests"] = _log_counters["responses"] = 0
+
+    if not reqs and not resps:
+        return None
+
+    ratio = (resps / reqs) if reqs else None
+    window = {"requests": reqs, "responses": resps,
+              "ratio": round(ratio, 3) if ratio is not None else None}
+    _log_health["last_window"] = window
+    _log_health["windows_checked"] += 1
+
+    # Require a floor of volume: with a handful of requests a single in-flight
+    # turn straddling the window boundary would trip a naive ratio check.
+    if reqs >= _LOG_RATIO_MIN_REQUESTS and ratio is not None and ratio < _LOG_RATIO_FLOOR:
+        _log_health["imbalance_windows"] += 1
+        print(f"🚨 Logging imbalance: {resps} responses for {reqs} requests "
+              f"(ratio {ratio:.2f} < {_LOG_RATIO_FLOOR}) in the last "
+              f"{_FLUSH_INTERVAL}s — one side of the logging pipeline may have "
+              f"stopped writing. See #37/#39.", flush=True)
+    return window
 
 def _stdout_view(entry: dict) -> dict:
     """Compact copy of a log entry for kubectl/pod-stdout.
@@ -294,6 +368,9 @@ async def _flush_loop():
     while True:
         await asyncio.sleep(_FLUSH_INTERVAL)
         await _flush_to_s3()
+        # Outside _flush_to_s3 deliberately: that returns early when S3 is
+        # disabled, and the balance check must run regardless of where logs go.
+        check_log_balance()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -531,8 +608,17 @@ def _never_raises(fn):
         try:
             return fn(*args, **kwargs)
         except Exception as e:  # pragma: no cover - defensive
+            n = _log_health["swallowed_by_fn"].get(fn.__name__, 0) + 1
+            _log_health["swallowed_by_fn"][fn.__name__] = n
+            _log_health["swallowed_exceptions"] += 1
             print(f"⚠️  {fn.__name__} failed (request still served): "
                   f"{type(e).__name__}: {e}", flush=True)
+            # One failure is a serialization edge case; a pattern is a bug
+            # silently eating the corpus (#37). Escalate on a log scale so a
+            # persistent fault stays loud without flooding a busy log.
+            if n in (10, 100, 1000) or (n > 1000 and n % 1000 == 0):
+                print(f"🚨 {fn.__name__} has now failed {n} times — logging is "
+                      f"persistently broken, not a one-off. See #39.", flush=True)
     return wrapper
 
 @_never_raises
@@ -587,8 +673,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     # prompt so (messages -> completion) pairs can be reconstructed by request_id.
     if _CAPTURE_MODE == "full":
         log_entry["messages"] = _dedup_messages(messages, origin=origin)
-    print(f"📥 REQUEST: {json.dumps(log_entry if not _S3_ENABLED else _stdout_view(log_entry))}", flush=True)
-    _emit(log_entry)
+    _log("📥 REQUEST", log_entry)
 
 @_never_raises
 def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0):
@@ -650,8 +735,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
             log_entry["tokens"] = response_data["usage"]
     
     status = "✗" if error else "✓"
-    print(f"{status} RESPONSE: {json.dumps(log_entry if not _S3_ENABLED else _stdout_view(log_entry))}", flush=True)
-    _emit(log_entry)
+    _log(f"{status} RESPONSE", log_entry)
 
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]  # Accept any message format from OpenAI API
@@ -879,9 +963,20 @@ async def health_check():
         for name, config in PROVIDERS.items()
     }
     return {
+        # `status` is deliberately untouched by logging health: this endpoint
+        # backs the liveness, readiness AND startup probes, and a logging fault
+        # must never restart or de-rotate a pod that is serving fine (#39).
         "status": "healthy",
         "providers": providers_status,
-        "proxy_key_configured": bool(PROXY_KEY)
+        "proxy_key_configured": bool(PROXY_KEY),
+        "logging": {
+            "last_window": _log_health["last_window"],
+            "windows_checked": _log_health["windows_checked"],
+            "imbalance_windows": _log_health["imbalance_windows"],
+            "swallowed_exceptions": _log_health["swallowed_exceptions"],
+            "swallowed_by_fn": _log_health["swallowed_by_fn"],
+            "buffer_depth": len(_log_buffer),
+        },
     }
 
 # Configure logging to filter out /health endpoint

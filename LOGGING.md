@@ -265,6 +265,52 @@ kubectl -n biodiversity logs deployment/open-llm-proxy --tail=1000 \
   | grep '"origin":"https://padus.nrp-nautilus.io"'
 ```
 
+## Is the logging pipeline actually healthy? (#39)
+
+A *one-sided* failure is the dangerous one: if responses stop being written while
+requests keep flowing, nothing breaks and no request fails — the corpus just quietly
+goes lopsided. That happened in #37 (a variable-shadowing bug made `log_response` throw
+inside `@_never_raises`) and was invisible for hours.
+
+Two signals now make it observable. Both are **observability only** — they never change
+what is served.
+
+**1. Request:response balance.** Every flush window, the proxy compares how many request
+and response entries actually reached the buffer. A sustained shortfall prints:
+
+```
+🚨 Logging imbalance: 0 responses for 25 requests (ratio 0.00 < 0.5) in the
+   last 60s — one side of the logging pipeline may have stopped writing.
+```
+
+Tunable via `LOG_RATIO_FLOOR` (default `0.5`) and `LOG_RATIO_MIN_REQUESTS` (default `20`,
+so a single turn straddling a window boundary can't trip it). Counting happens where an
+entry lands in the buffer, not on entry to the log functions — so a `log_response` that
+*throws* goes uncounted, which is the whole point.
+
+**2. Swallowed logging exceptions.** `@_never_raises` still keeps logging faults from
+breaking request serving, but now counts them per function and escalates at 10 / 100 /
+1000 occurrences (`🚨 … has now failed N times — logging is persistently broken, not a
+one-off`), so a systematic fault can't hide among one-off serialization edge cases.
+
+Both are exposed on `/health`:
+
+```jsonc
+"logging": {
+  "last_window":  { "requests": 120, "responses": 119, "ratio": 0.992 },
+  "windows_checked": 340,
+  "imbalance_windows": 0,          // windows that tripped the floor
+  "swallowed_exceptions": 0,
+  "swallowed_by_fn": {},           // e.g. {"log_response": 25}
+  "buffer_depth": 12               // entries awaiting S3 flush
+}
+```
+
+> ⚠️ `/health`'s **`status` field is deliberately unaffected** by any of this. That
+> endpoint backs the liveness, readiness *and* startup probes, so degrading it on a
+> logging fault would restart or de-rotate a pod that is serving traffic perfectly well.
+> Alert on the `logging` fields, never on `status`.
+
 ## Logging fidelity & credential scrubbing
 
 The proxy logs are used as an evaluation/training corpus (see the `agent_runner_*`
