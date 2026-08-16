@@ -97,6 +97,47 @@ See [Releases](README.md#releases) for how a release is cut.
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
 ### Fixed
+- **Daily consolidation had been failing for 9 days (OOM), wedged on one day.** Last
+  success 2026-08-07; every run since died with
+  `OutOfMemoryException: failed to allocate 256.0 KiB (819.0 MiB/819.1 MiB used)` inside
+  `build_session_view`, backfilling `2026-08-07`. Self-perpetuating: the day failed, kept
+  its place on the backfill list, and re-broke the job nightly. `threads=2` and
+  `preserve_insertion_order=false` were already set, so the easy mitigations were spent.
+  These are CronJobs, not persistent pods, so the 2Gi ceiling for long-lived workloads
+  doesn't apply: daily 1Gi → 4Gi (DuckDB capped at 3GB), monthly 2Gi → 6Gi (capped at
+  4GB), both with `temp_directory` set so DuckDB can spill and an `ephemeral-storage`
+  request to back it. Headroom is the primary fix — on a session-view-shaped build,
+  spilling turned failure into success at 500MB–1GB but not at 200MB, since DuckDB does
+  not spill every operator. The monthly job is raised too although it has not failed yet:
+  it runs the same code over a whole month, so it is strictly more exposed, and its next
+  run (2026-09-02) rolls up an August containing the heavy benchmark sweeps.
+  The backfill loop now isolates each day — one oversized day is recorded and skipped so
+  the reflatten pass and the rustfs mirror still run — and the job raises at the end with
+  the failed days, so it stays loud instead of silently tolerating the gap.
+  Missing session views for `2026-08-07`, `08` and `12` should rebuild on the next run.
+
+### Added
+- **Mirror `consolidated/**` and `sessions/**` to rustfs from the consolidation CronJobs
+  (#116).** Log analysis has required the single NRP credential, which carries
+  read/write/delete on *every* NRP bucket, for a read-only task against one bucket of a
+  few MiB (#113). `geo-agent-ops` has minted a scoped pair — `logs-open-llm-proxy-reader`
+  (Get/List only) and `…-writer` (plus object Put/Delete, no bucket create/delete) — but
+  the rustfs bucket was empty, so the reader was useless. Both CronJobs now copy the
+  query-ready tiers there after the tiers are written and verified. Credentials come from
+  the `rustfs-logs-write` Secret under **`RUSTFS_*`** names, deliberately not `AWS_*`:
+  those are already bound to the `aws` secret for the NRP source, and reusing them would
+  clobber the source credential and break the job before it mirrored anything. All four
+  bindings are `optional: true`, so a cluster without the Secret still consolidates and
+  reports the mirror skipped. Copy-only, never delete — an accidental source deletion
+  must not propagate; re-copies when the source `LastModified` or size changes, which is
+  what catches the in-place rewrites the reflatten pass performs (size alone is not a
+  witness). Runs last so a mirror failure cannot cost the consolidation work, but it does
+  fail the Job, because a mirror that quietly stops is a stale mirror nobody notices.
+  NRP Ceph stays the system of record: rustfs shares the same rook Ceph, so this is a
+  convenience copy, not a second failure domain. Consumer-side retarget of `sync-logs.sh`
+  stays in #113 and deliberately does **not** land until the mirror is confirmed non-empty.
+
+### Fixed
 - **`geo-agent-training` skill: log collection was broken and over-privileged.** Its
   Step 1 selector was `app=llm-proxy`, which matches **no pods** — the label is
   `app=open-llm-proxy` — so an agent following the skill collected zero proxy logs and

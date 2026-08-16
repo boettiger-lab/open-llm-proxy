@@ -37,6 +37,24 @@ spec:
                   valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
                 - name: AWS_SECRET_ACCESS_KEY
                   valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+                # rustfs mirror target (#116). Deliberately NOT named AWS_* — the
+                # consolidation work above binds those to the `aws` secret for the NRP
+                # source, and reusing the names would overwrite the source credential
+                # and break the job before it ever mirrored anything.
+                # `optional: true` throughout: a cluster without the secret still
+                # consolidates, and the mirror step reports itself skipped.
+                - name: RUSTFS_KEY
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: AWS_ACCESS_KEY_ID, optional: true }
+                - name: RUSTFS_SECRET
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: AWS_SECRET_ACCESS_KEY, optional: true }
+                - name: RUSTFS_ENDPOINT
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: AWS_S3_ENDPOINT, optional: true }
+                - name: RUSTFS_BUCKET
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: BUCKET, optional: true }
               command:
                 - /bin/bash
                 - -c
@@ -46,6 +64,7 @@ spec:
                   python - <<'PY'
                   import os, datetime, boto3, duckdb
                   from botocore.client import Config
+                  from botocore.exceptions import ClientError
 
                   BUCKET   = 'logs-open-llm-proxy'
                   ENDPOINT = 'http://rook-ceph-rgw-nautiluss3.rook'
@@ -103,6 +122,18 @@ spec:
                   # memory bounded (the data is re-sorted by ts on read anyway).
                   con.execute("SET threads=2")
                   con.execute("SET preserve_insertion_order=false")
+                  # Cap DuckDB below the pod limit, and give it somewhere to spill.
+                  #
+                  # The daily job wedged for 9 days OOMing at 819/819 MiB building one
+                  # session view, which blocked the reflatten pass and everything after
+                  # it. Headroom is the primary fix; `temp_directory` is a margin, not a
+                  # cure. Measured on a session-view-shaped build (window function +
+                  # self-join over a wide payload): with spill off it failed at 500MB
+                  # and 1GB and passed at 2GB; with spill on it passed at 500MB. At a
+                  # hard-tight budget (200MB) both still failed — DuckDB does not spill
+                  # every operator. So raise the ceiling *and* allow spilling.
+                  con.execute("SET memory_limit='3GB'")
+                  con.execute("SET temp_directory='/tmp/duckdb-spill'")
                   con.execute(f"""
                       CREATE SECRET s3_logs (
                           TYPE S3,
@@ -266,10 +297,21 @@ spec:
                           s3.delete_objects(Bucket=BUCKET, Delete={'Objects': to_delete[i:i+1000]})
                       print(f"  ✓ {len(to_delete)} JSONL chunks removed; session view written")
 
+                  # Isolate per day. A single oversized day used to abort the whole
+                  # run before the reflatten pass and the rustfs mirror, and it stayed
+                  # on the backfill list, so it re-broke the job every night. Now one
+                  # bad day is recorded and skipped; the rest of the pipeline completes
+                  # and the job still exits non-zero at the end (see `failed` below),
+                  # so the failure is loud rather than silently tolerated.
+                  failed_days = []
                   for day in backfill_sessions:
                       print(f"↺ backfill session view: {day}")
-                      build_session_view(f's3://{BUCKET}/consolidated/daily/{day}.parquet',
-                                         f's3://{BUCKET}/sessions/daily/{day}.parquet')
+                      try:
+                          build_session_view(f's3://{BUCKET}/consolidated/daily/{day}.parquet',
+                                             f's3://{BUCKET}/sessions/daily/{day}.parquet')
+                      except Exception as e:
+                          print(f"  ✗ session view failed for {day}: {type(e).__name__}: {e}")
+                          failed_days.append(day)
 
                   # Schema-upgrade pass: bring any legacy-schema consolidated daily file
                   # (current month — older months live in monthly files, upgraded by the
@@ -280,12 +322,77 @@ spec:
                           upgraded += 1
                           print(f"  ⬆ re-flattened {day} to wide schema")
                   print(f"Legacy daily files upgraded to wide schema: {upgraded}")
+                  # -----------------------------------------------------------------
+                  # Mirror the query-ready tiers to rustfs (#116).
+                  #
+                  # Exists so log analysis can run on the read-only, single-bucket
+                  # `logs-open-llm-proxy-reader` credential instead of the one NRP key,
+                  # which carries read/write/delete on every NRP bucket (#113).
+                  #
+                  # NRP Ceph stays the system of record. rustfs sits on the *same* rook
+                  # Ceph, so this is a convenience mirror, not a second failure domain,
+                  # and must never become the only copy.
+                  #
+                  # Copy-only, never delete: an accidental source deletion must not
+                  # propagate. True mirror semantics would need a --max-delete-style
+                  # guard first (the writer identity can delete objects; this does not).
+                  #
+                  # Runs last, after every tier is written and verified, so a mirror
+                  # failure cannot cost the consolidation work. It does fail the Job
+                  # though — a mirror that quietly stops is a stale mirror nobody
+                  # notices, and the reader would keep serving yesterday's answers.
+                  # -----------------------------------------------------------------
+                  def mirror_to_rustfs(prefixes=('consolidated/', 'sessions/')):
+                      key = os.environ.get('RUSTFS_KEY')
+                      if not key:
+                          print("ℹ️  RUSTFS_KEY not set — skipping rustfs mirror (#116)")
+                          return
+                      dest_bucket = os.environ.get('RUSTFS_BUCKET') or BUCKET
+                      rustfs = boto3.client(
+                          's3',
+                          endpoint_url=os.environ['RUSTFS_ENDPOINT'],
+                          aws_access_key_id=key,
+                          aws_secret_access_key=os.environ['RUSTFS_SECRET'],
+                          config=Config(s3={'addressing_style': 'path'}),
+                      )
+                      copied = skipped = 0
+                      for prefix in prefixes:
+                          for page in paginator.paginate(Bucket=BUCKET, Prefix=prefix):
+                              for obj in page.get('Contents', []):
+                                  k, stamp = obj['Key'], obj['LastModified'].isoformat()
+                                  # Re-upload whenever the source changed. Size alone is
+                                  # not a witness: the reflatten pass rewrites files in
+                                  # place and can land on an identical byte count.
+                                  try:
+                                      head = rustfs.head_object(Bucket=dest_bucket, Key=k)
+                                      if (head['Metadata'].get('src-mtime') == stamp
+                                              and head['ContentLength'] == obj['Size']):
+                                          skipped += 1
+                                          continue
+                                  except ClientError as e:
+                                      if e.response['Error']['Code'] not in ('404', 'NoSuchKey', 'NotFound'):
+                                          raise   # 403 etc. is a real problem — be loud
+                                  body = s3.get_object(Bucket=BUCKET, Key=k)['Body'].read()
+                                  rustfs.put_object(Bucket=dest_bucket, Key=k, Body=body,
+                                                    Metadata={'src-mtime': stamp})
+                                  copied += 1
+                      print(f"rustfs mirror → {dest_bucket}: {copied} copied, {skipped} already current")
+
+                  mirror_to_rustfs()
+
+                  if failed_days:
+                      raise SystemExit(
+                          f"session view build failed for {len(failed_days)} day(s): "
+                          f"{failed_days} — consolidation, reflatten and the rustfs "
+                          f"mirror completed for everything else")
                   print("Done.")
                   PY
               resources:
                 requests:
                   cpu: "500m"
-                  memory: "1Gi"
+                  memory: "4Gi"
+                  ephemeral-storage: "8Gi"
                 limits:
                   cpu: "500m"
-                  memory: "1Gi"
+                  memory: "4Gi"
+                  ephemeral-storage: "8Gi"
