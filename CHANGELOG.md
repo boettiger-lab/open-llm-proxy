@@ -97,6 +97,30 @@ See [Releases](README.md#releases) for how a release is cut.
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
 ### Changed
+- **Routing declares exact ids and prefixes separately; NRP's model list is gone (#110).**
+  `models` entries used to do double duty — every bare id also acted as a prefix. That was
+  subtle and actively dangerous: nimbus declaring the exact id `qwen` silently claimed
+  `qwen3`, `qwen3-small`, `qwen3-4bit` and `qwen3-embedding` as well, and the *only* thing
+  preventing it was NRP listing each of those explicitly so the exact pass matched first.
+  The "redundant" NRP entries were load-bearing as accidental shields, and deleting them —
+  the obvious simplification — would have moved four production models to a different
+  backend serving different weights under the requested id, with no error anywhere.
+  Providers now declare `models` (exact ids) and `model_prefixes` (families) separately;
+  exact still beats prefix. With that split safe, `nrp.models` drops from 14 entries to
+  **none** (every id reaches NRP via `default_provider`, so a new NRP model needs no PR),
+  OpenRouter's 11 vendor prefixes move to `model_prefixes` where they belong, and
+  Anthropic's three pinned ids are deleted in favor of the `claude-` prefix already beside
+  them — which would have routed `claude-sonnet-5` on release day instead of going stale.
+  Config churn was the point: most of this file's history is model-list edits.
+  A provider that omits `model_prefixes` keeps the old double-duty behavior, so cirrus's
+  ConfigMap and any third-party config are unaffected (verified). The per-request
+  `⚠️  Unknown model` line is gone — with `nrp.models` empty it would fire on essentially
+  all production traffic. That does give up local typo detection; `GET /v1/models` (#111)
+  is the intended fix, not a log line. Verified by diffing resolved providers for 54 ids
+  against `origin/main`: exactly one changed, `qwenx` (a hypothetical unlisted id) from
+  nimbus to nrp — which is the hazard being removed, not a regression.
+
+### Changed
 - **Log reads no longer need a privileged credential (#113).** `./sync-logs.sh` defaulted
   to rclone's `nrp:` remote — the single NRP credential, carrying read/write/delete on
   *every* NRP bucket — for a read-only task against one bucket of a few MiB. It now reads

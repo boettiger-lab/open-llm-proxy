@@ -705,35 +705,92 @@ def test_handler_repairs_dialect_and_logs_count():
     assert "<arg_key>" not in json.dumps(responses[0])                   # log is clean too
 
 
-def test_nrp_models_route_by_declaration_not_fallback():
-    """Every model NRP actually serves must be *declared* in config.json (#105).
+def test_nrp_models_route_via_default_not_declaration():
+    """NRP's models are deliberately UNdeclared (#110).
 
-    `get_provider_for_model` still lands unknown ids on NRP via its default branch,
-    so an undeclared-but-live model (e.g. `deepseek-v4-flash`) "works" while emitting
-    the unknown-model warning and remaining one prefix-edit away from silently
-    rerouting elsewhere. Assert the routing is intentional: declared, and warning-free.
+    This asserts the inverse of what it used to: `nrp.models` is empty, and every
+    live NRP id reaches NRP through `default_provider`. Listing them bought only a
+    suppressed log line — they landed on NRP either way — while making config.json
+    a maintenance treadmill (most of its history is model-list edits).
+
+    The thing that made deleting the list unsafe, and that this test guards, is in
+    `test_exact_ids_are_not_claimed_by_another_providers_prefix`.
     """
-    import contextlib
-    import io
-
     p = importlib.reload(llm_proxy)
-    # The model ids ellm.nrp-nautilus.io/v1/models serves. Refresh when NRP changes.
+    assert p.PROVIDERS["nrp"]["models"] == [], "NRP ids should not be enumerated"
+    assert p.DEFAULT_PROVIDER == "nrp"
+
     live = [
         "gpt-oss", "gemma", "kimi", "minimax-m2", "deepseek-v4-flash", "gemma-small",
         "gemma4-small", "gemma4-12b", "glm-5", "qwen3", "qwen3-embedding",
         "qwen3-small", "qwen3-4bit", "gemma-small-e4b",
     ]
     for model in live:
-        assert model in p.PROVIDERS["nrp"]["models"], f"{model} is live on NRP but undeclared"
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            provider, _ = p.get_provider_for_model(model)
-        assert provider == "nrp", f"{model} routed to {provider}, not nrp"
-        assert "Unknown model" not in buf.getvalue(), f"{model} reached NRP via the fallback"
+        assert p.get_provider_for_model(model)[0] == "nrp", model
 
-    # deepseek-v4-flash ignores `enable_thinking` and honors `thinking` (probed
-    # against the endpoint in #105) — the same dialect kimi uses.
+    # A brand-new NRP model needs no config change — the point of the exercise.
+    assert p.get_provider_for_model("some-model-nrp-adds-next-week")[0] == "nrp"
+
+    # deepseek-v4-flash still honors the `thinking` dialect: per-model quirks live
+    # in thinking_models and are unaffected by emptying the routing list.
     assert p.PROVIDERS["nrp"]["thinking_models"]["deepseek-v4-flash"] == "thinking"
+
+
+def test_exact_ids_are_not_claimed_by_another_providers_prefix():
+    """The hazard #110 exists to remove.
+
+    nimbus declares the exact id `qwen`. Under the old semantics every bare entry
+    also acted as a prefix, so `qwen` silently claimed `qwen3`, `qwen3-small`,
+    `qwen3-4bit` and `qwen3-embedding` — and the *only* thing preventing that was
+    NRP listing each one explicitly so the exact pass matched first. Emptying
+    nrp.models without this split would have moved four production models to a
+    different backend, serving different weights under the requested id, with no
+    error anywhere.
+    """
+    p = importlib.reload(llm_proxy)
+    for model in ("qwen3", "qwen3-small", "qwen3-4bit", "qwen3-embedding"):
+        assert p.get_provider_for_model(model)[0] == "nrp", f"{model} escaped to nimbus"
+
+    # Exact ids still win, so the private single-model endpoints keep their traffic.
+    assert p.get_provider_for_model("qwen")[0] == "nimbus"
+    assert p.get_provider_for_model("gemma4")[0] == "gemma4-nimbus"
+    assert p.get_provider_for_model("qwen3-6")[0] == "qwen3-cirrus"
+
+
+def test_prefixes_still_route_vendor_families_and_floating_aliases():
+    p = importlib.reload(llm_proxy)
+    for model, expected in (
+        ("z-ai/glm-5.2", "openrouter"),
+        ("moonshotai/kimi-k3", "openrouter"),
+        ("deepseek/deepseek-v4-flash-0731", "openrouter"),
+        ("~openai/gpt-5", "openrouter"),          # floating alias (#99)
+        ("qwen/qwen3.7-flash", "openrouter"),     # vendor-namespaced, not nimbus
+    ):
+        assert p.get_provider_for_model(model)[0] == expected, model
+
+    # `claude-` covers the whole family, including versions never added to config
+    # — which is why the three pinned claude ids were deleted rather than updated.
+    assert p.PROVIDERS["anthropic"]["models"] == []
+    for model in ("claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5", "claude-fable-5"):
+        assert p.get_provider_for_model(model)[0] == "anthropic", model
+
+
+def test_legacy_config_without_model_prefixes_keeps_double_duty():
+    """Back-compat: a config predating #110 (no `model_prefixes`) must behave as
+    before, since cirrus's ConfigMap and any third-party config are still that
+    shape."""
+    p = importlib.reload(llm_proxy)
+    built = p.build_provider_entry({
+        "endpoint": "https://x", "models": ["anthropic/", "qwen"],
+    })
+    assert built["models"] == ["anthropic/", "qwen"]
+    assert built["prefixes"] == ["anthropic/", "qwen"], "legacy entries must still act as prefixes"
+
+    # ...and declaring model_prefixes switches `models` to exact-only.
+    built = p.build_provider_entry({
+        "endpoint": "https://x", "models": ["qwen"], "model_prefixes": [],
+    })
+    assert built["prefixes"] == []
 
 
 def test_nrp_thinking_dialects_match_probed_behavior():
@@ -786,10 +843,15 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 
 CIRRUS_LIKE = {
+    # No `model_prefixes` in the source config -> the builder sets prefixes ==
+    # models (legacy double duty). Keeping that here means these tests also
+    # cover the back-compat path for configs that predate #110.
     "openrouter": {"endpoint": "https://openrouter.ai/x", "api_key": "k",
-                   "models": ["anthropic/", "z-ai/", "~"], "extra_headers": {},
+                   "models": ["anthropic/", "z-ai/", "~"],
+                   "prefixes": ["anthropic/", "z-ai/", "~"], "extra_headers": {},
                    "thinking_models": {}, "no_sampling_params": []},
     "nimbus": {"endpoint": "https://nimbus/x", "api_key": "k", "models": ["qwen"],
+               "prefixes": ["qwen"],
                "extra_headers": {}, "thinking_models": {}, "no_sampling_params": []},
 }
 
@@ -844,9 +906,16 @@ def test_unroutable_model_raises_unknown_model_error_naming_what_is_served():
             raise AssertionError(f"{model} should not have routed anywhere")
 
 
-def test_fallback_still_used_when_a_default_exists():
-    """With a default configured, an unknown id lands there and says so (unchanged
-    behavior on NRP, where this is how undeclared-but-live models have always run)."""
+def test_fallback_is_silent_because_it_is_the_designed_route():
+    """An id matching nothing lands on the default provider, and does NOT warn.
+
+    It used to print `⚠️  Unknown model ...` per request. Once `nrp.models` was
+    emptied (#110) the fallback became the *normal* route for every NRP call, so
+    that line would fire on essentially all production traffic. The tradeoff is
+    real and deliberate: a typo'd id now also routes here and fails upstream
+    rather than being caught locally — `GET /v1/models` (#111) is the fix for
+    that, not a per-request log line.
+    """
     import contextlib
     import io
 
@@ -857,7 +926,8 @@ def test_fallback_still_used_when_a_default_exists():
     with contextlib.redirect_stdout(buf):
         name, _ = p.get_provider_for_model("some-new-model")
     assert name == "openrouter"
-    assert "Unknown model" in buf.getvalue()
+    assert "Unknown model" not in buf.getvalue()
+    assert buf.getvalue() == "", "routing must not log per request"
 
 
 def test_unroutable_model_returns_400_and_is_logged():
