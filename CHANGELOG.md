@@ -96,6 +96,26 @@ See [Releases](README.md#releases) for how a release is cut.
   `deepseek/…` models) route instead of silently falling back to NRP. Enables the
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
+### Fixed
+- **Daily consolidation had been failing for 9 days (OOM), wedged on one day.** Last
+  success 2026-08-07; every run since died with
+  `OutOfMemoryException: failed to allocate 256.0 KiB (819.0 MiB/819.1 MiB used)` inside
+  `build_session_view`, backfilling `2026-08-07`. Self-perpetuating: the day failed, kept
+  its place on the backfill list, and re-broke the job nightly. `threads=2` and
+  `preserve_insertion_order=false` were already set, so the easy mitigations were spent.
+  These are CronJobs, not persistent pods, so the 2Gi ceiling for long-lived workloads
+  doesn't apply: daily 1Gi → 4Gi (DuckDB capped at 3GB), monthly 2Gi → 6Gi (capped at
+  4GB), both with `temp_directory` set so DuckDB can spill and an `ephemeral-storage`
+  request to back it. Headroom is the primary fix — on a session-view-shaped build,
+  spilling turned failure into success at 500MB–1GB but not at 200MB, since DuckDB does
+  not spill every operator. The monthly job is raised too although it has not failed yet:
+  it runs the same code over a whole month, so it is strictly more exposed, and its next
+  run (2026-09-02) rolls up an August containing the heavy benchmark sweeps.
+  The backfill loop now isolates each day — one oversized day is recorded and skipped so
+  the reflatten pass and the rustfs mirror still run — and the job raises at the end with
+  the failed days, so it stays loud instead of silently tolerating the gap.
+  Missing session views for `2026-08-07`, `08` and `12` should rebuild on the next run.
+
 ### Added
 - **Mirror `consolidated/**` and `sessions/**` to rustfs from the consolidation CronJobs
   (#116).** Log analysis has required the single NRP credential, which carries

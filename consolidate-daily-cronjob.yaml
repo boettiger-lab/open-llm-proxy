@@ -122,6 +122,18 @@ spec:
                   # memory bounded (the data is re-sorted by ts on read anyway).
                   con.execute("SET threads=2")
                   con.execute("SET preserve_insertion_order=false")
+                  # Cap DuckDB below the pod limit, and give it somewhere to spill.
+                  #
+                  # The daily job wedged for 9 days OOMing at 819/819 MiB building one
+                  # session view, which blocked the reflatten pass and everything after
+                  # it. Headroom is the primary fix; `temp_directory` is a margin, not a
+                  # cure. Measured on a session-view-shaped build (window function +
+                  # self-join over a wide payload): with spill off it failed at 500MB
+                  # and 1GB and passed at 2GB; with spill on it passed at 500MB. At a
+                  # hard-tight budget (200MB) both still failed — DuckDB does not spill
+                  # every operator. So raise the ceiling *and* allow spilling.
+                  con.execute("SET memory_limit='3GB'")
+                  con.execute("SET temp_directory='/tmp/duckdb-spill'")
                   con.execute(f"""
                       CREATE SECRET s3_logs (
                           TYPE S3,
@@ -285,10 +297,21 @@ spec:
                           s3.delete_objects(Bucket=BUCKET, Delete={'Objects': to_delete[i:i+1000]})
                       print(f"  ✓ {len(to_delete)} JSONL chunks removed; session view written")
 
+                  # Isolate per day. A single oversized day used to abort the whole
+                  # run before the reflatten pass and the rustfs mirror, and it stayed
+                  # on the backfill list, so it re-broke the job every night. Now one
+                  # bad day is recorded and skipped; the rest of the pipeline completes
+                  # and the job still exits non-zero at the end (see `failed` below),
+                  # so the failure is loud rather than silently tolerated.
+                  failed_days = []
                   for day in backfill_sessions:
                       print(f"↺ backfill session view: {day}")
-                      build_session_view(f's3://{BUCKET}/consolidated/daily/{day}.parquet',
-                                         f's3://{BUCKET}/sessions/daily/{day}.parquet')
+                      try:
+                          build_session_view(f's3://{BUCKET}/consolidated/daily/{day}.parquet',
+                                             f's3://{BUCKET}/sessions/daily/{day}.parquet')
+                      except Exception as e:
+                          print(f"  ✗ session view failed for {day}: {type(e).__name__}: {e}")
+                          failed_days.append(day)
 
                   # Schema-upgrade pass: bring any legacy-schema consolidated daily file
                   # (current month — older months live in monthly files, upgraded by the
@@ -356,12 +379,20 @@ spec:
                       print(f"rustfs mirror → {dest_bucket}: {copied} copied, {skipped} already current")
 
                   mirror_to_rustfs()
+
+                  if failed_days:
+                      raise SystemExit(
+                          f"session view build failed for {len(failed_days)} day(s): "
+                          f"{failed_days} — consolidation, reflatten and the rustfs "
+                          f"mirror completed for everything else")
                   print("Done.")
                   PY
               resources:
                 requests:
                   cpu: "500m"
-                  memory: "1Gi"
+                  memory: "4Gi"
+                  ephemeral-storage: "8Gi"
                 limits:
                   cpu: "500m"
-                  memory: "1Gi"
+                  memory: "4Gi"
+                  ephemeral-storage: "8Gi"
