@@ -135,12 +135,15 @@ Covered by `./sync-logs.sh` above — it pulls the whole `logs-open-llm-proxy` b
 including the `consolidated/**` and `sessions/**` rollups, so there is no separate
 backup step.
 
-> ⚠️ **Don't reach for `rclone … nrp:` or `LOG_S3_KEY`/`LOG_S3_SECRET` to read logs.**
-> There is exactly one credential for NRP bucket access and it carries
-> **read/write/delete on every NRP bucket** — far beyond what reading a few MiB of logs
-> needs. `sync-logs.sh` uses the already-configured remote and its local copy needs no
-> secret at query time. A read-only, single-bucket credential is tracked in
-> boettiger-lab/open-llm-proxy#113.
+`sync-logs.sh` reads the rustfs mirror with a **read-only, single-bucket** credential
+(Get/List only), resolved from the `rustfs-logs-read` Secret via `kubectl` if you don't
+set `LOGS_READ_KEY`/`LOGS_READ_SECRET` yourself. Nothing in the log-reading path needs a
+privileged key any more.
+
+> ⚠️ **Don't reach for `rclone … nrp:` or `LOG_S3_KEY`/`LOG_S3_SECRET`.** There is exactly
+> one credential for NRP bucket access and it carries **read/write/delete on every NRP
+> bucket** — far beyond what reading logs needs. It is now required only for *today's* raw
+> JSONL, which the mirror does not carry; for the last few minutes prefer `kubectl` above.
 
 ## Step 2: Reconstruct Conversations
 

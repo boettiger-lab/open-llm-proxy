@@ -117,29 +117,43 @@ request/response interleaving:
 
 ## Access pattern
 
-> 🔜 **A read-only rustfs mirror is being stood up (#116).** The consolidation CronJobs now
-> copy `consolidated/**` and `sessions/**` to `logs-open-llm-proxy` on rustfs after each run,
-> so those tiers can be read with a credential scoped to that one bucket — Get/List only —
-> instead of the single NRP key that carries read/write/delete on *every* NRP bucket (#113).
-> The credential lives in the `rustfs-logs-read` Secret in `biodiversity`; reference it by
-> **name**, never by value, so rotation touches nothing here.
+> ✅ **Reading logs no longer needs a privileged credential (#113).** `./sync-logs.sh`
+> reads the **rustfs mirror** with a credential scoped to this one bucket, Get/List only.
+> The old default was rclone's `nrp:` remote — the single NRP credential, which carries
+> read/write/delete on *every* NRP bucket, for a read-only task on a few MiB of logs.
 >
-> **Not yet the recommended path.** The sections below still describe the NRP-key workflow,
-> and stay that way until the mirror has run and been confirmed non-empty — retargeting
-> sooner would make the recommended path return *nothing* rather than too much. NRP Ceph
-> remains the system of record either way; rustfs shares the same rook Ceph, so the mirror
-> is a convenience copy, not a second failure domain.
+> NRP Ceph remains the system of record; the consolidation CronJobs copy `consolidated/**`
+> and `sessions/**` to rustfs after each run. rustfs shares the same rook Ceph, so the
+> mirror is a convenience copy, **not** a second failure domain, and must never hold the
+> only copy.
 
 ### Local sync (recommended for interactive analysis)
 
-The bucket is **private**, but `rclone` already has credentials configured under the `nrp` remote. Sync the bucket to a local scratch dir once per session, then query the local files — no S3 secret, no shell-expanded credentials, and orders of magnitude faster iteration:
+Sync once per session, then query the local files — no S3 secret at query time, and orders of magnitude faster iteration:
 
 ```bash
 ./sync-logs.sh                   # syncs to /tmp/open-llm-proxy-logs
 ./sync-logs.sh ~/scratch/logs    # or pick your own path
 ```
 
-The wrapper calls `rclone sync nrp:logs-open-llm-proxy <dest>`. Full sync of the whole bucket is ~1s (it's only a few MiB). Re-syncs during the same session are near-instant because rclone only transfers changed files.
+It resolves a read-only credential in this order:
+
+1. `$LOGS_READ_KEY` / `$LOGS_READ_SECRET` from the environment;
+2. the **`rustfs-logs-read` Secret** in `biodiversity`, fetched via `kubectl` — so the
+   value never lands in a dotfile or your shell history. This is the usual path: if you
+   can reach the cluster, `./sync-logs.sh` just works;
+3. rclone's `nrp:` remote — the broad NRP credential. Legacy fallback only; it prints a
+   warning naming what that key can do.
+
+Reference the Secret by **name**, never by value, so rotation touches nothing here.
+
+Full sync is a few seconds (~63 MB). Re-syncs during the same session are near-instant — rclone only transfers what changed.
+
+> ⚠️ **The mirror does not carry *today's* raw JSONL.** It holds the query-ready tiers —
+> `consolidated/**` and `sessions/**` — refreshed by the consolidation CronJob, which runs
+> at 03:00 UTC. Today's JSONL is still being written and is not mirrored. For the last few
+> minutes use [`kubectl`](#kubectl-live-logs--last-60s-before-next-flush); for today's raw
+> JSONL specifically, you still need the NRP source.
 
 Then query the local path — no `CREATE SECRET` needed:
 
@@ -172,11 +186,33 @@ For queries that span today + history, UNION raw JSONL and consolidated Parquet 
 
 ### Direct S3 (one-shot queries, automation, or inside NRP pods)
 
-When you don't want a local copy — e.g. a single CI query, a k8s job, or always-current reads inside a pod — query S3 directly with a DuckDB secret. Set `LOG_S3_KEY` and `LOG_S3_SECRET` in your shell and let the shell expand them. Agents should use the Bash tool so shell expansion keeps the secret values out of the conversation transcript.
+When you don't want a local copy — e.g. a single CI query, a k8s job, or always-current reads inside a pod — query directly with a DuckDB secret. **Use the scoped read-only credential**, and let the shell expand it so the value stays out of the transcript:
 
-> ⚠️ **These are not scoped, read-only keys.** There is exactly **one** credential for NRP bucket access, so `LOG_S3_KEY`/`LOG_S3_SECRET` are that same credential: **read/write/delete across every NRP bucket**, not just this one. (An earlier version of this note claimed they were "scoped keys for this bucket — distinct from your general NRP credentials." That was wrong, and wrong in the dangerous direction: it made an over-broad key look already-contained.)
->
-> Treat this path as privileged. Prefer [`./sync-logs.sh`](#local-sync-recommended-for-interactive-analysis) — the local copy needs no secret at query time — and reach for direct S3 only when you genuinely need sub-minute freshness or an in-pod read. A read-only, single-bucket credential is tracked in #113 (with the mirror/mint half in `geo-agent-ops`); until it exists, sharing this key for log reads grants delete on everything it reaches.
+```bash
+export LOGS_READ_KEY=$(kubectl -n biodiversity get secret rustfs-logs-read \
+  -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+export LOGS_READ_SECRET=$(kubectl -n biodiversity get secret rustfs-logs-read \
+  -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
+
+duckdb -s "
+CREATE SECRET logs_ro (TYPE S3, KEY_ID '$LOGS_READ_KEY', SECRET '$LOGS_READ_SECRET',
+  ENDPOINT 'rustfs.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
+
+SELECT session_key, turn_idx, user_message_this_turn
+FROM read_parquet('s3://logs-open-llm-proxy/sessions/**/*.parquet')
+ORDER BY session_key, turn_idx LIMIT 20;
+"
+```
+
+This key is **Get/List on `logs-open-llm-proxy` only** — it cannot write or delete anything, here or elsewhere. Agents should use the Bash tool so shell expansion keeps the values out of the conversation transcript.
+
+> ⚠️ **`LOG_S3_KEY` / `LOG_S3_SECRET` are a different thing — don't use them for reads.**
+> There is exactly **one** credential for NRP bucket access, so those variables hold it:
+> **read/write/delete across every NRP bucket**. They remain necessary only for reaching
+> the NRP source directly — chiefly *today's* raw JSONL, which the mirror doesn't carry.
+> Everything else should go through the scoped key above. (An older version of this note
+> called them "scoped keys for this bucket"; that was wrong, and wrong in the direction
+> that hides risk.)
 
 ```bash
 duckdb -s "
