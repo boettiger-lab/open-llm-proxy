@@ -994,8 +994,11 @@ def _models_headers(provider_config: dict) -> dict:
     wants `x-api-key` plus a version header — verified against the live API."""
     key = provider_config.get("api_key") or ""
     if provider_config.get("models_auth") == "x-api-key":
-        return {"x-api-key": key,
-                "anthropic-version": provider_config.get("anthropic_version", "2023-06-01")}
+        # `or` not `.get(default)`: build_provider_entry stores the key as None
+        # when unset, so a default argument would never apply and httpx would be
+        # handed a None header value. Caught by live verification, not unit tests.
+        version = provider_config.get("anthropic_version") or "2023-06-01"
+        return {"x-api-key": key, "anthropic-version": version}
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 

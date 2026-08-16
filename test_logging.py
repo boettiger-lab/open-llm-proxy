@@ -1244,3 +1244,17 @@ def test_models_are_cached_and_force_refresh_bypasses():
         assert calls["n"] == first
         asyncio.run(p.refresh_models(force=True))
         assert calls["n"] > first
+
+
+def test_models_headers_survive_none_valued_config_keys():
+    """build_provider_entry stores absent discovery overrides as None, so
+    `.get(key, default)` never applies the default — it returns the stored None.
+    That handed httpx a None header value and made Anthropic discovery fail with
+    AttributeError against the live API. Regression guard."""
+    p = importlib.reload(llm_proxy)
+    entry = p.build_provider_entry({"endpoint": "https://api.anthropic.com/v1/chat/completions",
+                                    "models_auth": "x-api-key"})
+    assert entry["anthropic_version"] is None          # the trap
+    h = p._models_headers({**entry, "api_key": "k"})
+    assert h["anthropic-version"] == "2023-06-01"
+    assert all(v is not None for v in h.values())
