@@ -96,6 +96,21 @@ See [Releases](README.md#releases) for how a release is cut.
   `deepseek/…` models) route instead of silently falling back to NRP. Enables the
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
+### Changed
+- **Log reads no longer need a privileged credential (#113).** `./sync-logs.sh` defaulted
+  to rclone's `nrp:` remote — the single NRP credential, carrying read/write/delete on
+  *every* NRP bucket — for a read-only task against one bucket of a few MiB. It now reads
+  the rustfs mirror with a Get/List-only, single-bucket key, resolving it from
+  `$LOGS_READ_KEY`/`$LOGS_READ_SECRET`, else from the `rustfs-logs-read` Secret via
+  `kubectl` (so the value never lands in a dotfile or shell history), else falling back to
+  `nrp:` with a warning naming what that key can do. The direct-S3 snippet in LOGGING.md,
+  the AGENTS.md pointer, and the `geo-agent-training` skill all switch to the scoped key
+  too. `LOG_S3_KEY`/`LOG_S3_SECRET` are now needed only for reaching the NRP source
+  directly — chiefly *today's* raw JSONL, which the mirror deliberately does not carry
+  (documented, with `kubectl` as the sub-minute path). Verified end to end against the
+  live mirror: 36 objects / 63 MB synced with the read-only key and 38,632 session-view
+  turns queryable from the local copy; the same key is refused on write.
+
 ### Fixed
 - **Daily consolidation had been failing for 9 days (OOM), wedged on one day.** Last
   success 2026-08-07; every run since died with
