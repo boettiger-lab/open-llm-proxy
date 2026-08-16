@@ -1113,3 +1113,134 @@ def test_health_reports_logging_state_without_ever_degrading_status():
     assert h["logging"]["last_window"] == {"requests": 30, "responses": 0, "ratio": 0.0}
     assert "swallowed_exceptions" in h["logging"]
     assert h["logging"]["buffer_depth"] == 30
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/models — discovery (#111)
+# ---------------------------------------------------------------------------
+
+def _fake_models_client(catalog, fail=()):
+    """httpx.AsyncClient stand-in serving a {url: [ids]} catalog."""
+    class _Resp:
+        def __init__(self, ids): self._ids = ids
+        def raise_for_status(self): pass
+        def json(self): return {"data": [{"id": i} for i in self._ids]}
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, timeout=None):
+            if url in fail:
+                raise ConnectionError("boom")
+            return _Resp(catalog.get(url, []))
+    return _Client
+
+
+def test_models_url_and_auth_derivation():
+    p = importlib.reload(llm_proxy)
+    assert p._models_url({"endpoint": "https://x/v1/chat/completions"}) == "https://x/v1/models"
+    assert p._models_url({"endpoint": "https://x/v1", "models_endpoint": "https://y/list"}) == "https://y/list"
+    # default is Bearer; Anthropic's compat path rejects that and needs x-api-key
+    assert "Authorization" in p._models_headers({"api_key": "k"})
+    h = p._models_headers({"api_key": "k", "models_auth": "x-api-key"})
+    assert h["x-api-key"] == "k" and "anthropic-version" in h
+
+
+def test_discovery_lists_only_what_this_deployment_would_actually_route():
+    """The listing is filtered through get_provider_for_model itself, so it can
+    never disagree with routing. OpenRouter's real catalog is 400+ ids while we
+    claim 11 vendor prefixes — anything outside them must not be advertised."""
+    import asyncio
+    from unittest.mock import patch
+
+    p = importlib.reload(llm_proxy)
+    catalog = {
+        "https://ellm.nrp-nautilus.io/v1/models": ["qwen3", "glm-5", "deepseek-v4-flash"],
+        "https://openrouter.ai/api/v1/models": [
+            "z-ai/glm-5.2",            # routes to openrouter (prefix)
+            "~deepseek/x-latest",      # floating alias, also openrouter
+            "google/gemini-3.7-flash", # NOT a declared prefix -> must be excluded
+        ],
+        "https://api.anthropic.com/v1/models": ["claude-opus-5", "claude-sonnet-5"],
+        "https://vllm-nimbus.carlboettiger.info/v1/models": ["qwen"],
+    }
+    with patch.object(p.httpx, "AsyncClient", _fake_models_client(catalog)):
+        cache = asyncio.run(p.refresh_models(force=True))
+
+    by_provider = {}
+    for m in cache["data"]:
+        by_provider.setdefault(m["provider"], set()).add(m["id"])
+
+    assert {"qwen3", "glm-5", "deepseek-v4-flash"} <= by_provider["nrp"]
+    assert {"z-ai/glm-5.2", "~deepseek/x-latest"} <= by_provider["openrouter"]
+    # the id we cannot route is absent everywhere, not silently filed under nrp
+    assert not any(m["id"] == "google/gemini-3.7-flash" for m in cache["data"])
+    # claude ids come back even though config declares no exact claude id (#110)
+    assert {"claude-opus-5", "claude-sonnet-5"} <= by_provider["anthropic"]
+    assert by_provider["nimbus"] == {"qwen"}
+
+
+def test_unreachable_provider_degrades_instead_of_disappearing():
+    """A provider that is down (gemma4-nimbus and qwen3-cirrus were both 503 when
+    this was written) must keep its declared ids, then its last-known-good."""
+    import asyncio
+    from unittest.mock import patch
+
+    p = importlib.reload(llm_proxy)
+    dead = "https://gemma4-nimbus.carlboettiger.info/v1/models"
+
+    with patch.object(p.httpx, "AsyncClient", _fake_models_client({}, fail={dead})):
+        cache = asyncio.run(p.refresh_models(force=True))
+    g = cache["providers"]["gemma4-nimbus"]
+    assert g["status"] == "declared"
+    assert g["count"] == 1 and "error" in g          # falls back to config's `gemma4`
+    assert any(m["id"] == "gemma4" for m in cache["data"])
+
+    # now it answers, then goes away again -> last-known-good is retained
+    with patch.object(p.httpx, "AsyncClient", _fake_models_client({dead: ["gemma4"]})):
+        asyncio.run(p.refresh_models(force=True))
+    with patch.object(p.httpx, "AsyncClient", _fake_models_client({}, fail={dead})):
+        cache = asyncio.run(p.refresh_models(force=True))
+    assert cache["providers"]["gemma4-nimbus"]["status"] == "stale"
+    assert cache["providers"]["gemma4-nimbus"]["count"] == 1
+
+
+def test_models_endpoint_requires_the_proxy_key():
+    import asyncio
+    import pytest
+    from fastapi import HTTPException
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    with patch.object(p.httpx, "AsyncClient", _fake_models_client({})):
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(p.list_models(authorization=None))
+        assert ei.value.status_code == 401
+        body = asyncio.run(p.list_models(authorization="Bearer testkey"))
+    assert body["object"] == "list"
+    assert isinstance(body["data"], list)
+    # prefixes are surfaced: `claude-` is routable even with no enumerable id
+    assert body["providers"]["anthropic"]["prefixes"] == ["claude-"]
+    assert "ids" not in body["providers"]["anthropic"]   # internal detail stays internal
+
+
+def test_models_are_cached_and_force_refresh_bypasses():
+    import asyncio
+    from unittest.mock import patch
+
+    p = importlib.reload(llm_proxy)
+    calls = {"n": 0}
+    base = _fake_models_client({"https://ellm.nrp-nautilus.io/v1/models": ["qwen3"]})
+
+    class _Counting(base):
+        async def get(self, url, headers=None, timeout=None):
+            calls["n"] += 1
+            return await super().get(url, headers=headers, timeout=timeout)
+
+    with patch.object(p.httpx, "AsyncClient", _Counting):
+        asyncio.run(p.refresh_models(force=True))
+        first = calls["n"]
+        asyncio.run(p.refresh_models())          # within TTL -> no refetch
+        assert calls["n"] == first
+        asyncio.run(p.refresh_models(force=True))
+        assert calls["n"] > first

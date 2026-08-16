@@ -51,7 +51,8 @@
       ],
       "model_prefixes": [
         "claude-"
-      ]
+      ],
+      "models_auth": "x-api-key"
     },
     "nimbus": {
       "endpoint": "https://vllm-nimbus.carlboettiger.info/v1/chat/completions",
