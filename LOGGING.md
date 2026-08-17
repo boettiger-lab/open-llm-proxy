@@ -149,11 +149,16 @@ Reference the Secret by **name**, never by value, so rotation touches nothing he
 
 Full sync is a few seconds (~63 MB). Re-syncs during the same session are near-instant — rclone only transfers what changed.
 
-> ⚠️ **The mirror does not carry *today's* raw JSONL.** It holds the query-ready tiers —
-> `consolidated/**` and `sessions/**` — refreshed by the consolidation CronJob, which runs
-> at 03:00 UTC. Today's JSONL is still being written and is not mirrored. For the last few
-> minutes use [`kubectl`](#kubectl-live-logs--last-60s-before-next-flush); for today's raw
-> JSONL specifically, you still need the NRP source.
+> **Mirror freshness: ~1h.** It holds the query-ready tiers — `consolidated/**` and
+> `sessions/**`, refreshed by the consolidation CronJob at 03:00 UTC — **and today's raw
+> JSONL** under `YYYY-MM-DD/`, refreshed hourly by `logs-mirror-raw-hourly` (#124).
+> For fresher than that use [`kubectl`](#kubectl-live-logs--last-60s-before-next-flush).
+>
+> This closed a 3–27h hole. Consolidation *structurally* excludes the current day, so
+> before #124 an event only reached the mirror at 03:00 the next day — ~3h for something
+> logged at 23:59, ~27h at 00:00, ~15h on average — and everything inside that window
+> needed the omnipotent NRP key. Running consolidation more often would not have helped:
+> the current day is excluded by construction, not by cadence.
 
 Then query the local path — no `CREATE SECRET` needed:
 

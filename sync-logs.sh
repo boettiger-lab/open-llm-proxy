@@ -19,9 +19,11 @@
 #   LOGS_DIR=~/cache/logs ./sync-logs.sh
 #
 # NOTE ON FRESHNESS: the mirror carries the query-ready tiers — consolidated/**
-# and sessions/** — refreshed by the consolidation CronJob. It does NOT carry
-# *today's* raw JSONL, which is still being written. For the last few minutes,
-# use kubectl (see LOGGING.md); for today's raw JSONL, use the NRP source.
+# and sessions/** — refreshed by the consolidation CronJob at 03:00 UTC, AND
+# today's raw JSONL under YYYY-MM-DD/, refreshed hourly by
+# `logs-mirror-raw-hourly` (#124). So the mirror is at most ~1h behind for
+# today, not the 3–27h it used to be. For anything fresher than that, use
+# kubectl (see LOGGING.md). Nothing here needs the NRP key any more.
 set -euo pipefail
 
 DEST="${1:-${LOGS_DIR:-/tmp/open-llm-proxy-logs}}"

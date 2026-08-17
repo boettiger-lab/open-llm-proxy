@@ -1,0 +1,200 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: logs-mirror-raw-hourly
+  labels:
+    app: logs-consolidate
+spec:
+  # Hourly mirror of TODAY's raw JSONL to rustfs, so log analysis on the
+  # read-only credential is at most ~1h behind instead of 3–27h.
+  #
+  # WHY THIS EXISTS, and why it is not just "run consolidation more often".
+  # `logs-consolidate-daily` structurally excludes the current day
+  # (`d != today` — today is still being written, and its Parquet would have to
+  # be rewritten on every pass). So an event at time T on day D only reaches the
+  # mirror at 03:00 on D+1: ~3h for something logged at 23:59, ~27h for
+  # something logged at 00:00, ~15h on average. Scheduling consolidation more
+  # frequently would not move that at all; the current day is excluded by
+  # construction, not by cadence.
+  #
+  # The gap mattered because the mirror is the only tier readable with the
+  # scoped `logs-open-llm-proxy-reader` credential (#113). Everything inside the
+  # gap needed the single NRP key, which carries read/write/delete on every NRP
+  # bucket — so "what did the app do this morning?" still meant handing out the
+  # omnipotent key. `kubectl logs` covers only the last few minutes.
+  #
+  # Deliberately a SEPARATE CronJob rather than a step inside the daily job:
+  # this runs 24× more often against the same bucket, and a failure here must
+  # not wedge consolidation, the schema-upgrade pass, or the rollup mirror.
+  #
+  # :17 past the hour keeps it clear of 03:00 consolidation (which does its own
+  # rollup mirror) and of the :00 rush of other cluster CronJobs.
+  schedule: "17 * * * *"
+  # A run that overruns its hour must not stack on the next one; they would copy
+  # the same objects concurrently.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          priorityClassName: opportunistic
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/pci-10de.present
+                        operator: NotIn
+                        values: ["true"]
+          containers:
+            - name: mirror-raw
+              image: python:3.12-slim
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+                # Same split as the daily job: NOT named AWS_*, or these would
+                # overwrite the NRP source credential above.
+                - name: RUSTFS_KEY
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: AWS_ACCESS_KEY_ID, optional: true }
+                - name: RUSTFS_SECRET
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: AWS_SECRET_ACCESS_KEY, optional: true }
+                - name: RUSTFS_ENDPOINT
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: AWS_S3_ENDPOINT, optional: true }
+                - name: RUSTFS_BUCKET
+                  valueFrom:
+                    secretKeyRef: { name: rustfs-logs-write, key: BUCKET, optional: true }
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  pip install --quiet boto3
+                  python - <<'PY'
+                  import os, datetime, boto3
+                  from botocore.client import Config
+                  from botocore.exceptions import ClientError
+
+                  BUCKET   = 'logs-open-llm-proxy'
+                  ENDPOINT = 'http://rook-ceph-rgw-nautiluss3.rook'
+
+                  s3 = boto3.client(
+                      's3',
+                      endpoint_url=ENDPOINT,
+                      config=Config(s3={'addressing_style': 'path'}),
+                  )
+                  paginator = s3.get_paginator('list_objects_v2')
+
+                  key = os.environ.get('RUSTFS_KEY')
+                  if not key:
+                      print("ℹ️  RUSTFS_KEY not set — nothing to mirror to")
+                      raise SystemExit(0)
+
+                  DEST = os.environ.get('RUSTFS_BUCKET') or BUCKET
+                  rustfs = boto3.client(
+                      's3',
+                      endpoint_url=os.environ['RUSTFS_ENDPOINT'],
+                      aws_access_key_id=key,
+                      aws_secret_access_key=os.environ['RUSTFS_SECRET'],
+                      config=Config(s3={'addressing_style': 'path'}),
+                  )
+                  # Separate paginator: `paginator` above is bound to the NRP client.
+                  # Listing the mirror with it would enumerate the SOURCE bucket while
+                  # deleting from the DESTINATION — the prune below must never be
+                  # driven by anything but the mirror's own contents.
+                  rpaginator = rustfs.get_paginator('list_objects_v2')
+
+                  today = datetime.datetime.now(datetime.UTC).date().isoformat()
+
+                  # ---- 1. copy today's raw JSONL -------------------------------
+                  # Same skip rule as the daily job's mirror: re-upload whenever the
+                  # source mtime or size differs, since a chunk can be rewritten in
+                  # place and land on an identical byte count.
+                  #
+                  # Keys are mirrored UNDER THE SAME `YYYY-MM-DD/` layout as the
+                  # source, so the documented raw-JSONL glob in LOGGING.md works
+                  # against the mirror unchanged.
+                  copied = skipped = 0
+                  for page in paginator.paginate(Bucket=BUCKET, Prefix=f'{today}/'):
+                      for obj in page.get('Contents', []):
+                          k, stamp = obj['Key'], obj['LastModified'].isoformat()
+                          try:
+                              head = rustfs.head_object(Bucket=DEST, Key=k)
+                              if (head['Metadata'].get('src-mtime') == stamp
+                                      and head['ContentLength'] == obj['Size']):
+                                  skipped += 1
+                                  continue
+                          except ClientError as e:
+                              if e.response['Error']['Code'] not in ('404', 'NoSuchKey', 'NotFound'):
+                                  raise   # 403 etc. is a real problem — be loud
+                          body = s3.get_object(Bucket=BUCKET, Key=k)['Body'].read()
+                          rustfs.put_object(Bucket=DEST, Key=k, Body=body,
+                                            Metadata={'src-mtime': stamp})
+                          copied += 1
+                  print(f"raw mirror → {DEST}/{today}/: {copied} copied, {skipped} already current")
+
+                  # ---- 2. prune superseded raw days from the MIRROR -------------
+                  # This job owns the `YYYY-MM-DD/` tier in rustfs end to end: it is
+                  # the only writer, so it is also the pruner. Without this the mirror
+                  # grows ~21 MiB and ~1,500 objects every day forever, holding raw
+                  # JSONL that the mirrored rollups already represent — the bucket
+                  # would end up almost entirely redundant.
+                  #
+                  # Deleting here does NOT weaken the daily job's copy-only rule. That
+                  # rule protects the durable tiers (consolidated/, sessions/), and
+                  # this touches neither; raw is a staging tier that NRP itself
+                  # deletes once the rollups exist. Nothing is deleted on NRP here.
+                  #
+                  # Verify-before-destroy, same as everywhere else in this pipeline:
+                  # a day's raw is dropped only once BOTH its rollups are confirmed
+                  # present *in the mirror* — not merely on NRP, or a mirror that
+                  # silently stopped would prune data it never actually copied.
+                  seen = set()
+                  for page in rpaginator.paginate(Bucket=DEST, Prefix=''):
+                      for obj in page.get('Contents', []):
+                          top = obj['Key'].split('/')[0]
+                          if len(top) == 10 and top[4] == '-' and top[7] == '-':
+                              seen.add(top)
+                  pruned_days = 0
+                  for day in sorted(seen - {today}):
+                      try:
+                          rustfs.head_object(Bucket=DEST, Key=f'consolidated/daily/{day}.parquet')
+                          rustfs.head_object(Bucket=DEST, Key=f'sessions/daily/{day}.parquet')
+                      except ClientError as e:
+                          if e.response['Error']['Code'] in ('404', 'NoSuchKey', 'NotFound'):
+                              # Rollups not mirrored yet — the daily job runs at 03:00.
+                              # Keep the raw until they are; this is the window where
+                              # raw is the ONLY mirrored copy of that day.
+                              print(f"  ↩ {day}: rollups not mirrored yet, keeping raw")
+                              continue
+                          raise
+                      victims = []
+                      for page in rpaginator.paginate(Bucket=DEST, Prefix=f'{day}/'):
+                          for obj in page.get('Contents', []):
+                              victims.append({'Key': obj['Key']})
+                      for i in range(0, len(victims), 1000):
+                          rustfs.delete_objects(Bucket=DEST, Delete={'Objects': victims[i:i+1000]})
+                      pruned_days += 1
+                      print(f"  ✓ {day}: rollups mirrored, {len(victims)} raw chunks pruned from mirror")
+                  if not pruned_days:
+                      print("no superseded raw days to prune")
+                  print("Done.")
+                  PY
+              resources:
+                requests:
+                  cpu: "200m"
+                  memory: "512Mi"
+                  ephemeral-storage: "1Gi"
+                limits:
+                  cpu: "200m"
+                  memory: "512Mi"
+                  ephemeral-storage: "1Gi"

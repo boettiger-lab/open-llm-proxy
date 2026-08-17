@@ -9,6 +9,19 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Hourly raw-JSONL mirror — log reading no longer needs the NRP key at all (#124).**
+  New `logs-mirror-raw-hourly` CronJob copies *today's* `YYYY-MM-DD/` prefix to the
+  rustfs mirror every hour, cutting the scoped-credential lag from **3–27h to ≤1h**
+  (measured 7 min on the first run). Consolidation *structurally* excludes the current
+  day (`d != today`), so an event only reached the mirror at 03:00 the next day — ~3h
+  for something logged at 23:59, ~27h at 00:00, ~15h on average — and everything inside
+  that window still required the one NRP credential, which carries read/write/delete on
+  every NRP bucket. Running consolidation more often would **not** have helped: the
+  current day is excluded by construction, not by cadence. Kept a separate CronJob
+  rather than a step in the daily job, since it runs 24× more often and a failure here
+  must not wedge consolidation or the rollup mirror. It owns the raw tier in the mirror
+  end to end, pruning a day's raw once both its rollups are confirmed mirrored, so the
+  mirror does not grow ~21 MiB / ~1,500 objects a day forever.
 - **Thinking toggle for `qwen3-small` and `qwen3-4bit` (#105 follow-up).** Both honor
   `chat_template_kwargs: {"enable_thinking": false}` at the endpoint, but had no
   `thinking_models` entry — so a client's `enable_thinking` flag was silently dropped
@@ -181,6 +194,19 @@ See [Releases](README.md#releases) for how a release is cut.
   turns queryable from the local copy; the same key is refused on write.
 
 ### Fixed
+- **Orphaned raw JSONL is now swept (#124).** Raw chunks were deleted only inline by the
+  consolidate path, once both rollups verified. Any day that reached its rollups another
+  way kept its raw JSONL *forever*: it lands in `existing`, so it can never re-enter
+  `to_do`, and nothing revisited it. The session-view backfill loop is exactly such a
+  path, so the 2026-08 OOM incident stranded 2026-08-07/08/12 — **2,944 objects, 41.8 MiB,
+  65% of every raw object in the bucket**, for days whose rollups had been complete for a
+  week. Fixed as a sweep over the raw tier rather than a delete bolted onto the backfill
+  loop: a backfill-local fix would stop new orphans but never clear existing ones, since a
+  day drops out of `backfill_sessions` as soon as it has a session view — the stranded days
+  would have stayed stranded. Sweeping actual state is self-healing and indifferent to how
+  a day was orphaned. Same verify-before-destroy rule as the rest of the pipeline (both
+  rollups confirmed present; today never touched). Verified live: swept all three days,
+  820 + 1341 + 783 chunks.
 - **Daily consolidation had been failing for 9 days (OOM), wedged on one day.** Last
   success 2026-08-07; every run since died with
   `OutOfMemoryException: failed to allocate 256.0 KiB (819.0 MiB/819.1 MiB used)` inside
