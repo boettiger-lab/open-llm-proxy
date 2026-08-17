@@ -124,6 +124,33 @@ Copy `config.json` or use it as-is. To use only NRP (the common case), you can t
 Note there is no model list: everything routes to `default_provider`. You only
 enumerate models to send *specific* ids somewhere other than the default.
 
+#### Ask the proxy what it serves: `GET /v1/models`
+
+Rather than hardcoding a model list, clients can query the deployment:
+
+```bash
+curl -H "Authorization: Bearer $PROXY_KEY" https://open-llm-proxy.nrp-nautilus.io/v1/models
+```
+
+OpenAI-shaped (`{"object": "list", "data": [...]}`), with each entry annotated by
+the provider that would serve it, plus a non-standard `providers` block reporting
+per-provider status and prefixes. Results are cached (`MODELS_CACHE_TTL`, default
+300s); `?refresh=true` forces a re-fetch.
+
+The set is discovered from each provider's own `/v1/models` and then **filtered
+through the router itself** — an id is listed under a provider only if a real
+request for it would go there. So the listing cannot drift from routing, and a
+provider's much larger catalog (OpenRouter serves 400+ ids; this deployment
+routes 264 of them) is narrowed to what actually works here.
+
+A provider that is unreachable degrades rather than disappearing: it keeps its
+last-known-good ids, or falls back to whatever `config.json` declares, and says
+so via `status` (`ok` / `stale` / `declared`).
+
+This is also what makes deployment differences visible: the same app pointed at a
+narrower deployment (see [cirrus/](cirrus/README.md)) sees a shorter list instead
+of offering ids that would 400.
+
 #### `models` vs `model_prefixes`
 
 Routing tries **exact ids first, then prefixes**, and the two are declared

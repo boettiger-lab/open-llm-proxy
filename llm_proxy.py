@@ -486,7 +486,13 @@ def build_provider_entry(provider_config: dict) -> dict:
         # Models that 400 on sampling params (temperature/top_p) — e.g. the newest
         # Anthropic models. Must be carried through here: this rebuilt dict (not the
         # raw config) is what get_provider_for_model returns at request time.
-        "no_sampling_params": provider_config.get("no_sampling_params", [])
+        "no_sampling_params": provider_config.get("no_sampling_params", []),
+        # Model-discovery overrides (#111): most providers expose an
+        # OpenAI-style /v1/models taking a Bearer token, derived from the chat
+        # endpoint. Anthropic needs x-api-key; some may need an explicit URL.
+        "models_auth": provider_config.get("models_auth"),
+        "models_endpoint": provider_config.get("models_endpoint"),
+        "anthropic_version": provider_config.get("anthropic_version"),
     }
 
 
@@ -954,6 +960,150 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
 async def options_chat():
     """Handle CORS preflight for chat endpoints"""
     return Response(status_code=204)
+
+# --- Model discovery (#111) --------------------------------------------------
+# Providers already enumerate themselves, so the proxy should not keep a list —
+# #110 deleted the ones it had. This asks each configured provider what it serves
+# and reports the union, annotated by provider.
+#
+# The routable set is filtered *through `get_provider_for_model` itself*, so the
+# listing cannot drift from actual routing: an id appears under a provider only
+# if the router would really send it there. A provider's own catalog may be far
+# larger than what we route (OpenRouter serves 400+ ids; we claim 11 vendor
+# prefixes), and that filter is what keeps the two honest.
+_MODELS_TTL = int(os.getenv("MODELS_CACHE_TTL", "300"))
+_MODELS_TIMEOUT = float(os.getenv("MODELS_FETCH_TIMEOUT", "8"))
+_models_cache = {"data": [], "providers": {}, "fetched_at": 0.0, "fetched_iso": None}
+_models_lock = asyncio.Lock()
+
+
+def _models_url(provider_config: dict) -> str:
+    """Derive the provider's model-listing URL from its chat endpoint."""
+    explicit = provider_config.get("models_endpoint")
+    if explicit:
+        return explicit
+    ep = provider_config["endpoint"]
+    if "/chat/completions" in ep:
+        return ep.replace("/chat/completions", "/models")
+    return ep.rstrip("/") + "/models"
+
+
+def _models_headers(provider_config: dict) -> dict:
+    """Auth for the listing call. Most providers take a Bearer token; Anthropic's
+    OpenAI-compat path rejects it (`Invalid bearer token`) and its native listing
+    wants `x-api-key` plus a version header — verified against the live API."""
+    key = provider_config.get("api_key") or ""
+    if provider_config.get("models_auth") == "x-api-key":
+        # `or` not `.get(default)`: build_provider_entry stores the key as None
+        # when unset, so a default argument would never apply and httpx would be
+        # handed a None header value. Caught by live verification, not unit tests.
+        version = provider_config.get("anthropic_version") or "2023-06-01"
+        return {"x-api-key": key, "anthropic-version": version}
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+async def _fetch_provider_models(cfg: dict, client) -> tuple:
+    """Return (ids, error). Never raises — an unreachable provider must degrade,
+    not break the endpoint."""
+    try:
+        r = await client.get(_models_url(cfg), headers=_models_headers(cfg),
+                             timeout=_MODELS_TIMEOUT)
+        r.raise_for_status()
+        payload = r.json()
+        ids = [m.get("id") for m in payload.get("data", [])
+               if isinstance(m, dict) and m.get("id")]
+        return ids, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"[:200]
+
+
+async def refresh_models(force: bool = False) -> dict:
+    """Refresh the model cache if stale. Returns the cache."""
+    now = time.monotonic()
+    if not force and _models_cache["data"] and (now - _models_cache["fetched_at"]) < _MODELS_TTL:
+        return _models_cache
+
+    async with _models_lock:
+        now = time.monotonic()
+        if not force and _models_cache["data"] and (now - _models_cache["fetched_at"]) < _MODELS_TTL:
+            return _models_cache
+
+        names = list(PROVIDERS)
+        async with httpx.AsyncClient() as client:
+            results = await asyncio.gather(
+                *(_fetch_provider_models(PROVIDERS[n], client) for n in names)
+            )
+
+        data, provider_status = [], {}
+        for name, (ids, error) in zip(names, results):
+            cfg = PROVIDERS[name]
+            previous = _models_cache["providers"].get(name, {})
+            if ids is None:
+                # Unreachable: keep the last good answer if we have one, else fall
+                # back to whatever the config declares. Never drop the provider —
+                # a down endpoint is still a routing target once it returns.
+                ids = previous.get("ids") or list(cfg.get("models", []))
+                status = "stale" if previous.get("ids") else "declared"
+            else:
+                status = "ok"
+            # Only keep ids this deployment would actually route *here*.
+            routable = []
+            for mid in ids:
+                try:
+                    if get_provider_for_model(mid)[0] == name:
+                        routable.append(mid)
+                except UnknownModelError:
+                    continue
+            provider_status[name] = {
+                "status": status,
+                "count": len(routable),
+                "prefixes": list(cfg.get("prefixes", [])),
+                "ids": routable,
+            }
+            if error:
+                provider_status[name]["error"] = error
+            data.extend({"id": mid, "object": "model", "owned_by": name,
+                         "provider": name} for mid in routable)
+
+        _models_cache.update({
+            "data": data,
+            "providers": provider_status,
+            "fetched_at": time.monotonic(),
+            "fetched_iso": datetime.utcnow().isoformat() + "Z",
+        })
+        return _models_cache
+
+
+@app.get("/v1/models")
+async def list_models(authorization: str = Header(None), refresh: bool = False):
+    """OpenAI-shaped list of everything this deployment can route.
+
+    Lets a client populate a model picker from the proxy instead of hardcoding a
+    list that goes stale independently — and makes the *deployment's* reachable
+    set visible, which is what the cirrus failover story needs (#102): the same
+    app pointed at a narrower deployment sees a narrower list, rather than
+    offering ids that will 400.
+    """
+    if not VALID_PROXY_KEYS:
+        raise HTTPException(status_code=500, detail="PROXY_KEY not configured on server")
+    client_key = (authorization or "").replace("Bearer ", "").strip()
+    if client_key not in VALID_PROXY_KEYS:
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
+
+    cache = await refresh_models(force=refresh)
+    return {
+        "object": "list",
+        "data": cache["data"],
+        # Non-standard, additive: OpenAI clients read `data` and ignore the rest.
+        # `prefixes` matters because a family like `claude-` is routable without
+        # any concrete id being enumerable.
+        "providers": {
+            name: {k: v for k, v in info.items() if k != "ids"}
+            for name, info in cache["providers"].items()
+        },
+        "fetched_at": cache["fetched_iso"],
+    }
+
 
 @app.get("/health")
 async def health_check():

@@ -97,6 +97,27 @@ See [Releases](README.md#releases) for how a release is cut.
   fleet-wide "DeepSeek V4 Flash (OpenRouter)" picker option.
 
 ### Added
+- **`GET /v1/models` — the proxy answers what it can route (#111).** Model ids churn and
+  every copy of the list goes stale independently: `config.json` (now emptied, #110), each
+  app's picker, the benchmark harness. Providers already enumerate themselves, so the
+  proxy now asks them and reports the union, OpenAI-shaped, annotated by provider.
+  The discovered set is **filtered through `get_provider_for_model` itself**, so the
+  listing cannot drift from routing — an id is advertised under a provider only if a real
+  request would go there. That also narrows a provider's much larger catalog to what this
+  deployment actually serves (OpenRouter returns 414 ids; 264 are routable here).
+  Unreachable providers degrade rather than vanish, keeping last-known-good ids or falling
+  back to declared config, with `status` reporting `ok`/`stale`/`declared` — verified live
+  against `gemma4-nimbus` and `qwen3-cirrus`, both 503 at the time. Anthropic needs
+  `x-api-key` plus a version header (its OpenAI-compat path answers `Invalid bearer
+  token`), so per-provider `models_auth` / `models_endpoint` overrides are supported.
+  Cached for `MODELS_CACHE_TTL` (default 300s), `?refresh=true` to force. Requires the
+  proxy key, like the chat endpoint. Live result: nrp 14, openrouter 264, anthropic 10
+  (including `claude-opus-5`/`claude-sonnet-5` — the very ids the old pinned config had
+  gone stale on), nimbus 1, two degraded — 291 routable total.
+  This restores the typo detection #110 gave up, lets apps stop hardcoding lists, and
+  makes deployment differences visible, which is what the cirrus failover story needs.
+
+### Added
 - **Guardrails against a silent one-sided logging outage (#39, follow-up to #37).** In #37
   a variable-shadowing bug made `log_response` throw inside `@_never_raises`, so every
   response was dropped from S3 for hours while requests logged normally — no request
