@@ -313,6 +313,54 @@ spec:
                           print(f"  ✗ session view failed for {day}: {type(e).__name__}: {e}")
                           failed_days.append(day)
 
+                  # -----------------------------------------------------------------
+                  # Sweep orphaned raw JSONL.
+                  #
+                  # The consolidate path deletes `{day}/` inline, once both rollups are
+                  # verified. Any day that does NOT go through that path keeps its raw
+                  # JSONL forever: it lands in `existing`, so it can never re-enter
+                  # `to_do`, and nothing else ever revisits it. The backfill loop above
+                  # is exactly such a path.
+                  #
+                  # Not hypothetical — the 2026-08 OOM incident stranded 2026-08-07/08/12:
+                  # 2,944 objects, 41.8 MiB, 65% of every raw object in the bucket, for
+                  # days whose rollups had been complete for a week.
+                  #
+                  # Deliberately a SWEEP over the raw tier rather than a delete bolted
+                  # onto the backfill loop. A backfill-local fix would prevent new
+                  # orphans but never clear existing ones: once a day has its session
+                  # view it drops out of `backfill_sessions` too, so the already-stranded
+                  # days would stay stranded forever. Sweeping the actual state is
+                  # self-healing and indifferent to how a day was orphaned.
+                  #
+                  # Same verify-before-destroy rule as everywhere else here: a day's raw
+                  # goes only when BOTH rollups are confirmed present. Today is never
+                  # touched — it is still being written.
+                  raw_days = set()
+                  for page in paginator.paginate(Bucket=BUCKET, Delimiter='/'):
+                      for pre in page.get('CommonPrefixes', []):
+                          d = pre['Prefix'].rstrip('/')
+                          if len(d) == 10 and d[4] == '-' and d[7] == '-':
+                              raw_days.add(d)
+                  swept = 0
+                  for day in sorted(raw_days - {today}):
+                      try:
+                          s3.head_object(Bucket=BUCKET, Key=f'consolidated/daily/{day}.parquet')
+                          s3.head_object(Bucket=BUCKET, Key=f'sessions/daily/{day}.parquet')
+                      except ClientError as e:
+                          if e.response['Error']['Code'] in ('404', 'NoSuchKey', 'NotFound'):
+                              continue      # not yet rolled up — leave it alone
+                          raise
+                      stale = []
+                      for page in paginator.paginate(Bucket=BUCKET, Prefix=f'{day}/'):
+                          for obj in page.get('Contents', []):
+                              stale.append({'Key': obj['Key']})
+                      for i in range(0, len(stale), 1000):
+                          s3.delete_objects(Bucket=BUCKET, Delete={'Objects': stale[i:i+1000]})
+                      swept += 1
+                      print(f"  🧹 {day}: rollups complete, {len(stale)} orphaned JSONL chunks removed")
+                  print(f"Orphaned raw day-prefixes swept: {swept}")
+
                   # Schema-upgrade pass: bring any legacy-schema consolidated daily file
                   # (current month — older months live in monthly files, upgraded by the
                   # monthly job) up to the wide schema. Self-healing no-op once uniform.

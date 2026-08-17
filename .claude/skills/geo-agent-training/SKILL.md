@@ -142,8 +142,9 @@ privileged key any more.
 
 > ⚠️ **Don't reach for `rclone … nrp:` or `LOG_S3_KEY`/`LOG_S3_SECRET`.** There is exactly
 > one credential for NRP bucket access and it carries **read/write/delete on every NRP
-> bucket** — far beyond what reading logs needs. It is now required only for *today's* raw
-> JSONL, which the mirror does not carry; for the last few minutes prefer `kubectl` above.
+> bucket** — far beyond what reading logs needs. Since #124 it is not needed for log
+> reading at all: the mirror carries today's raw JSONL too, refreshed hourly (~1h behind).
+> For fresher than that, prefer `kubectl` above.
 
 ## Step 2: Reconstruct Conversations
 
