@@ -35,7 +35,7 @@ not to point these manifests at a branch.
 |---|---|---|
 | Host | `open-llm-proxy.nrp-nautilus.io` | `llm-proxy.carlboettiger.info` |
 | Namespace | `biodiversity` | `llm-proxy` |
-| Providers | nrp ELLM, OpenRouter, Anthropic, nimbus, gemma4-nimbus, qwen3-cirrus | **OpenRouter + DSE-nimbus only** |
+| Providers | nrp ELLM, OpenRouter, Anthropic, nimbus, gemma4-nimbus, vllm-cirrus | **OpenRouter + DSE-nimbus only** |
 | Ingress / CORS | HAProxy annotations | Traefik `Middleware` CRD (`middleware.yaml`) |
 | Log store | NRP Ceph `s3://logs-open-llm-proxy` | in-cluster MinIO `s3://logs-open-llm-proxy` |
 | Log tiers | raw JSONL → daily Parquet → monthly Parquet + `sessions/**` | **raw JSONL only** (see below) |

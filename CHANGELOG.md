@@ -8,6 +8,20 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Changed
+- **`qwen3-cirrus` provider becomes `vllm-cirrus`, now serving `qwen3-8` (Qwen3.8 27B).**
+  The self-hosted cirrus vLLM host was re-pointed: `qwen3-cirrus.carlboettiger.info` no
+  longer resolves at all (so the `qwen3-6` id had been dead, failing at DNS rather than
+  with a useful error), and the endpoint now lives at `vllm-cirrus.carlboettiger.info`
+  serving model id `qwen3-8` under the *same* `NIMBUS_API_KEY`. Renamed the provider key
+  to the host rather than to a model, since this endpoint has now changed its weights
+  twice while the host stayed put — naming it `qwen3-N` guaranteed a rename per swap, and
+  the provider name is what lands in the `provider` log column. Kept
+  `thinking_models: {"qwen3-8": "enable_thinking"}` (Qwen3 honors the toggle) and an empty
+  `model_prefixes`, so the exact id `qwen3-8` wins over any vendor prefix and NRP's
+  `qwen3`/`qwen3-small` are untouched. Requires a pod restart to take effect (`config.json`
+  is git-synced at pod start).
+
 ### Added
 - **Per-session rollup tier — cross-app/cross-model stats as one `GROUP BY` (#51).**
   New `session-rollup/{daily,monthly}/` Parquet tier, one row per session, built by the
