@@ -304,10 +304,20 @@ spec:
                                   date_diff('ms', MIN(request_ts),
                                             MAX(COALESCE(response_ts, request_ts))) / 1000.0   AS wall_clock_s,
                                   count(*) FILTER (WHERE error IS NOT NULL)                    AS error_turns,
+                                  count(*) FILTER (WHERE response_ts IS NULL)                  AS unanswered_turns,
                                   -- Status describes how the session ENDED (the issue's
                                   -- "did it complete?"), so a recovered mid-session failure
                                   -- still reads `ok`; error_turns is what exposes it.
                                   CASE
+                                      -- Tested BEFORE 'ok', because a turn with no response
+                                      -- row has a NULL error and would otherwise read as a
+                                      -- success. It is the opposite: the request was logged
+                                      -- and nothing ever came back — proxy died, client hung
+                                      -- up, or one side of the pair was dropped, the
+                                      -- half-record failure #39/#121 exists for. Measured on
+                                      -- the corpus at 251 sessions, ~5% of everything that
+                                      -- would otherwise be labelled 'ok'.
+                                      WHEN any_value(response_ts) FILTER (WHERE desc_rn = 1) IS NULL THEN 'incomplete'
                                       WHEN any_value(error) FILTER (WHERE desc_rn = 1) IS NULL THEN 'ok'
                                       WHEN any_value(error) FILTER (WHERE desc_rn = 1) ILIKE '%timed out%' THEN 'timeout'
                                       WHEN any_value(error) FILTER (WHERE desc_rn = 1) ILIKE '%budget limit exceeded%'

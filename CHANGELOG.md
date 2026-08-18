@@ -13,13 +13,18 @@ See [Releases](README.md#releases) for how a release is cut.
   New `session-rollup/{daily,monthly}/` Parquet tier, one row per session, built by the
   same CronJobs that build the turn view and mirrored to rustfs alongside it. Carries
   `turns`, `tool_calls_total`, token sums, `cost_usd`, `llm_ms_total`, `wall_clock_s`,
-  `status` (`ok`/`timeout`/`error`/`budget_capped`), `final_answer`, and `app`/`run_tag`
+  `status` (`ok`/`timeout`/`error`/`budget_capped`/`incomplete`), `final_answer`, `app`/`run_tag`
   parsed from the origin. Answers "across apps and models, how many LLM calls did each
   question take, how long, how much did it cost, did it complete?" directly — the
   aggregation every benchmark previously hand-rolled in its own `build_report.py`. No new
   capture: it is a `GROUP BY session_key` over `sessions/**`, so it derives entirely from
   what is already logged, and both tiers backfill existing days.
-  Three things the raw aggregate would have got quietly wrong, handled explicitly:
+  Four things the raw aggregate would have got quietly wrong, handled explicitly:
+  **(0)** a final turn with no response row has a NULL error and so reads as success,
+  when it is the opposite — request logged, nothing ever returned; `status = 'incomplete'`
+  is tested before `ok` and catches 259 sessions, ~5% of the previously-`ok` set, 95% of
+  them real rather than synthetic-key artifacts, with `unanswered_turns` exposing the
+  same failure mid-session;
   **(1)** sessions with no `session_id` share an `anon:<hash>` key that merges every
   repeat of a question — one such pseudo-session spanned 15 days — so `session_key_synthetic`
   flags them for filtering rather than letting them skew averages; **(2)** only OpenRouter

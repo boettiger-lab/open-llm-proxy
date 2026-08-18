@@ -147,7 +147,8 @@ no new capture; everything here is already in the logs.
 | `llm_ms_total` | `BIGINT` | Sum of per-turn `latency_ms` — time actually spent in the model |
 | `wall_clock_s` | `DOUBLE` | Last activity − first activity. Exceeds `llm_ms_total` by however long the client spent thinking, running tools, or idle |
 | `error_turns` | `BIGINT` | Turns that carried an error. Non-zero with `status = 'ok'` means the session recovered |
-| `status` | `VARCHAR` | How the session **ended**: `ok` / `timeout` / `error` / `budget_capped` |
+| `unanswered_turns` | `BIGINT` | Turns with a request but **no response row at all** — the proxy died, the client hung up, or one side of the pair was dropped (#39/#121). Distinct from `error_turns`: an error *is* a response |
+| `status` | `VARCHAR` | How the session **ended**: `ok` / `timeout` / `error` / `budget_capped` / `incomplete`. `incomplete` means the last turn never got a response — measured at ~5% of what would otherwise read as `ok`, and 95% of those are real (non-synthetic) sessions, so do not treat it as noise. Anything finer than these five (provider 5xx vs 4xx, never-reached-provider vs rejected) is a `LIKE` on `final_error`, which is kept verbatim for exactly that |
 | `final_error` | `VARCHAR` | The last turn's error string, if any |
 | `final_answer` | `VARCHAR` | Last non-empty assistant content |
 | `started_at`, `finished_at` | `TIMESTAMPTZ` | Session span |
