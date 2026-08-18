@@ -9,6 +9,28 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Per-session rollup tier — cross-app/cross-model stats as one `GROUP BY` (#51).**
+  New `session-rollup/{daily,monthly}/` Parquet tier, one row per session, built by the
+  same CronJobs that build the turn view and mirrored to rustfs alongside it. Carries
+  `turns`, `tool_calls_total`, token sums, `cost_usd`, `llm_ms_total`, `wall_clock_s`,
+  `status` (`ok`/`timeout`/`error`/`budget_capped`), `final_answer`, and `app`/`run_tag`
+  parsed from the origin. Answers "across apps and models, how many LLM calls did each
+  question take, how long, how much did it cost, did it complete?" directly — the
+  aggregation every benchmark previously hand-rolled in its own `build_report.py`. No new
+  capture: it is a `GROUP BY session_key` over `sessions/**`, so it derives entirely from
+  what is already logged, and both tiers backfill existing days.
+  Three things the raw aggregate would have got quietly wrong, handled explicitly:
+  **(1)** sessions with no `session_id` share an `anon:<hash>` key that merges every
+  repeat of a question — one such pseudo-session spanned 15 days — so `session_key_synthetic`
+  flags them for filtering rather than letting them skew averages; **(2)** only OpenRouter
+  reports a per-call cost, so `cost_usd` is `NULL` rather than `0` when nothing reported one,
+  and `cost_turns` gives the coverage; **(3)** the monthly tier rebuilds from the month-wide
+  turn view instead of concatenating daily rollups, which would double-count the sessions
+  that cross UTC midnight (2,037 → 2,014 rows on 2026-08, turn and token totals unchanged).
+  Integer aggregates are pinned to `BIGINT` — `SUM()` widens to HUGEINT, which Parquet can
+  only store as `DOUBLE` — so the tier keeps one stable schema. The builder fills any column
+  a legacy turn view predates (e.g. `user_message_this_turn`, #89) with `NULL` instead of
+  failing the backfill on a binder error.
 - **Hourly raw-JSONL mirror — log reading no longer needs the NRP key at all (#124).**
   New `logs-mirror-raw-hourly` CronJob copies *today's* `YYYY-MM-DD/` prefix to the
   rustfs mirror every hour, cutting the scoped-credential lag from **3–27h to ≤1h**

@@ -132,8 +132,8 @@ done | sort
 ### Historical logs
 
 Covered by `./sync-logs.sh` above — it pulls the whole `logs-open-llm-proxy` bucket,
-including the `consolidated/**` and `sessions/**` rollups, so there is no separate
-backup step.
+including the `consolidated/**`, `sessions/**` and `session-rollup/**` tiers, so
+there is no separate backup step.
 
 `sync-logs.sh` reads the rustfs mirror with a **read-only, single-bucket** credential
 (Get/List only), resolved from the `rustfs-logs-read` Secret via `kubectl` if you don't

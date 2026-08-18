@@ -60,13 +60,14 @@ whenever the shared app is touched for other reasons:
    and cirrus has no `nrp` provider, so the lookup raises. It only affects
    typo'd/unrouted model names; correct ids are unaffected. (Fixing it properly
    means making the fallback provider configurable in the shared app.)
-2. **No Parquet consolidation.** The daily/monthly rollup and the `sessions/**`
-   per-turn view are implemented as ~550 lines of Python embedded in the NRP
+2. **No Parquet consolidation.** The daily/monthly rollup, the `sessions/**`
+   per-turn view and the `session-rollup/**` per-session tier are implemented as
+   ~650 lines of Python embedded in the NRP
    CronJob manifests, which cannot be reused without extracting them into the
    repo — an NRP-affecting change. So cirrus keeps **raw JSONL indefinitely**:
    nothing is lost, queries just get slower as volume grows, and the
-   query-ready session view isn't available. Revisit when that extraction
-   happens upstream.
+   query-ready session view and rollup aren't available. Revisit when that
+   extraction happens upstream.
 
 ## Deploy
 
