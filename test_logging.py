@@ -754,7 +754,7 @@ def test_exact_ids_are_not_claimed_by_another_providers_prefix():
     # Exact ids still win, so the private single-model endpoints keep their traffic.
     assert p.get_provider_for_model("qwen")[0] == "nimbus"
     assert p.get_provider_for_model("gemma4")[0] == "gemma4-nimbus"
-    assert p.get_provider_for_model("qwen3-6")[0] == "qwen3-cirrus"
+    assert p.get_provider_for_model("qwen3-8")[0] == "vllm-cirrus"
 
 
 def test_prefixes_still_route_vendor_families_and_floating_aliases():
