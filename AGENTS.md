@@ -67,6 +67,10 @@ SELECT * FROM read_ndjson_auto('/tmp/open-llm-proxy-logs/YYYY-MM-DD/*.jsonl',
 
 **Session view** (`s3://logs-open-llm-proxy/sessions/**/*.parquet`): one row per *turn*, request already joined to its response, ordered by `turn_idx` within `session_key`. This is the query-ready artifact — "show me every turn of session X in order, with tool calls and results" is one flat `SELECT`, no manual interleaving. Disjoint from the `consolidated/**` glob. See [LOGGING.md](LOGGING.md#reconstructing-a-conversation).
 
+**Session rollup** (`s3://logs-open-llm-proxy/session-rollup/**/*.parquet`): one row per *session* — `turns`, `tool_calls_total`, token sums, `cost_usd`, `wall_clock_s`, `status` (`ok`/`timeout`/`error`/`budget_capped`/`incomplete`), `final_answer`, plus `app`/`run_tag` parsed from the origin. Reach for this for anything cross-app or cross-model ("calls per question", "cost per model", "completion rate") — it is a single `GROUP BY` instead of a bespoke report script. Disjoint from both globs above.
+
+> ⚠️ Always filter `WHERE NOT session_key_synthetic` before averaging. Sessions with no `session_id` fall back to an `anon:<hash>` key that merges every repeat of the same question, which inflates `turns` and can stretch `wall_clock_s` over weeks. Near-universal before June 2026; ~0.7% of August 2026 sessions.
+
 For automation, one-shot CI queries, or reads from inside a pod, query directly with the **scoped read-only credential** in the `rustfs-logs-read` Secret — Get/List on this one bucket, nothing else. See [LOGGING.md](LOGGING.md#direct-s3-one-shot-queries-automation-or-inside-nrp-pods) for the DuckDB snippet.
 
 > ⚠️ `LOG_S3_KEY` / `LOG_S3_SECRET` are **the general NRP credentials** — read/write/delete on every bucket, and there is only one. **Reading logs does not need them at all.** `./sync-logs.sh` and the direct-S3 snippet use the scoped key (#113), and since #124 the mirror carries *today's* raw JSONL too, refreshed hourly — so the whole corpus is reachable with the scoped key. Reach for the general credentials only to write to NRP, or to touch a bucket other than this one.

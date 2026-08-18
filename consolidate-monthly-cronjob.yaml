@@ -103,8 +103,16 @@ spec:
                           if obj['Key'].endswith('.parquet'):
                               session_daily_keys.append(obj['Key'])
 
+                  # Daily session-rollup files for that month (deleted after rollup)
+                  rollup_daily_keys = []
+                  for page in paginator.paginate(Bucket=BUCKET, Prefix=f'session-rollup/daily/{prev_month}-'):
+                      for obj in page.get('Contents', []):
+                          if obj['Key'].endswith('.parquet'):
+                              rollup_daily_keys.append(obj['Key'])
+
                   monthly_key         = f'consolidated/monthly/{prev_month}.parquet'
                   session_monthly_key = f'sessions/monthly/{prev_month}.parquet'
+                  rollup_monthly_key  = f'session-rollup/monthly/{prev_month}.parquet'
 
                   con = duckdb.connect()
                   # In a container DuckDB sees every node core and spawns that many
@@ -194,6 +202,132 @@ spec:
                           ) TO '{dest}' (FORMAT PARQUET, COMPRESSION zstd)
                       """)
 
+                  # Materialize the per-SESSION rollup (#51) from a per-turn session
+                  # view: one row per session, with the mechanical stats every
+                  # experiment and monitoring question re-derives by hand today
+                  # (calls-per-question, cost-per-question, completion-rate-per-model).
+                  # Built from `sessions/**`, not `consolidated/**` — the turn view has
+                  # already done the request/response join and the session keying, so
+                  # this is a plain GROUP BY and stays cheap.
+                  #
+                  # Session-level identity columns (origin/app/model/provider/client)
+                  # are taken from the FIRST turn: for an experiment that is "what the
+                  # run was launched with". `models_used` exposes when a session did not
+                  # stay on one model (~3% do not, via fallback ladders), so a
+                  # single-model GROUP BY cannot silently mis-attribute one.
+                  #
+                  # Token/cost columns sum across ALL turns. `cost` is only reported by
+                  # OpenRouter; NRP/nimbus are self-hosted and Anthropic-direct does not
+                  # return it, so cost_usd is NULL rather than 0 where nothing reported
+                  # one — "no price data" must not read as "free". `cost_turns` gives the
+                  # coverage, so partial-cost sessions are detectable.
+                  # Columns the rollup reads out of the turn view. That view has
+                  # gained columns over time (user_message_this_turn in #89), so a
+                  # legacy monthly view can lack one and the build dies on a bare
+                  # binder error mid-backfill. Substitute NULL for whatever is absent
+                  # instead of special-casing each column, so the next turn-view
+                  # addition does not re-break this the same way.
+                  ROLLUP_INPUTS = ('session_key', 'session_id', 'turn_idx', 'request_ts',
+                                   'response_ts', 'origin', 'client', 'provider', 'model',
+                                   'user_question', 'user_message_this_turn',
+                                   'assistant_content', 'tool_calls', 'latency_ms',
+                                   'tokens', 'error')
+
+                  def build_session_rollup(src, dest):
+                      have = {r[0] for r in con.execute(
+                          f"DESCRIBE SELECT * FROM read_parquet('{src}')").fetchall()}
+                      cols = ', '.join(c if c in have else f'NULL AS {c}' for c in ROLLUP_INPUTS)
+                      missing = [c for c in ROLLUP_INPUTS if c not in have]
+                      if missing:
+                          print(f"  ℹ️  {src}: turn view predates {missing} — filled as NULL")
+                      con.execute(f"""
+                          COPY (
+                              WITH t AS (
+                                  SELECT *,
+                                      regexp_extract(origin, '^https?://([^./:]+)', 1)              AS app,
+                                      NULLIF(regexp_extract(origin, '^https?://[^/]+(/.*)$', 1),'') AS run_tag,
+                                      TRY_CAST(json_extract_string(tokens,'$.prompt_tokens')     AS BIGINT) AS pt,
+                                      TRY_CAST(json_extract_string(tokens,'$.completion_tokens') AS BIGINT) AS ct,
+                                      TRY_CAST(json_extract_string(tokens,'$.total_tokens')      AS BIGINT) AS tt,
+                                      TRY_CAST(json_extract_string(tokens,'$.prompt_tokens_details.cached_tokens') AS BIGINT) AS cached,
+                                      TRY_CAST(json_extract_string(tokens,'$.cost')              AS DOUBLE) AS cost,
+                                      CASE WHEN tool_calls IS NULL THEN 0
+                                           ELSE COALESCE(json_array_length(tool_calls), 0) END AS n_tool_calls
+                                  FROM (SELECT {cols} FROM read_parquet('{src}'))
+                              ),
+                              ranked AS (
+                                  SELECT *,
+                                      ROW_NUMBER() OVER (PARTITION BY session_key ORDER BY request_ts, turn_idx)           AS asc_rn,
+                                      ROW_NUMBER() OVER (PARTITION BY session_key ORDER BY request_ts DESC, turn_idx DESC) AS desc_rn,
+                                      ROW_NUMBER() OVER (PARTITION BY session_key,
+                                                                      (assistant_content IS NOT NULL AND assistant_content <> '')
+                                                         ORDER BY request_ts DESC, turn_idx DESC)                          AS ans_rn
+                                  FROM t
+                              )
+                              SELECT
+                                  session_key,
+                                  any_value(session_id)                                        AS session_id,
+                                  -- The turn view keys anonymous traffic as anon:<hash of
+                                  -- origin|user_question>, which groups EVERY repeat of the
+                                  -- same question into one pseudo-session. Harmless per-turn;
+                                  -- at session grain it inflates `turns` and can stretch
+                                  -- wall_clock_s across months. Flagged, not silently mixed in.
+                                  session_key LIKE 'anon:%'                                    AS session_key_synthetic,
+                                  any_value(origin)   FILTER (WHERE asc_rn = 1)                AS origin,
+                                  any_value(app)      FILTER (WHERE asc_rn = 1)                AS app,
+                                  any_value(run_tag)  FILTER (WHERE asc_rn = 1)                AS run_tag,
+                                  any_value(client)   FILTER (WHERE asc_rn = 1)                AS client,
+                                  any_value(model)    FILTER (WHERE asc_rn = 1)                AS model,
+                                  any_value(provider) FILTER (WHERE asc_rn = 1)                AS provider,
+                                  count(DISTINCT model)                                        AS models_used,
+                                  any_value(COALESCE(user_message_this_turn, user_question))
+                                                      FILTER (WHERE asc_rn = 1)                AS question,
+                                  count(*)                                                     AS turns,
+                                  CAST(SUM(n_tool_calls) AS BIGINT)                            AS tool_calls_total,
+                                  CAST(SUM(pt) AS BIGINT)                                      AS prompt_tokens,
+                                  CAST(SUM(ct) AS BIGINT)                                      AS completion_tokens,
+                                  CAST(SUM(cached) AS BIGINT)                                  AS cached_tokens,
+                                  CAST(SUM(tt) AS BIGINT)                                      AS total_tokens,
+                                  SUM(cost)                                                    AS cost_usd,
+                                  count(*) FILTER (WHERE cost IS NOT NULL)                     AS cost_turns,
+                                  CAST(SUM(latency_ms) AS BIGINT)                              AS llm_ms_total,
+                                  date_diff('ms', MIN(request_ts),
+                                            MAX(COALESCE(response_ts, request_ts))) / 1000.0   AS wall_clock_s,
+                                  count(*) FILTER (WHERE error IS NOT NULL)                    AS error_turns,
+                                  count(*) FILTER (WHERE response_ts IS NULL)                  AS unanswered_turns,
+                                  -- Status describes how the session ENDED (the issue's
+                                  -- "did it complete?"), so a recovered mid-session failure
+                                  -- still reads `ok`; error_turns is what exposes it.
+                                  CASE
+                                      -- Tested BEFORE 'ok', because a turn with no response
+                                      -- row has a NULL error and would otherwise read as a
+                                      -- success. It is the opposite: the request was logged
+                                      -- and nothing ever came back — proxy died, client hung
+                                      -- up, or one side of the pair was dropped, the
+                                      -- half-record failure #39/#121 exists for. Measured on
+                                      -- the corpus at 251 sessions, ~5% of everything that
+                                      -- would otherwise be labelled 'ok'.
+                                      WHEN any_value(response_ts) FILTER (WHERE desc_rn = 1) IS NULL THEN 'incomplete'
+                                      WHEN any_value(error) FILTER (WHERE desc_rn = 1) IS NULL THEN 'ok'
+                                      WHEN any_value(error) FILTER (WHERE desc_rn = 1) ILIKE '%timed out%' THEN 'timeout'
+                                      WHEN any_value(error) FILTER (WHERE desc_rn = 1) ILIKE '%budget limit exceeded%'
+                                        OR any_value(error) FILTER (WHERE desc_rn = 1) ILIKE '%credit balance is too low%'
+                                        OR any_value(error) FILTER (WHERE desc_rn = 1) ILIKE '%requires more credits%' THEN 'budget_capped'
+                                      ELSE 'error'
+                                  END                                                          AS status,
+                                  any_value(error) FILTER (WHERE desc_rn = 1)                  AS final_error,
+                                  any_value(assistant_content) FILTER (
+                                      WHERE ans_rn = 1
+                                        AND assistant_content IS NOT NULL
+                                        AND assistant_content <> '')                           AS final_answer,
+                                  MIN(request_ts)                                              AS started_at,
+                                  MAX(COALESCE(response_ts, request_ts))                       AS finished_at
+                              FROM ranked
+                              GROUP BY session_key
+                              ORDER BY started_at
+                          ) TO '{dest}' (FORMAT PARQUET, COMPRESSION zstd)
+                      """)
+
                   # Upgrade a legacy (entry-only, 5-column) consolidated Parquet file to
                   # the flattened wide schema in place, from its own `entry` blob.
                   # Lossless and idempotent (no-op once it already has the wide schema).
@@ -254,12 +388,23 @@ spec:
                                          f's3://{BUCKET}/{session_monthly_key}')
                       s3.head_object(Bucket=BUCKET, Key=session_monthly_key)
 
-                      delete_batch = [{'Key': k} for k in daily_keys + session_daily_keys]
+                      # Rebuild the per-session rollup from the whole-month turn view,
+                      # not by concatenating the daily rollups: a session spanning UTC
+                      # midnight appears in two daily files, and summing those rows
+                      # would double-count it. Rebuilding from the month-wide view
+                      # collapses it back to one row, the same reason turn_idx is
+                      # recomputed here.
+                      build_session_rollup(f's3://{BUCKET}/{session_monthly_key}',
+                                           f's3://{BUCKET}/{rollup_monthly_key}')
+                      s3.head_object(Bucket=BUCKET, Key=rollup_monthly_key)
+
+                      delete_batch = [{'Key': k} for k in daily_keys + session_daily_keys + rollup_daily_keys]
                       for i in range(0, len(delete_batch), 1000):
                           s3.delete_objects(Bucket=BUCKET, Delete={'Objects': delete_batch[i:i+1000]})
                       print(f"✓ Rolled up {len(daily_keys)} daily files → {monthly_key}; "
                             f"session view → {session_monthly_key}; "
-                            f"{len(daily_keys) + len(session_daily_keys)} daily files removed.")
+                            f"session rollup → {rollup_monthly_key}; "
+                            f"{len(delete_batch)} daily files removed.")
 
                   def _months(prefix):
                       out = set()
@@ -287,6 +432,14 @@ spec:
                   for m in backfill:
                       build_session_view(f's3://{BUCKET}/consolidated/monthly/{m}.parquet',
                                          f's3://{BUCKET}/sessions/monthly/{m}.parquet')
+
+                  # Backfill monthly rollups for any month that has a turn view but no
+                  # rollup — including the months just backfilled above.
+                  backfill_rollup = sorted(_months('sessions/monthly/') - _months('session-rollup/monthly/'))
+                  print(f"Monthly session rollups to backfill ({len(backfill_rollup)}): {backfill_rollup}")
+                  for m in backfill_rollup:
+                      build_session_rollup(f's3://{BUCKET}/sessions/monthly/{m}.parquet',
+                                           f's3://{BUCKET}/session-rollup/monthly/{m}.parquet')
                   # -----------------------------------------------------------------
                   # Mirror the query-ready tiers to rustfs (#116).
                   #
@@ -307,7 +460,7 @@ spec:
                   # though — a mirror that quietly stops is a stale mirror nobody
                   # notices, and the reader would keep serving yesterday's answers.
                   # -----------------------------------------------------------------
-                  def mirror_to_rustfs(prefixes=('consolidated/', 'sessions/')):
+                  def mirror_to_rustfs(prefixes=('consolidated/', 'sessions/', 'session-rollup/')):
                       key = os.environ.get('RUSTFS_KEY')
                       if not key:
                           print("ℹ️  RUSTFS_KEY not set — skipping rustfs mirror (#116)")

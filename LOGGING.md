@@ -10,7 +10,8 @@ Logs are written to two places:
 > This document describes the **NRP** deployment (bucket on NRP Ceph). The cirrus
 > deployment writes the same record format to a same-named bucket on the
 > in-cluster MinIO mirror, but has **only the raw JSONL tier** — the Parquet
-> rollup and `sessions/**` view below are NRP-only for now. See
+> rollup, `sessions/**` view and `session-rollup/**` tier below are NRP-only for
+> now. See
 > [cirrus/README.md](cirrus/README.md).
 
 ### S3 layout (tiered rollup)
@@ -37,6 +38,12 @@ logs-open-llm-proxy/
 │   │   └── 2026-04-16.parquet
 │   └── monthly/
 │       └── 2026-03.parquet
+└── session-rollup/                    ← one row per *session* (mechanical stats)
+    ├── daily/
+    │   ├── 2026-04-15.parquet
+    │   └── 2026-04-16.parquet
+    └── monthly/
+        └── 2026-03.parquet
 ```
 
 | Tier | Format | When it gets written | When it gets deleted |
@@ -46,6 +53,8 @@ logs-open-llm-proxy/
 | Monthly (`consolidated/monthly/YYYY-MM.parquet`) | Parquet (zstd) | Monthly cron on day 2 | Never (long-term archive) |
 | Session daily (`sessions/daily/YYYY-MM-DD.parquet`) | Parquet (zstd) | Daily cron, derived from that day's consolidated file | Monthly rollup on day 2 |
 | Session monthly (`sessions/monthly/YYYY-MM.parquet`) | Parquet (zstd) | Monthly cron on day 2 | Never |
+| Rollup daily (`session-rollup/daily/YYYY-MM-DD.parquet`) | Parquet (zstd) | Daily cron, derived from that day's session view | Monthly rollup on day 2 |
+| Rollup monthly (`session-rollup/monthly/YYYY-MM.parquet`) | Parquet (zstd) | Monthly cron on day 2 | Never |
 
 The **consolidated Parquet schema** (identical across daily and monthly tiers). The
 hot fields are flattened to typed columns; the raw JSON is kept verbatim in `entry`
@@ -111,9 +120,71 @@ request/response interleaving:
 | `has_tool_calls`, `has_content` | `BOOLEAN` | |
 | `latency_ms`, `tokens`, `error` | `BIGINT`/`JSON`/`VARCHAR` | |
 
-> Note: the `consolidated/**` and `sessions/**` globs are disjoint top-level
-> prefixes — a `read_parquet('…/consolidated/**/*.parquet')` never picks up session
-> rows, so existing queries are unaffected.
+> Note: `consolidated/**`, `sessions/**` and `session-rollup/**` are disjoint
+> top-level prefixes — a `read_parquet('…/consolidated/**/*.parquet')` never picks up
+> session or rollup rows, so existing queries are unaffected.
+
+The **session rollup schema** (`session-rollup/**`) — one row per *session* (#51).
+Where `sessions/**` answers "what happened turn by turn", this answers "across apps
+and models, how many LLM calls did each question take, how long, how much did it
+cost, did it complete?" — the aggregation every benchmark used to hand-roll in its
+own `build_report.py`. It is a `GROUP BY session_key` over the turn view, so it adds
+no new capture; everything here is already in the logs.
+
+| Column | Type | Notes |
+|---|---|---|
+| `session_key` | `VARCHAR` | Same key as the turn view |
+| `session_id` | `VARCHAR` | Raw id (`null` when the heuristic key was used) |
+| `session_key_synthetic` | `BOOLEAN` | **Read this before averaging anything.** `true` when the key is the `anon:<hash>` fallback, which groups *every* repeat of the same question from the same origin into one pseudo-session. Harmless per-turn; at session grain it inflates `turns` and stretches `wall_clock_s` across weeks. Filter with `WHERE NOT session_key_synthetic` for any per-session statistic. Near-universal before June 2026, ~0.7% of August 2026 sessions. |
+| `origin`, `app`, `run_tag`, `client`, `model`, `provider` | `VARCHAR` | Taken from the **first** turn — for an experiment, "what the run was launched with". `app` is the origin host's first label (`tpl-ca`); `run_tag` is the origin path (`/agent_runner_bench2`), which is how matrix runs are tagged apart from real traffic. |
+| `models_used` | `BIGINT` | Distinct models across the session. `> 1` means a fallback ladder switched mid-session (~3% of sessions), so the single `model` column above does not tell the whole story. |
+| `question` | `VARCHAR` | The first turn's prompt |
+| `turns` | `BIGINT` | LLM calls in the session |
+| `tool_calls_total` | `BIGINT` | Tool calls summed across turns |
+| `prompt_tokens`, `completion_tokens`, `cached_tokens`, `total_tokens` | `BIGINT` | Summed across **all** turns |
+| `cost_usd` | `DOUBLE` | Summed across turns. **Only OpenRouter reports a cost** — NRP and nimbus are self-hosted and Anthropic-direct does not return one — so this is `NULL`, not `0`, where nothing reported one: "no price data" must not read as "free". |
+| `cost_turns` | `BIGINT` | How many turns carried a cost, so partial coverage is detectable |
+| `llm_ms_total` | `BIGINT` | Sum of per-turn `latency_ms` — time actually spent in the model |
+| `wall_clock_s` | `DOUBLE` | Last activity − first activity. Exceeds `llm_ms_total` by however long the client spent thinking, running tools, or idle |
+| `error_turns` | `BIGINT` | Turns that carried an error. Non-zero with `status = 'ok'` means the session recovered |
+| `unanswered_turns` | `BIGINT` | Turns with a request but **no response row at all** — the proxy died, the client hung up, or one side of the pair was dropped (#39/#121). Distinct from `error_turns`: an error *is* a response |
+| `status` | `VARCHAR` | How the session **ended**: `ok` / `timeout` / `error` / `budget_capped` / `incomplete`. `incomplete` means the last turn never got a response — measured at ~5% of what would otherwise read as `ok`, and 95% of those are real (non-synthetic) sessions, so do not treat it as noise. Anything finer than these five (provider 5xx vs 4xx, never-reached-provider vs rejected) is a `LIKE` on `final_error`, which is kept verbatim for exactly that |
+| `final_error` | `VARCHAR` | The last turn's error string, if any |
+| `final_answer` | `VARCHAR` | Last non-empty assistant content |
+| `started_at`, `finished_at` | `TIMESTAMPTZ` | Session span |
+
+Two caveats worth knowing before trusting a number:
+
+- **Daily rollups index within-day**, like the turn view. A session crossing UTC
+  midnight appears as two rows across two daily files; the monthly job rebuilds the
+  rollup from the whole-month turn view, collapsing it back to one. (Measured on
+  2026-08: 2,037 daily rows → 2,014 month-wide, with turn and token totals
+  identical.) Summing `turns` across a mixed daily glob is always correct; counting
+  *sessions* is only exact within one tier.
+- **`provider` labels the first turn, `cost_usd` sums all of them.** A session that
+  starts on NRP and falls back to OpenRouter is attributed to `nrp` but carries the
+  OpenRouter cost. `models_used > 1` is the flag for it.
+
+```sql
+-- Cross-model stats: calls, latency, cost and completion rate per question.
+SELECT model,
+       count(*)                       AS sessions,
+       round(avg(turns), 1)           AS calls_per_question,
+       round(avg(wall_clock_s), 1)    AS avg_seconds,
+       round(sum(cost_usd), 2)        AS usd,
+       round(100.0 * count(*) FILTER (WHERE status = 'ok') / count(*), 1) AS pct_ok
+FROM read_parquet('/tmp/open-llm-proxy-logs/session-rollup/**/*.parquet')
+WHERE NOT session_key_synthetic
+  AND started_at > now() - INTERVAL 14 DAYS
+GROUP BY 1 ORDER BY sessions DESC;
+
+-- One experiment's grid, isolated by the origin tag the matrix run used.
+SELECT run_tag, model, count(*) AS sessions, round(avg(turns),1) AS calls,
+       count(*) FILTER (WHERE status <> 'ok') AS failures
+FROM read_parquet('/tmp/open-llm-proxy-logs/session-rollup/**/*.parquet')
+WHERE run_tag IS NOT NULL
+GROUP BY 1, 2 ORDER BY run_tag, sessions DESC;
+```
 
 ## Access pattern
 
