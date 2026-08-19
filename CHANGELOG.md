@@ -8,6 +8,29 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Fixed
+- **headless: undici's 300s `headersTimeout` no longer caps a slow LLM call (#128).**
+  Node's `fetch` is undici, and undici enforces its own `headersTimeout` (default **300s**)
+  that `AbortSignal` does not override. The runner posts *non-streaming* completions, so no
+  response headers arrive until generation finishes — making 300s an undeclared ceiling on
+  total per-call wall time, well under `--llm-timeout`'s 600s default. Worse, it failed into
+  the wrong error class: undici raises a bare `fetch failed`, geo-agent's
+  `Agent._attemptLLMCall` reads that as a transient *network* error and retries on the tight
+  90s floor rather than the full budget — re-entering the #61 pathology by another route, so
+  a legitimately-slow call crashed the run and a matrix cell was lost to what looked like a
+  network blip. `run.js` now installs an undici dispatcher with `headersTimeout`/`bodyTimeout`
+  of `0`, leaving the agent's own budget (and the wrapper's `AbortSignal` backstop) as the
+  only deadlines; `connectTimeout` stays at 30s, since a TCP connect that never completes is
+  a real stall rather than slow generation. The startup banner now reports the effective
+  ceiling (`undici_headers_timeout=disabled`) and warns loudly if the install did not take,
+  so a future undici/Node change is visible instead of silently restoring the cap. Adds
+  `undici` to `headless/package.json` (Node embeds it, but the bare specifier is not
+  importable without it; zero transitive deps). Verified end-to-end on Node 22 and 24 — the
+  matrix Job image — including that npm-undici's `setGlobalDispatcher` does govern Node's
+  global `fetch` despite being a separate module instance (they rendezvous on the
+  `undici.globalDispatcher.1` global symbol). Next ceiling up for cirrus-routed runs remains
+  Traefik's `responseHeaderTimeout: 600s`; streaming (#129) removes the whole class.
+
 ### Changed
 - **`qwen3-cirrus` provider becomes `vllm-cirrus`, now serving `qwen3-8` (Qwen3.8 27B).**
   The self-hosted cirrus vLLM host was re-pointed: `qwen3-cirrus.carlboettiger.info` no
