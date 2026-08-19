@@ -956,6 +956,10 @@ def test_unroutable_model_returns_400_and_is_logged():
     responses = [e for e in p._log_buffer if e.get("type") == "response"]
     assert len(responses) == 1 and responses[0]["provider"] == "unrouted"
     assert "glm-5" in responses[0]["error"]
+    # Same requirement as the streaming rejection: identity is resolved before the
+    # early return, so the miss is attributable to a caller rather than anonymous.
+    assert responses[0]["origin"] == "https://app"
+    assert responses[0]["request_id"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -996,6 +1000,10 @@ def test_stream_true_returns_400_and_is_logged():
     assert len(responses) == 1
     assert responses[0]["provider"] == "streaming-unsupported"
     assert "Streaming is not supported" in responses[0]["error"]
+    # Traceable to the app that asked: a rejection row with a null origin cannot
+    # answer "who is asking for streaming?", which is why it is logged at all.
+    assert responses[0]["origin"] == "https://app"
+    assert responses[0]["request_id"] is not None
     # Rejected before routing, so no request row was emitted.
     assert [e for e in p._log_buffer if e.get("type") == "request"] == []
 

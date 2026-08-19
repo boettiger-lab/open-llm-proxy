@@ -793,6 +793,18 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if not client_key or client_key not in VALID_PROXY_KEYS:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
 
+    # Caller identity, derived before any early return: the three rejections below
+    # (streaming, unroutable model, missing provider key) each log a response row,
+    # and a row without `origin` cannot be traced to the app that sent it — which is
+    # the whole point of logging the rejection. This used to be computed after
+    # routing, so those rows carried "origin": null.
+    request_id = uuid.uuid4().hex[:8]
+    origin = http_request.headers.get("origin") or http_request.headers.get("referer")
+    # Session id: prefer the OpenAI `user` body field (geo-agent already sends its
+    # per-session UUID there); fall back to the X-Session-Id header for other clients.
+    session_id = request.user or http_request.headers.get("x-session-id")
+    client = http_request.headers.get("x-client")   # e.g. "geo-agent/v3.13.1"; null until clients send it
+
     # Streaming is not supported, and saying so is better than pretending (#129).
     # Logged against a synthetic provider — as with unrouted models — because the
     # request never reaches log_request, and "who is asking for streaming?" is
@@ -802,7 +814,8 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             "Streaming is not supported by this proxy: it buffers each completion to "
             "log the request/response pair. Omit `stream` or set it to false."
         )
-        log_response("streaming-unsupported", request.model, {}, 0, error=error_msg)
+        log_response("streaming-unsupported", request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client)
         raise HTTPException(status_code=400, detail=error_msg)
 
     # Determine provider based on model
@@ -812,23 +825,19 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         # Client asked for something this deployment doesn't serve. Log it against a
         # synthetic provider so the miss is visible in the logs (the request never
         # reaches log_request, which runs after routing succeeds).
-        log_response("unrouted", request.model, {}, 0, error=str(e))
+        log_response("unrouted", request.model, {}, 0, error=str(e),
+                     origin=origin, request_id=request_id, session_id=session_id, client=client)
         raise HTTPException(status_code=400, detail=str(e))
     endpoint = provider_config["endpoint"]
     api_key = provider_config["api_key"]
     
     if not api_key:
         error_msg = f"{provider_name.upper()} API key not configured on server"
-        log_response(provider_name, request.model, {}, 0, error=error_msg)
+        log_response(provider_name, request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client)
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    request_id = uuid.uuid4().hex[:8]
-    origin = http_request.headers.get("origin") or http_request.headers.get("referer")
-    # Session id: prefer the OpenAI `user` body field (geo-agent already sends its
-    # per-session UUID there); fall back to the X-Session-Id header for other clients.
-    session_id = request.user or http_request.headers.get("x-session-id")
-    client = http_request.headers.get("x-client")   # e.g. "geo-agent/v3.13.1"; null until clients send it
     log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, enable_thinking=request.enable_thinking)
     
     # Prepare request to LLM provider
