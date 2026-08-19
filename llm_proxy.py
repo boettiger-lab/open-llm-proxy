@@ -743,6 +743,30 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
     status = "✗" if error else "✓"
     _log(f"{status} RESPONSE", log_entry)
 
+# Per-request budget for the upstream provider call. 20 minutes (#135), raised
+# from a hardcoded 600s: 408 requests died at *exactly* ~600s in the last 60 days
+# (nrp 259, nimbus 143, vllm-cirrus 6), which is this timeout, not the provider.
+#
+# Only `read` gets the long budget. httpx's `read` is the max wait for a *chunk*
+# of data, so for a self-hosted vLLM that emits nothing until generation
+# completes it behaves as a hard total cap — which is why those 408 died here,
+# while OpenRouter (which sends keepalive bytes that keep resetting the read
+# clock) has logged successes out past 1700s. connect/write/pool stay short: a
+# TCP connect that takes 20 minutes is a broken path, not a slow model.
+#
+# NOTE the ceiling is only as high as the lowest hop. For nimbus- and
+# cirrus-backed models, Traefik's `responseHeaderTimeout: 600s` still binds
+# (boettiger-lab/k8s#42) until that is raised too.
+_UPSTREAM_READ_TIMEOUT = float(os.getenv("UPSTREAM_TIMEOUT_SECONDS", "1200"))
+_UPSTREAM_TIMEOUT = httpx.Timeout(
+    _UPSTREAM_READ_TIMEOUT, connect=30.0, write=30.0, pool=30.0
+)
+
+# The app-side nginx sidecar's proxy_read_timeout, which browser callers sit
+# behind (#82). Not a cap this proxy controls — named so the warning below reads
+# as "past what the browser will wait for" rather than a bare literal.
+_CLIENT_NGINX_READ_TIMEOUT_MS = 300_000
+
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]  # Accept any message format from OpenAI API
     tools: Optional[List[Dict[str, Any]]] = None
@@ -908,7 +932,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     # `client` is the X-Client header value passed to log_response() below; an
     # `as client` here shadowed it with the AsyncClient object, so json.dumps in
     # log_response raised and every response was silently dropped from S3 (#37).
-    async with httpx.AsyncClient(timeout=600.0) as http_client:
+    async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT) as http_client:
         try:
             response = await http_client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
@@ -930,7 +954,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # so any turn slower than that already returned an nginx 502 to the
             # browser even though *we* eventually succeed. Flag it so a logged 200
             # that the user experienced as a 502 is greppable in pod logs (#82).
-            if latency_ms > 300_000:
+            if latency_ms > _CLIENT_NGINX_READ_TIMEOUT_MS:
                 print(f"⚠️  Slow completion: {latency_ms}ms exceeds the 300s client-side "
                       f"nginx read timeout (model={request.model}, request_id={request_id}) — "
                       f"the browser likely already received an nginx 502 for this turn",

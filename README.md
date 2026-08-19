@@ -83,6 +83,21 @@ itself eventually succeeds — those are flagged in pod logs as `⚠️ Slow com
 The headless runner has the same exposure and documents its own ceiling stack in
 [headless/README.md](headless/README.md).
 
+The proxy's own budget for the upstream call is **`UPSTREAM_TIMEOUT_SECONDS`, default
+1200** (20 minutes, #135). It was a hardcoded 600s, and that was the hop that actually
+bit: over 60 days, 408 requests died at *exactly* ~600s (`nrp` 259, `nimbus` 143,
+`vllm-cirrus` 6). Only the `read` phase gets the long budget — connect/write/pool stay at
+30s, since a 20-minute TCP connect is a broken path, not a slow model.
+
+One asymmetry worth knowing: httpx's `read` timeout bounds the wait for a *chunk*, not the
+whole response. A self-hosted vLLM emits nothing until generation completes, so the budget
+acts as a hard total cap there; OpenRouter sends keepalive bytes that keep resetting it,
+which is why only OpenRouter has logged successes past 1700s.
+
+Raising it does not lift every ceiling — the lowest hop wins. For nimbus- and
+cirrus-backed models, Traefik's `responseHeaderTimeout: 600s` in `boettiger-lab/k8s` is
+still the binding cap (boettiger-lab/k8s#42).
+
 ## Logging
 
 Every LLM call produces two JSONL log entries (a `request` on arrival and a `response` on completion) linked by `request_id`.

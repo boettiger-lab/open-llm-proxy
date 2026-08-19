@@ -963,6 +963,32 @@ def test_unroutable_model_returns_400_and_is_logged():
 
 
 # ---------------------------------------------------------------------------
+# Upstream call budget (#135)
+# ---------------------------------------------------------------------------
+
+def test_upstream_timeout_defaults_to_20min_and_only_read_is_long():
+    """The long budget must apply to `read` ONLY. Reverting to a bare
+    `timeout=1200.0` would also give connect/write/pool 20 minutes, so a broken
+    network path would hang for 20 minutes instead of failing in 30s."""
+    p = _reload(PROXY_KEY="testkey")
+
+    assert p._UPSTREAM_READ_TIMEOUT == 1200.0
+    t = p._UPSTREAM_TIMEOUT
+    assert t.read == 1200.0
+    assert t.connect == 30.0, "a 20-minute TCP connect is a broken path, not a slow model"
+    assert t.write == 30.0
+    assert t.pool == 30.0
+
+
+def test_upstream_timeout_is_env_overridable():
+    p = _reload(PROXY_KEY="testkey", UPSTREAM_TIMEOUT_SECONDS="1800")
+    assert p._UPSTREAM_READ_TIMEOUT == 1800.0
+    assert p._UPSTREAM_TIMEOUT.read == 1800.0
+    # Overriding the budget must not lengthen connect.
+    assert p._UPSTREAM_TIMEOUT.connect == 30.0
+
+
+# ---------------------------------------------------------------------------
 # Streaming is rejected explicitly, not silently ignored (#129)
 # ---------------------------------------------------------------------------
 

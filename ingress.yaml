@@ -24,13 +24,19 @@ metadata:
     # Keep timeout-client aligned with timeout-server (hygiene). Because the proxy
     # calls upstream non-streaming, a long completion leaves BOTH sides idle — the
     # backend silent (timeout-server) and the client waiting (timeout-client) — so
-    # the two should match. NOTE: this does NOT resolve #82. A ~300s ceiling still
-    # cuts long single generations (client sees `fetch failed` at ~300s); testing
-    # showed NRP's shared haproxy enforces that client timeout and this per-Ingress
-    # annotation does not override it. The real fix is streaming end-to-end (proxy
-    # + geo-agent) or an NRP-side timeout bump — tracked in #82.
-    haproxy-ingress.github.io/timeout-server: "600s"
-    haproxy-ingress.github.io/timeout-client: "600s"
+    # the two should match. Raised 600s -> 1200s to match the proxy's own upstream
+    # budget (`UPSTREAM_TIMEOUT_SECONDS`, #135): once that is 20 min, leaving these
+    # at 10 min would just move the binding cap here.
+    #
+    # On the earlier ~300s claim (#82): the log corpus does not support it. Over 60
+    # days there is no error cluster near 300s, while 408 requests died at *exactly*
+    # ~600s — the proxy's own httpx timeout, not an NRP-side cap — and completions
+    # past 1500s are logged as successful. Caveat: `latency_ms` is measured
+    # proxy-side, so a logged 200 does not prove the client was still listening;
+    # what the browser received past its sidecar's 300s `proxy_read_timeout` is
+    # invisible here. #82 stays open for that reason.
+    haproxy-ingress.github.io/timeout-server: "1200s"
+    haproxy-ingress.github.io/timeout-client: "1200s"
     haproxy-ingress.github.io/timeout-tunnel: "3600s"
 spec:
   ingressClassName: haproxy
