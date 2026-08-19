@@ -9,6 +9,15 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Fixed
+- **Early-return rejections now log *which caller* was rejected.** `origin`, `client`,
+  `session_id` and `request_id` were derived only after routing succeeded, but three
+  rejections log a response row before that point — unroutable model, missing provider
+  key, and the new streaming refusal — so every one of those rows carried
+  `"origin": null`. Caught by grepping the live pod right after deploying the streaming
+  rejection: the row was there, but anonymous, which defeats the reason it is logged at
+  all ("who is asking for streaming?" needs the app, not just the model id). Identity is
+  now resolved immediately after auth, ahead of all three. Fixes the pre-existing gap on
+  the `unrouted` path too, so a model-id miss is attributable to the app that sent it.
 - **headless: undici's 300s `headersTimeout` no longer caps a slow LLM call (#128).**
   Node's `fetch` is undici, and undici enforces its own `headersTimeout` (default **300s**)
   that `AbortSignal` does not override. The runner posts *non-streaming* completions, so no
