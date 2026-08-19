@@ -50,6 +50,26 @@ See [Releases](README.md#releases) for how a release is cut.
   symbol, and a new method each still fail the check; upstream merely rewording its
   import comment passes; and `--revendor` output keeps the bare specifiers, picks up the
   upstream change, converges to in-sync, and imports cleanly in Node.
+- **`stream: true` is rejected with a 400 instead of being silently ignored (#129).**
+  `ChatRequest` had no `stream` field and Pydantic's default is `extra="ignore"`, so the
+  field was dropped and the client got **HTTP 200 carrying a non-streaming body** — which
+  an SSE-expecting OpenAI client cannot parse, making a server-side limitation look like a
+  client bug. The proxy is deliberately non-streaming (it buffers each completion to log
+  the request/response pair, repair leaked tool-call dialect, and account tokens from the
+  finished body), so `stream` is now declared purely to be refused, with a message that
+  says what to do instead. Logged against a synthetic `streaming-unsupported` provider —
+  the same trick already used for unrouted models — because the rejection happens before
+  `log_request`, and "who is asking for streaming?" was otherwise unanswerable from the
+  corpus. `stream: false` and an absent field are unaffected, and `stream` is never
+  forwarded upstream either way.
+  Scoping note for #129, which proposed streaming for the headless runner: geo-agent has
+  **no** SSE consumer anywhere in `app/` (the browser `Agent` awaits a complete response),
+  so streaming would have *introduced* a fidelity gap between headless and production
+  rather than closing one, and it cannot be reached from the runner at all while the proxy
+  buffers. Streaming the proxy would mean reconstructing every log record from deltas —
+  rejected as a change to the primary analysis artifact. The per-call latency exposure
+  #129 documents is real and stays open; #128 removed the transport ceiling that was
+  making it fail in the wrong error class.
 
 ### Changed
 - **`qwen3-cirrus` provider becomes `vllm-cirrus`, now serving `qwen3-8` (Qwen3.8 27B).**
