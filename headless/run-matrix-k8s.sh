@@ -23,6 +23,10 @@
 #   TRIALS                 trials per (model, question) (default 2)
 #   MAX_TURNS              agent maxToolCalls (default 20)
 #   APP_BRANCH             app repo branch to clone (default main)
+#   PROXY_BRANCH           boettiger-lab/open-llm-proxy branch to clone (default
+#                          main). This repo supplies the runner itself (run.js,
+#                          run_matrix.sh, the vendored MCP client), so set it to
+#                          exercise a runner change on the cluster before merging.
 #   GEO_AGENT_BRANCH       boettiger-lab/geo-agent branch to clone (default
 #                          main). The runner imports its framework (Agent,
 #                          DatasetCatalog, ToolRegistry, createMapTools) from
@@ -80,6 +84,7 @@ ENABLE_THINKING="${ENABLE_THINKING:-true}"
 case "$ENABLE_THINKING" in true|false) ;; *) echo "ERROR: ENABLE_THINKING must be 'true' or 'false' (got: '$ENABLE_THINKING')" >&2; exit 2;; esac
 APP_BRANCH="${APP_BRANCH:-main}"
 GEO_AGENT_BRANCH="${GEO_AGENT_BRANCH:-main}"
+PROXY_BRANCH="${PROXY_BRANCH:-main}"
 MCP_URL="${MCP_URL:-}"
 NAMESPACE="${NAMESPACE:-biodiversity}"
 
@@ -98,13 +103,13 @@ if [ -n "${SYSTEM_PROMPT_APPEND_FILE:-}" ]; then
     SYSTEM_PROMPT_APPEND_B64="$(base64 -w0 < "$SYSTEM_PROMPT_APPEND_FILE")"
 fi
 
-export APP_REPO APP_BRANCH GEO_AGENT_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
+export APP_REPO APP_BRANCH GEO_AGENT_BRANCH PROXY_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
     QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 ENABLE_THINKING MCP_URL
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING} ${MCP_URL}' \
+envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${PROXY_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING} ${MCP_URL}' \
     < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF
