@@ -125,8 +125,35 @@ Key flags:
 | `--origin` | _(none)_ | Set this so logs are tagged and filterable |
 | `--proxy-endpoint` | `https://open-llm-proxy.nrp-nautilus.io/v1` | |
 | `--max-turns` | 20 | Mirrors browser `Agent.maxToolCalls` |
+| `--llm-timeout` | 600s | Per-LLM-call budget (env `LLM_TIMEOUT_SECONDS`). Raise for slow-decode reasoning models — see below |
 | `--transcript` | _(none)_ | Write full JSON transcript for offline comparison |
 | `--quiet` | off | Suppress per-turn output |
+
+#### Per-call timeouts: which deadline actually fires
+
+Requests are **non-streaming**, so no response headers arrive until the model has
+finished generating — every per-call deadline therefore has to cover *all decode*,
+not just time-to-first-token (#129 tracks adding `--stream`, which removes this).
+Several hops each impose their own ceiling, and the lowest one wins:
+
+| Hop | Ceiling | On exceed |
+|---|---|---|
+| undici (Node `fetch`) | **lifted to none** (#128); was 300s | — |
+| `--llm-timeout` (agent) | 600s | clean `Request timed out after Ns`, retried on full budget |
+| fetch-wrapper `AbortSignal` | `--llm-timeout` + 60s | backstop for a wedged socket |
+| Traefik (`vllm-cirrus` only) | 600s | 504 mid-call |
+
+The startup banner prints the effective values, e.g.
+
+```
+llm_timeout=900s  fetch_cap=960s  undici_headers_timeout=disabled
+```
+
+If that last field is anything other than `disabled`, a 300s cap is silently back
+in play: run `npm install` in `headless/` (the `undici` dependency is what lets the
+runner override it). Left unfixed, an over-300s call surfaces as a bare
+`fetch failed`, which the agent misreads as a *network* error and retries on its
+tight 90s floor — crashing the run rather than timing out cleanly (#61, #128).
 
 ## What this runner does vs. the browser
 

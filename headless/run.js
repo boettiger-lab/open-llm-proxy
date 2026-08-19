@@ -28,6 +28,50 @@ const { DatasetCatalog } = await geoApp('dataset-catalog.js');
 const { ToolRegistry } = await geoApp('tool-registry.js');
 const { createMapTools } = await geoApp('map-tools.js');
 
+// Lift undici's transport-level header deadline (#128).
+//
+// Node's `fetch` is undici, and undici enforces its OWN `headersTimeout`
+// (default 300s) which `AbortSignal` does not override. This runner posts
+// NON-streaming completions, so no response headers arrive until generation
+// finishes — meaning that 300s was an undeclared ceiling on total per-call
+// wall time, well below the 600s default of --llm-timeout. Worse, it failed
+// into the wrong error class: undici surfaces it as a bare `fetch failed`,
+// geo-agent's Agent._attemptLLMCall reads that as a transient *network*
+// error, and retries on the tight 90s floor instead of the full budget —
+// re-entering the exact #61 pathology by a different route.
+//
+// Setting headersTimeout/bodyTimeout to 0 disables the transport deadline so
+// the agent's own budget (and the fetch wrapper's AbortSignal backstop below)
+// are the only ones that can fire. connectTimeout stays finite: a TCP connect
+// that never completes is a genuine stall, not slow generation.
+//
+// Cross-instance note: npm `undici` and the copy Node embeds for global fetch
+// are separate module instances, but they rendezvous on the well-known
+// globalThis symbol below, so setGlobalDispatcher() here does govern global
+// fetch. Verified end-to-end on Node 22 and 24 (the matrix Job image).
+const UNDICI_DISPATCHER_SYMBOL = Symbol.for('undici.globalDispatcher.1');
+async function liftTransportHeaderTimeout() {
+    const before = globalThis[UNDICI_DISPATCHER_SYMBOL];
+    try {
+        const { Agent: UndiciAgent, setGlobalDispatcher } = await import('undici');
+        setGlobalDispatcher(new UndiciAgent({
+            headersTimeout: 0,
+            bodyTimeout: 0,
+            connectTimeout: 30_000,
+        }));
+        // Assert the install actually landed on the symbol global fetch reads,
+        // so a future undici/Node change is visible in the banner instead of
+        // silently restoring a 300s ceiling.
+        if (globalThis[UNDICI_DISPATCHER_SYMBOL] === before) {
+            return { ok: false, detail: 'setGlobalDispatcher did not take effect (300s ceiling may still apply)' };
+        }
+        return { ok: true, detail: 'disabled' };
+    } catch (e) {
+        return { ok: false, detail: `undici unavailable (${e.code || e.message}); 300s ceiling applies — run \`npm install\` in headless/` };
+    }
+}
+const transportHeaderTimeout = await liftTransportHeaderTimeout();
+
 function parseArgs(argv) {
     const args = { _positional: [] };
     let i = 0;
@@ -92,6 +136,10 @@ Options:
 // floor instead of its full budget — so a legitimately-slow call crashes the
 // run (#61). The caller derives this from --llm-timeout; it stays a backstop
 // against a truly wedged socket, not a cap on normal slow generation.
+//
+// This is only the *effective* deadline because undici's own 300s
+// headersTimeout is lifted above (#128); otherwise the transport would fire
+// first on any call slower than 300s, whatever --llm-timeout said.
 function installFetchWrapper(proxyEndpoint, origin, onProxyFetch, perFetchTimeoutMs = 660_000) {
     const proxyOrigin = new URL(proxyEndpoint).origin;
     const originalFetch = globalThis.fetch;
@@ -345,7 +393,11 @@ async function main() {
     console.log('='.repeat(72));
     console.log(`Q: ${args.question}`);
     console.log(`model=${model}  origin=${args.origin || '(none)'}  max_turns=${maxTurns}`);
-    console.log(`llm_timeout=${llmTimeoutSec}s  fetch_cap=${Math.round(perFetchTimeoutMs / 1000)}s`);
+    console.log(`llm_timeout=${llmTimeoutSec}s  fetch_cap=${Math.round(perFetchTimeoutMs / 1000)}s`
+        + `  undici_headers_timeout=${transportHeaderTimeout.detail}`);
+    if (!transportHeaderTimeout.ok) {
+        err(`[headless] WARNING: transport header deadline NOT lifted — ${transportHeaderTimeout.detail}`);
+    }
     console.log('='.repeat(72));
 
     const t0 = Date.now();

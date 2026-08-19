@@ -12,6 +12,7 @@
     "check-drift": "bash check-drift.sh"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.12.0"
+    "@modelcontextprotocol/sdk": "1.12.0",
+    "undici": "^7.29.0"
   }
 }
