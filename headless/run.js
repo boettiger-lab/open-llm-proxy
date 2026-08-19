@@ -115,8 +115,8 @@ Options:
   --run-timeout N          Hard wall-clock cap in seconds; writes partial
                            transcript with timed_out=true and exits 124
   --llm-timeout N          Per-LLM-call budget in seconds (agent's own timeout,
-                           = geo-agent llm_timeout_seconds). Default 600. Raise
-                           for slow-decode reasoning models (glm-5/kimi ON).
+                           = geo-agent llm_timeout_seconds). Default 1200 (20
+                           min), matching the proxy's own upstream budget.
                            Env: LLM_TIMEOUT_SECONDS.
   --trial N                Trial number (metadata only; stored in transcript)
   --quiet                  Suppress per-turn output; print only final answer
@@ -219,12 +219,15 @@ async function main() {
     const runTimeoutSec = Number(args.run_timeout) || 0;
     const trial = args.trial ? Number(args.trial) : null;
 
-    // Agent's own per-LLM-call budget (geo-agent llm_timeout_seconds); default
-    // matches geo-agent's own 600s default. The fetch wrapper's hard cap is
-    // derived to sit above it (+60s) so the agent's clean timeout+full-budget
-    // retry governs, never the wrapper's 90s network-retry floor (#61).
-    // PER_FETCH_TIMEOUT_MS overrides the derived value for a manual backstop.
-    const llmTimeoutSec = Number(args.llm_timeout ?? process.env.LLM_TIMEOUT_SECONDS) || 600;
+    // Agent's own per-LLM-call budget (geo-agent llm_timeout_seconds). 1200s (20
+    // min), matching the proxy's own upstream budget so the runner does not give
+    // up on a call the proxy is still willing to wait for. Deliberately above
+    // geo-agent's own 600s default, which the browser keeps (it sits behind a 300s
+    // nginx sidecar and gains nothing from a longer wait). The fetch wrapper's
+    // hard cap is derived to sit above this (+60s) so the agent's clean
+    // timeout+full-budget retry governs, never the wrapper's 90s network-retry
+    // floor (#61). PER_FETCH_TIMEOUT_MS overrides the derived value.
+    const llmTimeoutSec = Number(args.llm_timeout ?? process.env.LLM_TIMEOUT_SECONDS) || 1200;
     const perFetchTimeoutMs = Number(process.env.PER_FETCH_TIMEOUT_MS) || (llmTimeoutSec * 1000 + 60_000);
 
     const transcript = {

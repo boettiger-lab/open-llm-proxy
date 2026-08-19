@@ -136,7 +136,7 @@ Key flags:
 | `--origin` | _(none)_ | Set this so logs are tagged and filterable |
 | `--proxy-endpoint` | `https://open-llm-proxy.nrp-nautilus.io/v1` | |
 | `--max-turns` | 20 | Mirrors browser `Agent.maxToolCalls` |
-| `--llm-timeout` | 600s | Per-LLM-call budget (env `LLM_TIMEOUT_SECONDS`). Raise for slow-decode reasoning models — see below |
+| `--llm-timeout` | 1200s | Per-LLM-call budget (env `LLM_TIMEOUT_SECONDS`), matching the proxy's own upstream budget — see below |
 | `--transcript` | _(none)_ | Write full JSON transcript for offline comparison |
 | `--quiet` | off | Suppress per-turn output |
 
@@ -150,9 +150,20 @@ Several hops each impose their own ceiling, and the lowest one wins:
 | Hop | Ceiling | On exceed |
 |---|---|---|
 | undici (Node `fetch`) | **lifted to none** (#128); was 300s | — |
-| `--llm-timeout` (agent) | 600s | clean `Request timed out after Ns`, retried on full budget |
+| `--llm-timeout` (agent) | 1200s | clean `Request timed out after Ns`, retried on full budget |
 | fetch-wrapper `AbortSignal` | `--llm-timeout` + 60s | backstop for a wedged socket |
-| Traefik (`vllm-cirrus` only) | 600s | 504 mid-call |
+| haproxy ingress (→ the proxy) | 1200s | connection cut |
+| proxy → provider (`UPSTREAM_TIMEOUT_SECONDS`) | 1200s | 504 `Request timed out after Nms` |
+| Traefik (`vllm` **cirrus and nimbus**) | **600s — still the binding cap for those two** | 504 mid-call |
+
+> The proxy's upstream budget was a hardcoded 600s until #135; it was the hop that
+> actually bit — 408 requests died at *exactly* ~600s over 60 days (`nrp` 259,
+> `nimbus` 143, `vllm-cirrus` 6). Note httpx's `read` timeout is per-*chunk*, so for
+> a self-hosted vLLM that emits nothing until it finishes it acts as a hard total
+> cap, whereas OpenRouter's keepalive bytes keep resetting it (successes past
+> 1700s). Raising our hops to 20 min does **not** yet give nimbus- or cirrus-backed
+> models 20 minutes: Traefik in `boettiger-lab/k8s` still cuts them at 600s
+> (boettiger-lab/k8s#42).
 
 The startup banner prints the effective values, e.g.
 

@@ -55,7 +55,9 @@ spec:
 ---
 # Long backend timeouts. The proxy calls upstream NON-streaming, so a long
 # generation leaves the backend silent for minutes; anything under ~600s cuts
-# real completions off mid-answer (cf. #82 on the NRP side).
+# real completions off mid-answer (cf. #82 on the NRP side). Raised to 1200s to
+# match the proxy's own upstream budget (`UPSTREAM_TIMEOUT_SECONDS` default, #135)
+# — leaving these at 600s would just relocate the binding cap to this hop.
 apiVersion: traefik.io/v1alpha1
 kind: ServersTransport
 metadata:
@@ -64,6 +66,6 @@ metadata:
 spec:
   forwardingTimeouts:
     dialTimeout: 30s
-    idleConnTimeout: 600s
-    readIdleTimeout: 600s
-    responseHeaderTimeout: 600s
+    idleConnTimeout: 1200s
+    readIdleTimeout: 1200s
+    responseHeaderTimeout: 1200s

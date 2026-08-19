@@ -8,6 +8,33 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Changed
+- **Per-call ceiling raised 10 min → 20 min across every hop this repo owns (#135).**
+  The proxy's upstream budget was a hardcoded `httpx.AsyncClient(timeout=600.0)`, and the
+  log corpus shows it was the hop that actually bit: **408 requests died at *exactly*
+  ~600s** over 60 days — `nrp` 259, `nimbus` 143, `vllm-cirrus` 6 — all of them this
+  timeout rather than the provider. It is now `UPSTREAM_TIMEOUT_SECONDS`, default **1200**.
+  Only the `read` phase gets the long budget; connect/write/pool stay at 30s, because a
+  20-minute TCP connect is a broken path, not a slow model.
+  Raised to match, so the cap does not simply relocate: haproxy `timeout-server` /
+  `timeout-client` in `ingress.yaml` (600s → 1200s), Traefik `responseHeaderTimeout` /
+  `idleConnTimeout` / `readIdleTimeout` for the cirrus deployment (600s → 1200s), and the
+  headless runner's `--llm-timeout` default (600s → 1200s). geo-agent's browser default
+  stays 600s deliberately — it sits behind a 300s nginx sidecar and gains nothing.
+  Two things this does **not** do. It does not give nimbus- or cirrus-backed models 20
+  minutes: Traefik in `boettiger-lab/k8s` still cuts those at 600s
+  (boettiger-lab/k8s#42). And it does not help the browser, which its sidecar caps at 300s
+  (#82).
+  Also worth recording, since it explains the corpus: httpx's `read` timeout bounds the
+  wait for a *chunk*, not the whole response. A self-hosted vLLM emits nothing until it
+  finishes, so the budget behaves as a hard total cap there — while OpenRouter's keepalive
+  bytes keep resetting it, which is why OpenRouter is the *only* provider with logged
+  successes past 600s (16 of them, out to 1775s).
+  Dropped the stale claim in `ingress.yaml` that NRP's shared haproxy enforces a ~300s
+  ceiling: there is no error cluster near 300s in 60 days of logs. Kept the caveat that
+  `latency_ms` is proxy-side, so a logged 200 does not prove the client was still
+  listening — which is why #82 stays open.
+
 ### Added
 - **`PROXY_BRANCH` for matrix Jobs — test a runner change where matrix runs actually
   happen.** `matrix-job.yaml` cloned `open-llm-proxy` with no `--branch`, so the Job always
