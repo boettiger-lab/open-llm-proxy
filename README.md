@@ -68,6 +68,21 @@ To get the savings, the app (client-side) must (1) send the system prompt as con
 
 Set `"enable_thinking": true` in the request body to activate extended reasoning on supported models (`kimi`, `qwen3`, `glm-5`). The proxy injects the correct provider-specific parameter based on `config.json`.
 
+### No streaming (by design)
+
+The proxy is **non-streaming**: it buffers each upstream completion so it can log the
+request/response pair, repair leaked tool-call dialect, and account tokens from the
+finished body. `"stream": true` is rejected with a **400** rather than silently ignored
+(#129) — previously the field was dropped and the client got a 200 carrying a
+*non-streaming* body, which an SSE-expecting OpenAI client cannot parse.
+
+Because nothing streams, every per-call deadline in the chain has to cover the whole
+generation, not just time-to-first-token. Callers fronted by an nginx sidecar
+(`proxy_read_timeout` 300s) will see a 502 on turns slower than that even when the proxy
+itself eventually succeeds — those are flagged in pod logs as `⚠️ Slow completion` (#82).
+The headless runner has the same exposure and documents its own ceiling stack in
+[headless/README.md](headless/README.md).
+
 ## Logging
 
 Every LLM call produces two JSONL log entries (a `request` on arrival and a `response` on completion) linked by `request_id`.

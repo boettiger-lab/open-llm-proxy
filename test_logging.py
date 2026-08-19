@@ -959,6 +959,109 @@ def test_unroutable_model_returns_400_and_is_logged():
 
 
 # ---------------------------------------------------------------------------
+# Streaming is rejected explicitly, not silently ignored (#129)
+# ---------------------------------------------------------------------------
+
+def test_stream_true_returns_400_and_is_logged():
+    """`stream: true` must fail loudly. Before this, Pydantic's extra="ignore"
+    dropped the field and the client got HTTP 200 with a NON-streaming body,
+    which an SSE-expecting OpenAI client cannot parse — a silent protocol
+    violation that looked like a client bug."""
+    import asyncio
+
+    import pytest
+    from fastapi import HTTPException
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    req = p.ChatRequest(
+        model="qwen3-8", messages=[{"role": "user", "content": "hi"}], stream=True
+    )
+    assert req.stream is True, "stream must survive validation to be rejectable"
+
+    with patch.object(p, "PROVIDERS", CIRRUS_LIKE), \
+         patch.object(p, "DEFAULT_PROVIDER", None):
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+
+    assert ei.value.status_code == 400
+    assert "Streaming is not supported" in ei.value.detail
+    # Visible in the corpus, so "who is asking for streaming?" is answerable.
+    responses = [e for e in p._log_buffer if e.get("type") == "response"]
+    assert len(responses) == 1
+    assert responses[0]["provider"] == "streaming-unsupported"
+    assert "Streaming is not supported" in responses[0]["error"]
+    # Rejected before routing, so no request row was emitted.
+    assert [e for e in p._log_buffer if e.get("type") == "request"] == []
+
+
+def test_stream_false_and_absent_are_unaffected():
+    """Only a truthy `stream` is rejected: `false` and an absent field are the
+    normal path, and `stream` is never forwarded upstream either way."""
+    import asyncio
+
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    captured = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                "usage": {"total_tokens": 3},
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, endpoint, json=None, headers=None):
+            captured["payload"] = json
+            return _FakeResponse()
+
+    for stream_value in (None, False):
+        p._log_buffer.clear()
+        captured.clear()
+        kwargs = {} if stream_value is None else {"stream": stream_value}
+        req = p.ChatRequest(
+            model="qwen3-8", messages=[{"role": "user", "content": "hi"}], **kwargs
+        )
+        with patch.object(p, "PROVIDERS", CIRRUS_LIKE), \
+             patch.object(p, "DEFAULT_PROVIDER", None), \
+             patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+            result = asyncio.run(
+                p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey")
+            )
+        assert result["choices"][0]["message"]["content"] == "hi"
+        assert "stream" not in captured["payload"], (
+            f"stream must not be forwarded upstream (stream={stream_value!r})"
+        )
+        assert not [
+            e for e in p._log_buffer
+            if e.get("provider") == "streaming-unsupported"
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Logging guardrails (#39) — surface a one-sided pipeline failure
 # ---------------------------------------------------------------------------
 

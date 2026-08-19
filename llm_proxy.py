@@ -751,6 +751,14 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 0.0
     enable_thinking: Optional[bool] = None  # None = use model default; True/False to override
     user: Optional[str] = None  # OpenAI end-user id; geo-agent sets it to its per-session UUID. Logged as session_id (not forwarded upstream).
+    # Declared only so it can be REJECTED explicitly (#129). This proxy is
+    # deliberately non-streaming: it buffers the upstream completion and rebuilds
+    # the log record from the finished JSON body. Pydantic's default is
+    # extra="ignore", so before this field existed a client sending `stream: true`
+    # got HTTP 200 with a non-streaming body — an OpenAI client waiting for SSE
+    # cannot parse that, and the failure looked like a client bug. Fail loudly
+    # instead. See proxy_chat() for the rejection.
+    stream: Optional[bool] = None
     # Known-safe sampling/routing knobs forwarded verbatim when present (#47).
     # Without these, anything outside the whitelist below was silently dropped:
     # `seed`/`top_p` (determinism), `stop`/`max_tokens`/`response_format` (output
@@ -784,7 +792,19 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     
     if not client_key or client_key not in VALID_PROXY_KEYS:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
-    
+
+    # Streaming is not supported, and saying so is better than pretending (#129).
+    # Logged against a synthetic provider — as with unrouted models — because the
+    # request never reaches log_request, and "who is asking for streaming?" is
+    # otherwise unanswerable from the corpus.
+    if request.stream:
+        error_msg = (
+            "Streaming is not supported by this proxy: it buffers each completion to "
+            "log the request/response pair. Omit `stream` or set it to false."
+        )
+        log_response("streaming-unsupported", request.model, {}, 0, error=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
     # Determine provider based on model
     try:
         provider_name, provider_config = get_provider_for_model(request.model)
