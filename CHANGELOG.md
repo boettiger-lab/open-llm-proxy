@@ -30,6 +30,26 @@ See [Releases](README.md#releases) for how a release is cut.
   global `fetch` despite being a separate module instance (they rendezvous on the
   `undici.globalDispatcher.1` global symbol). Next ceiling up for cirrus-routed runs remains
   Traefik's `responseHeaderTimeout: 600s`; streaming (#129) removes the whole class.
+- **`check-drift.sh` no longer reports permanent drift, and its remedy no longer breaks
+  the runner.** geo-agent moved `mcp-client.js` to a *pre-bundled* SDK imported by
+  relative path (`./vendor/mcp-sdk.js`, geo-agent#343/#346) because the app is served
+  straight from jsDelivr with no bundler and a static import of an unreachable ESM host
+  white-screens it. The headless copy must keep bare specifiers so they resolve against
+  `headless/node_modules`. The check diffed the two files verbatim, so it reported DRIFT
+  on **every** run forever — and the re-vendor command it printed would have copied
+  upstream's relative import into a package with no `vendor/` directory, breaking the
+  runner outright. A permanently-red detector is worse than none: it trains you to ignore
+  it, so a *real* transport change would have gone unnoticed.
+  Both sides are now normalized before diffing — the SDK import, and any comment block
+  attached to it, collapses to a marker — and the **set of symbols** imported from the SDK
+  is compared separately, so only the module *path* may diverge. Adds
+  `npm run check-drift -- --revendor`, which rebuilds the vendored copy from upstream
+  while keeping our import lines, replacing the footgun command. `GEO_AGENT_DIR` is now
+  honored, matching `run.js`.
+  Verified by mutation: an upstream timeout change, a new non-SDK import, a new SDK
+  symbol, and a new method each still fail the check; upstream merely rewording its
+  import comment passes; and `--revendor` output keeps the bare specifiers, picks up the
+  upstream change, converges to in-sync, and imports cleanly in Node.
 
 ### Changed
 - **`qwen3-cirrus` provider becomes `vllm-cirrus`, now serving `qwen3-8` (Qwen3.8 27B).**

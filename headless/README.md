@@ -11,15 +11,25 @@ the tool-use loop, and the `<tool_call>` XML parser stay in sync by construction
 
 Three pieces are intentionally local:
 
-1. **`mcp-client.js`** — vendored byte-for-byte from `../../geo-agent/app/mcp-client.js`
-   (with a one-line banner prepended). Vendored, not imported, so the
+1. **`mcp-client.js`** — vendored from `../../geo-agent/app/mcp-client.js` (with a
+   one-line banner prepended). Vendored, not imported, so the
    `@modelcontextprotocol/sdk` bare specifier resolves against this package's
    `node_modules` rather than the sibling repo's browser import map. **This is the
    drift-prone file.** Re-vendor whenever geo-agent ships an MCP transport change:
    ```bash
-   npm run check-drift   # fails non-zero if it has drifted
+   npm run check-drift                 # fails non-zero if it has drifted
+   npm run check-drift -- --revendor   # rebuild from upstream, keeping our imports
    ```
-   If drift is detected, the error message prints the exact re-vendor command.
+   Exactly **one** divergence from upstream is intentional and permanent
+   (geo-agent#343/#346): upstream is served straight from jsDelivr with no bundler,
+   so it imports a *pre-bundled* SDK by relative path (`./vendor/mcp-sdk.js`) — a
+   static import of an unreachable third-party ESM host would white-screen the whole
+   app. This runner has a `node_modules`, so it keeps the bare specifiers. The check
+   normalizes that one import away before diffing, and compares the *set of symbols*
+   imported from the SDK separately, so only the module **path** is allowed to
+   diverge — a new SDK export, a new non-SDK import, or any transport change still
+   fails. Use `--revendor` rather than copying upstream by hand: a plain copy would
+   pull in the `./vendor/mcp-sdk.js` import, which does not exist here.
 2. **`stub-map-manager.js`** — replaces the live MapLibre map. Map tools return
    `success: true` and do nothing; analytical questions still work.
 3. **`fetch` wrapper inside `run.js`** — injects the `Origin` header so proxy
