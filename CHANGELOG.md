@@ -8,6 +8,17 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **`PROXY_BRANCH` for matrix Jobs — test a runner change where matrix runs actually
+  happen.** `matrix-job.yaml` cloned `open-llm-proxy` with no `--branch`, so the Job always
+  ran `main` even though `APP_BRANCH` and `GEO_AGENT_BRANCH` were both pinnable. A change to
+  the runner itself (`run.js`, `run_matrix.sh`, the vendored MCP client) therefore could not
+  be exercised on the cluster before merging — which is exactly how the undici ceiling
+  (#128) had to be verified against a local stub instead of the slow endpoint that exposed
+  it. Defaults to `main`, so existing invocations are unchanged, and is recorded as
+  `proxy_branch` in the `##BENCH-VERSIONS##` provenance line alongside `app_branch` and
+  `geo_agent_branch` (additive — no downstream consumer key changes).
+
 ### Fixed
 - **Early-return rejections now log *which caller* was rejected.** `origin`, `client`,
   `session_id` and `request_id` were derived only after routing succeeded, but three

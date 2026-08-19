@@ -75,6 +75,7 @@ request/response pairs.
 | `MODELS` | Optional override. Default: read from the app's `k8s/configmap.yaml` inside the pod |
 | `TRIALS` / `MAX_TURNS` / `APP_BRANCH` / `NAMESPACE` | Optional; sensible defaults |
 | `GEO_AGENT_BRANCH` | Optional; `boettiger-lab/geo-agent` branch to clone (default `main`). The runner imports its framework from this checkout, so set it to A/B-test a code-level geo-agent change on the open models before it ships in a pinned release. Pair with a second run on `main` for the baseline. |
+| `PROXY_BRANCH` | Optional; `boettiger-lab/open-llm-proxy` branch to clone (default `main`). This repo supplies the runner itself (`run.js`, `run_matrix.sh`, the vendored MCP client), so set it to exercise a runner change **on the cluster before merging** — without it the Job always runs `main`, and a headless fix can only be tested somewhere other than where matrix runs actually happen. Recorded as `proxy_branch` in the `##BENCH-VERSIONS##` line. |
 | `MCP_URL` | Optional MCP endpoint override (default: the app config's `mcp_url`). Every app commits a production head, so a gate run for an `mcp-data-server` guidance change **must** set this to `https://dev-duckdb-mcp.nrp-nautilus.io/mcp` — the injected guides come from whichever MCP the run talks to. Recorded per cell in the transcript, so a run's target is auditable after the fact. |
 
 ## Local single-run usage (ad-hoc debugging only)
