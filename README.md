@@ -112,7 +112,7 @@ still the binding cap (boettiger-lab/k8s#42).
 
 Every LLM call produces two JSONL log entries (a `request` on arrival and a `response` on completion) linked by `request_id`.
 
-Logs are written to **pod stdout** immediately and flushed to **S3** every 5 minutes as dated JSONL chunk files. The target bucket is set by the `LOG_BUCKET` env var (e.g. `logs-cacao` for the cacao namespace). If no S3 credentials are present, logs go to stdout only.
+Logs are written to **pod stdout** immediately and flushed to **S3** every 60 seconds (`FLUSH_INTERVAL`) as dated JSONL chunk files, plus a final flush on shutdown so a graceful restart does not drop the buffer. The target bucket is set by the `LOG_BUCKET` env var (e.g. `logs-cacao` for the cacao namespace). If no S3 credentials are present, logs go to stdout only.
 
 ```
 logs-<ns>/
