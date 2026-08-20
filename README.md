@@ -77,11 +77,20 @@ finished body. `"stream": true` is rejected with a **400** rather than silently 
 *non-streaming* body, which an SSE-expecting OpenAI client cannot parse.
 
 Because nothing streams, every per-call deadline in the chain has to cover the whole
-generation, not just time-to-first-token. Callers fronted by an nginx sidecar
-(`proxy_read_timeout` 300s) will see a 502 on turns slower than that even when the proxy
-itself eventually succeeds — those are flagged in pod logs as `⚠️ Slow completion` (#82).
-The headless runner has the same exposure and documents its own ceiling stack in
-[headless/README.md](headless/README.md).
+generation, not just time-to-first-token. A caller fronted by an nginx sidecar will see a
+502 on turns slower than *its own* `proxy_read_timeout` even when the proxy eventually
+succeeds. That deadline is per-app, not a single fleet-wide number — `geo-agent-template`
+runs 300s, `ca-30x30` 600s — and geo-agent's browser client aborts on its own
+`llm_timeout_seconds` (600s default) regardless of the sidecar, so the effective deadline
+is the tighter of the two.
+
+Turns past that are flagged in pod logs as `⚠️ Slow completion` (#82), using
+**`SLOW_COMPLETION_WARN_SECONDS`, default 300** — the tightest known sidecar, so the
+warning over-reports rather than misses. Raise it per deployment to match that
+deployment's own chain. It is only a reporting threshold: it caps nothing, and because
+`latency_ms` is measured proxy-side, a flagged 200 means the client *may* have stopped
+listening, not that it did (which is why #82 stays open). The headless runner has the same
+exposure and documents its own ceiling stack in [headless/README.md](headless/README.md).
 
 The proxy's own budget for the upstream call is **`UPSTREAM_TIMEOUT_SECONDS`, default
 1200** (20 minutes, #135). It was a hardcoded 600s, and that was the hop that actually
