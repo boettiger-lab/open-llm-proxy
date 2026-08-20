@@ -62,7 +62,7 @@ See [Releases](README.md#releases) for how a release is cut.
   the warning over-reports rather than misses, and the message now renders the configured
   value. Wording softened from "the browser likely already received an nginx 502" to "the
   caller may already have given up" — `latency_ms` is proxy-side and never proved the
-  client had stopped listening (the caveat #82 stays open for). The `CancelledError`
+  client had stopped listening (a caveat that outlives #82, now closed). The `CancelledError`
   comment's bare "300s" is gone too. Parsed defensively (empty/blank/non-numeric fall back
   to 300s with a breadcrumb) because a knob that only decides whether a log line prints
   must not crash the proxy at import — `value: ""` is a routine manifest idiom and
