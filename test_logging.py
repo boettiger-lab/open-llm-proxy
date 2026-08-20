@@ -515,14 +515,18 @@ def test_slow_completion_warn_threshold_is_configurable_and_message_agrees():
     _os.environ.pop("SLOW_COMPLETION_WARN_SECONDS", None)
 
 
-def test_slow_completion_warning_reports_the_configured_threshold(capsys):
+def test_slow_completion_warning_reports_the_configured_threshold():
     """Drive a real completion past the threshold and assert on what actually prints.
 
     The threshold and the printed value used to be independent, so this asserts on
     captured stdout from the real code path — not a string the test rebuilt itself,
     which would pass no matter what `llm_proxy` printed.
+
+    Captures with redirect_stdout rather than pytest's capsys fixture: CI runs this
+    file as `python test_logging.py` (see .github/workflows/test.yml), so a test
+    taking a fixture argument fails there with a TypeError even though pytest passes.
     """
-    import asyncio, os as _os
+    import asyncio, contextlib, io as _io, os as _os
     from unittest.mock import patch
 
     class _FakeResponse:
@@ -554,11 +558,13 @@ def test_slow_completion_warning_reports_the_configured_threshold(capsys):
         p = _reload(SLOW_COMPLETION_WARN_SECONDS=threshold, PROXY_KEY="testkey")
         p._log_buffer.clear()
         req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+        buf = _io.StringIO()
         with patch.object(p, "get_provider_for_model",
                           return_value=("nrp", {"endpoint": "http://u", "api_key": "k"})), \
-             patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+             patch.object(p.httpx, "AsyncClient", _FakeAsyncClient), \
+             contextlib.redirect_stdout(buf):
             asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
-        return capsys.readouterr().out
+        return buf.getvalue()
 
     # Threshold 0 => this (fast) call is "slow", and the line names 0s, not 300s.
     out = _run("0")
