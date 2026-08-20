@@ -89,7 +89,8 @@ Turns past that are flagged in pod logs as `⚠️ Slow completion` (#82), using
 warning over-reports rather than misses. Raise it per deployment to match that
 deployment's own chain. It is only a reporting threshold: it caps nothing, and because
 `latency_ms` is measured proxy-side, a flagged 200 means the client *may* have stopped
-listening, not that it did (which is why #82 stays open). The headless runner has the same
+listening, not that it did — the warning narrows where to look, it does not confirm a
+user-visible failure. The headless runner has the same
 exposure and documents its own ceiling stack in [headless/README.md](headless/README.md).
 
 The proxy's own budget for the upstream call is **`UPSTREAM_TIMEOUT_SECONDS`, default
