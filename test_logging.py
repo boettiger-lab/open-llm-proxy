@@ -485,6 +485,104 @@ def test_error_path_captures_allowlisted_upstream_headers():
     json.dumps(errs[0])   # must stay serializable
 
 
+def test_slow_completion_warn_threshold_is_configurable_and_message_agrees():
+    """The `⚠️ Slow completion` threshold is SLOW_COMPLETION_WARN_SECONDS, and the
+    printed message reports the *configured* value rather than a separate literal.
+
+    The threshold and the message used to be independent (`_CLIENT_NGINX_...= 300_000`
+    vs a hardcoded "300s" in the f-string), so changing one silently made the other
+    lie. That mattered because the value it named was already stale: it claimed every
+    caller's nginx sidecar was 300s, while ca-30x30's is 600s.
+    """
+    import os as _os
+
+    # Non-default value: threshold moves and the message follows it.
+    p = _reload(SLOW_COMPLETION_WARN_SECONDS="600", PROXY_KEY="testkey")
+    assert p._SLOW_COMPLETION_WARN_SECONDS == 600.0
+    assert p._SLOW_COMPLETION_WARN_MS == 600_000
+
+    # A reporting knob must never crash the proxy at import.
+    for bad in ("", "   ", "abc"):
+        p = _reload(SLOW_COMPLETION_WARN_SECONDS=bad, PROXY_KEY="testkey")
+        assert p._SLOW_COMPLETION_WARN_SECONDS == 300.0, bad
+
+    # Unset -> documented default of 300s (tightest known sidecar).
+    _os.environ.pop("SLOW_COMPLETION_WARN_SECONDS", None)
+    p = _reload(PROXY_KEY="testkey")
+    assert p._SLOW_COMPLETION_WARN_SECONDS == 300.0
+    assert p._SLOW_COMPLETION_WARN_MS == 300_000
+
+    _os.environ.pop("SLOW_COMPLETION_WARN_SECONDS", None)
+
+
+def test_slow_completion_warning_reports_the_configured_threshold():
+    """Drive a real completion past the threshold and assert on what actually prints.
+
+    The threshold and the printed value used to be independent, so this asserts on
+    captured stdout from the real code path — not a string the test rebuilt itself,
+    which would pass no matter what `llm_proxy` printed.
+
+    Captures with redirect_stdout rather than pytest's capsys fixture: CI runs this
+    file as `python test_logging.py` (see .github/workflows/test.yml), so a test
+    taking a fixture argument fails there with a TypeError even though pytest passes.
+    """
+    import asyncio, contextlib, io as _io, os as _os
+    from unittest.mock import patch
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {}
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **k):
+            # Non-zero so latency_ms > 0: the comparison is strictly `>`, so a 0ms
+            # call would not trip even a 0s threshold.
+            await asyncio.sleep(0.05)
+            return _FakeResponse()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    def _run(threshold):
+        p = _reload(SLOW_COMPLETION_WARN_SECONDS=threshold, PROXY_KEY="testkey")
+        p._log_buffer.clear()
+        req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+        buf = _io.StringIO()
+        with patch.object(p, "get_provider_for_model",
+                          return_value=("nrp", {"endpoint": "http://u", "api_key": "k"})), \
+             patch.object(p.httpx, "AsyncClient", _FakeAsyncClient), \
+             contextlib.redirect_stdout(buf):
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+        return buf.getvalue()
+
+    # Threshold 0 => this (fast) call is "slow", and the line names 0s, not 300s.
+    out = _run("0")
+    assert "Slow completion" in out
+    assert "exceeds the 0s client-side warning threshold" in out
+    assert "300s" not in out          # the old hardcoded literal must be gone
+
+    # A fractional threshold is rendered without float noise.
+    out = _run("0.01")
+    assert "exceeds the 0.01s client-side warning threshold" in out
+
+    # A high threshold => no warning at all for a fast call.
+    out = _run("600")
+    assert "Slow completion" not in out
+
+    _os.environ.pop("SLOW_COMPLETION_WARN_SECONDS", None)
+
+
 def test_client_disconnect_is_logged_and_reraised():
     """When the caller (nginx sidecar, 300s read timeout) drops the connection and
     uvicorn cancels the handler mid-upstream, we log a response row with a

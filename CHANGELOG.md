@@ -47,6 +47,29 @@ See [Releases](README.md#releases) for how a release is cut.
   `geo_agent_branch` (additive — no downstream consumer key changes).
 
 ### Fixed
+- **The `⚠️ Slow completion` warning no longer hardcodes a stale 300s, and its threshold
+  is configurable (`SLOW_COMPLETION_WARN_SECONDS`, default 300).** The threshold
+  (`_CLIENT_NGINX_READ_TIMEOUT_MS = 300_000`) and the value named in the printed message
+  (a literal `"300s"` in the f-string) were independent, so changing one silently made the
+  other lie. The number itself was already wrong: the comment asserted that callers sit
+  behind a 300s `proxy_read_timeout` "(geo-agent-template configmap)" as though it were
+  fleet-wide, but `ca-30x30`'s sidecar is **600s** — so the warning fired on turns that
+  had not failed for anyone, which is the failure mode that makes a warning get ignored.
+  There is no single correct value to substitute: the deadline is per-app (sidecar
+  `proxy_read_timeout`), and geo-agent's browser also aborts on its own
+  `llm_timeout_seconds` (600s default) regardless of the sidecar, so the effective
+  deadline is the tighter of the two. The default stays at the tightest known sidecar so
+  the warning over-reports rather than misses, and the message now renders the configured
+  value. Wording softened from "the browser likely already received an nginx 502" to "the
+  caller may already have given up" — `latency_ms` is proxy-side and never proved the
+  client had stopped listening (the caveat #82 stays open for). The `CancelledError`
+  comment's bare "300s" is gone too. Parsed defensively (empty/blank/non-numeric fall back
+  to 300s with a breadcrumb) because a knob that only decides whether a log line prints
+  must not crash the proxy at import — `value: ""` is a routine manifest idiom and
+  `float("")` raises. Not declared in any manifest, matching `UPSTREAM_TIMEOUT_SECONDS`.
+  Covered by a test that drives a real completion past the threshold and asserts on
+  captured stdout, verified by mutation: re-hardcoding either the literal or the threshold
+  fails it.
 - **Early-return rejections now log *which caller* was rejected.** `origin`, `client`,
   `session_id` and `request_id` were derived only after routing succeeded, but three
   rejections log a response row before that point — unroutable model, missing provider

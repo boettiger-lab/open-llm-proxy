@@ -762,10 +762,36 @@ _UPSTREAM_TIMEOUT = httpx.Timeout(
     _UPSTREAM_READ_TIMEOUT, connect=30.0, write=30.0, pool=30.0
 )
 
-# The app-side nginx sidecar's proxy_read_timeout, which browser callers sit
-# behind (#82). Not a cap this proxy controls — named so the warning below reads
-# as "past what the browser will wait for" rather than a bare literal.
-_CLIENT_NGINX_READ_TIMEOUT_MS = 300_000
+# Threshold for the "slow completion" warning below (#82). This is *not* a cap
+# this proxy controls or enforces — it is a guess at the tightest deadline a
+# caller is likely to have, used only to flag a logged 200 the client may never
+# have received.
+#
+# There is no single right value: each app fronts this proxy with its own nginx
+# sidecar, and they differ (`geo-agent-template` 300s; `ca-30x30` 600s), while
+# geo-agent's browser client aborts on its own `llm_timeout_seconds` (600s
+# default) regardless of the sidecar. The effective deadline is the minimum of
+# the two, per app. Default to the tightest known sidecar so the warning
+# over-reports rather than misses; override per deployment to match its own
+# chain.
+#
+# Parsed defensively: this knob only decides whether a log line prints, so a
+# typo'd or empty value must not take the proxy down at import. (An empty string
+# is a common manifest idiom — `value: ""` — and float("") raises.)
+def _slow_completion_warn_seconds() -> float:
+    raw = (os.getenv("SLOW_COMPLETION_WARN_SECONDS") or "").strip()
+    if not raw:
+        return 300.0
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"⚠️  Ignoring non-numeric SLOW_COMPLETION_WARN_SECONDS={raw!r} — "
+              f"falling back to 300s", flush=True)
+        return 300.0
+
+
+_SLOW_COMPLETION_WARN_SECONDS = _slow_completion_warn_seconds()
+_SLOW_COMPLETION_WARN_MS = _SLOW_COMPLETION_WARN_SECONDS * 1000
 
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]  # Accept any message format from OpenAI API
@@ -948,25 +974,28 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
 
             # Log successful response
             latency_ms = int((time.time() - start_time) * 1000)
-            # Callers front this proxy with an nginx sidecar whose proxy_read_timeout
-            # is 300s (geo-agent-template configmap). Because we call upstream
-            # non-streaming, zero bytes flow until the whole completion is buffered —
-            # so any turn slower than that already returned an nginx 502 to the
-            # browser even though *we* eventually succeed. Flag it so a logged 200
-            # that the user experienced as a 502 is greppable in pod logs (#82).
-            if latency_ms > _CLIENT_NGINX_READ_TIMEOUT_MS:
-                print(f"⚠️  Slow completion: {latency_ms}ms exceeds the 300s client-side "
-                      f"nginx read timeout (model={request.model}, request_id={request_id}) — "
-                      f"the browser likely already received an nginx 502 for this turn",
+            # Because we call upstream non-streaming, zero bytes flow until the whole
+            # completion is buffered — so a turn slower than the caller's own deadline
+            # (its nginx sidecar's proxy_read_timeout, or geo-agent's client-side
+            # llm_timeout_seconds, whichever is tighter) has already failed for the
+            # user even though *we* succeed. Flag it so a logged 200 the client may
+            # never have received is greppable in pod logs (#82). "may" is load-bearing:
+            # the threshold is a fleet-wide guess, not this caller's actual deadline,
+            # and latency_ms is proxy-side either way — see the constant above.
+            if latency_ms > _SLOW_COMPLETION_WARN_MS:
+                print(f"⚠️  Slow completion: {latency_ms}ms exceeds the "
+                      f"{_SLOW_COMPLETION_WARN_SECONDS:g}s client-side warning threshold "
+                      f"(model={request.model}, request_id={request_id}) — the caller may "
+                      f"already have given up on this turn and seen a gateway 502/504",
                       flush=True)
             log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, dialect_repaired=dialect_repaired)
 
             return result
 
         except asyncio.CancelledError:
-            # The caller (the app's nginx sidecar, proxy_read_timeout 300s) gave up
-            # and closed the connection while we were still awaiting upstream, so
-            # uvicorn cancelled this handler. CancelledError is a BaseException, so
+            # The caller (typically the app's nginx sidecar, on its own
+            # proxy_read_timeout) gave up and closed the connection while we were
+            # still awaiting upstream, so uvicorn cancelled this handler. CancelledError is a BaseException, so
             # the `except Exception` below never caught it — the request vanished
             # from S3 (only the pre-flight request row remained), which is exactly
             # why the client-facing nginx 502s were invisible here (#82). Log it,
