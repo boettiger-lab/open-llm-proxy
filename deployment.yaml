@@ -180,7 +180,10 @@ spec:
             secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY }
         resources:
           requests:
-            cpu: "1000m"
+            # 950m, not 1000m: the dns-cache sidecar requests another 10m, and
+            # the pod total is what schedulers/quotas count. 1000m + 10m tipped
+            # every replica to 1.01 CPU; this keeps the pod strictly under 1.
+            cpu: "950m"
             memory: "1Gi"
           limits:
             cpu: "2000m"

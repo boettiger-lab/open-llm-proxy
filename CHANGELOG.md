@@ -9,6 +9,11 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Changed
+- **Proxy CPU request lowered 1000m → 950m so a replica fits strictly under 1 CPU.**
+  Resource accounting is per *pod*, not per container: the `open-llm-proxy` container's
+  1000m plus the `dns-cache` sidecar's 10m made every replica register as 1.01 CPU. The
+  app request is now 950m (pod total 960m). Limits are unchanged (2000m app / 200m
+  sidecar), so burst headroom is the same — only the scheduling/quota floor moves.
 - **Per-call ceiling raised 10 min → 20 min across every hop this repo owns (#135).**
   The proxy's upstream budget was a hardcoded `httpx.AsyncClient(timeout=600.0)`, and the
   log corpus shows it was the hop that actually bit: **408 requests died at *exactly*
