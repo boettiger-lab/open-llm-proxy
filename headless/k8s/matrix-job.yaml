@@ -51,6 +51,8 @@ spec:
               value: "${TRIALS}"
             - name: MAX_TURNS
               value: "${MAX_TURNS}"
+            - name: PER_RUN_TIMEOUT_SEC
+              value: "${PER_RUN_TIMEOUT_SEC}"
             - name: MODELS
               value: "${MODELS}"
             - name: ENABLE_THINKING
@@ -191,6 +193,7 @@ spec:
               ORIGIN="$ORIGIN" \
               TRIALS="$TRIALS" \
               MAX_TURNS="$MAX_TURNS" \
+              PER_RUN_TIMEOUT_SEC="$PER_RUN_TIMEOUT_SEC" \
               MODELS="$MODELS" \
               MCP_URL="$MCP_URL" \
               RUNS_DIR="$RUNS_DIR_REL" \

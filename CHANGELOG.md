@@ -8,6 +8,22 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **`PER_RUN_TIMEOUT_SEC` is now settable for matrix Jobs (`headless/run-matrix-k8s.sh`).**
+  The knob already existed in `run_matrix.sh` (default 900), but it was neither exported
+  nor in the `envsubst` allowlist, so it could not be set from outside the pod: a caller
+  passing `PER_RUN_TIMEOUT_SEC=1800` silently got 900 and had no way to tell except by
+  reading `run-timeout=` in the Job log. It is now threaded through the export list, the
+  allowlist, and the Job template's env block.
+
+  This is the per-**cell** cap — one cell is a whole agent session (many LLM calls), not
+  a single call. The per-**call** ceilings (`UPSTREAM_TIMEOUT_SECONDS`, the ingress
+  timeouts, `--llm-timeout`; all 1200s) are a separate chain and are unaffected, so
+  raising this does not require moving them in step. Motivated by a full-tier `qwen`
+  (DSE-nimbus) benchmark in which 9 of 45 cells hit exactly 900s while completed cells
+  had a median of 408s and a max of 891s — the distribution was being clipped, not
+  converging.
+
 ### Changed
 - **Proxy CPU request lowered 1000m → 950m so a replica fits strictly under 1 CPU.**
   Resource accounting is per *pod*, not per container: the `open-llm-proxy` container's

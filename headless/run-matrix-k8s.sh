@@ -21,6 +21,11 @@
 #   MODELS                 space-separated model override (default: read from
 #                          APP_REPO/k8s/configmap.yaml inside the pod)
 #   TRIALS                 trials per (model, question) (default 2)
+#   PER_RUN_TIMEOUT_SEC    per-CELL wall-clock cap in seconds (default 900). One
+#                          cell is a whole agent session (many LLM calls), not a
+#                          single call — the per-CALL ceilings
+#                          (UPSTREAM_TIMEOUT_SECONDS, ingress, --llm-timeout) are
+#                          separate and unaffected by this.
 #   MAX_TURNS              agent maxToolCalls (default 20)
 #   APP_BRANCH             app repo branch to clone (default main)
 #   PROXY_BRANCH           boettiger-lab/open-llm-proxy branch to clone (default
@@ -74,6 +79,7 @@ fi
 
 MODELS="${MODELS:-}"
 TRIALS="${TRIALS:-2}"
+PER_RUN_TIMEOUT_SEC="${PER_RUN_TIMEOUT_SEC:-900}"
 MAX_TURNS="${MAX_TURNS:-20}"
 # Reasoning on/off (open-llm-proxy#58). "true"/"false" → the proxy injects the
 # per-model enable_thinking chat_template_kwargs (qwen3/glm-5/kimi wired). Default
@@ -104,12 +110,13 @@ if [ -n "${SYSTEM_PROMPT_APPEND_FILE:-}" ]; then
 fi
 
 export APP_REPO APP_BRANCH GEO_AGENT_BRANCH PROXY_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
+    PER_RUN_TIMEOUT_SEC \
     QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 ENABLE_THINKING MCP_URL
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${PROXY_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING} ${MCP_URL}' \
+envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${PROXY_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${PER_RUN_TIMEOUT_SEC} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING} ${MCP_URL}' \
     < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF
