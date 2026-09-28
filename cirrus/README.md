@@ -1,9 +1,10 @@
 # open-llm-proxy on cirrus (self-hosted k3s)
 
 A second deployment of the same proxy, on the lab's own k3s cluster instead of
-NRP. Public endpoint:
-
-    https://llm-proxy.carlboettiger.info
+NRP. **Parked (2026-09-25):** `replicas: 0`, and the public ingress
+(`llm-proxy.carlboettiger.info`) has been removed. The NRP deployment is the one
+in use. Restoring a public endpoint here needs a new Ingress; the rest of this
+document describes the setup as it was.
 
 ## Config-only, by design
 
@@ -78,7 +79,6 @@ kubectl apply -f cirrus/config-configmap.yaml
 kubectl apply -f cirrus/middleware.yaml
 kubectl apply -f cirrus/service.yaml
 kubectl apply -f cirrus/deployment.yaml
-kubectl apply -f cirrus/ingress.yaml
 ```
 
 The app is **git-cloned at pod boot** (no image build), so shipping a change is:
