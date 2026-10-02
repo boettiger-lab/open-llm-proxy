@@ -861,6 +861,7 @@ def test_prefixes_still_route_vendor_families_and_floating_aliases():
         ("z-ai/glm-5.2", "openrouter"),
         ("moonshotai/kimi-k3", "openrouter"),
         ("deepseek/deepseek-v4-flash-0731", "openrouter"),
+        ("xiaomi/mimo-v2.6-pro", "openrouter"),   # not NRP fallback
         ("~openai/gpt-5", "openrouter"),          # floating alias (#99)
         ("qwen/qwen3.7-flash", "openrouter"),     # vendor-namespaced, not nimbus
     ):

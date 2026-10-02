@@ -34,6 +34,7 @@
         "minimax/",
         "moonshotai/",
         "deepseek/",
+        "xiaomi/",
         "~"
       ],
       "models": []

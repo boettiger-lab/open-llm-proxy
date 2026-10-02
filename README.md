@@ -40,7 +40,7 @@ Configured in `config.json`. Most deployments only need NRP:
 | Provider | Models | Notes |
 |---|---|---|
 | **NRP** (`ellm.nrp-nautilus.io`) | anything unmatched — e.g. `kimi`, `qwen3`, `glm-5`, `minimax-m2`, `deepseek-v4-flash`, `gemma…` | The `default_provider`, so its ids are **not** listed in `config.json`; ask the endpoint (`/v1/models`) for the live set rather than trusting this table. Supports `enable_thinking` for applicable models |
-| **OpenRouter** | `anthropic/…`, `mistralai/…`, `openai/…`, `qwen/…`, `nvidia/…`, `amazon/…`, `z-ai/…`, `minimax/…`, `moonshotai/…`, `deepseek/…`, `~…` | Prefix match; requires separate API key. The `~` prefix catches OpenRouter's *floating aliases* (e.g. `~deepseek/deepseek-v4-flash-latest`), whose ids are literally `~`-prefixed and so never match a vendor prefix |
+| **OpenRouter** | `anthropic/…`, `mistralai/…`, `openai/…`, `qwen/…`, `nvidia/…`, `amazon/…`, `z-ai/…`, `minimax/…`, `moonshotai/…`, `deepseek/…`, `xiaomi/…`, `~…` | Prefix match; requires separate API key. The `~` prefix catches OpenRouter's *floating aliases* (e.g. `~deepseek/deepseek-v4-flash-latest`), whose ids are literally `~`-prefixed and so never match a vendor prefix |
 | **Anthropic** | `claude-…` — the whole family by prefix, including releases newer than this table | Direct via Anthropic's OpenAI-compatible `/v1/chat/completions`; prefix match. Bills the Developer Platform API (not the Claude.ai Team plan) — set `ANTHROPIC_API_KEY`. The default model is chosen app-side (`llm_model`); the proxy just routes whatever `claude-*` it receives. **No prompt caching** — see below |
 | **Nimbus** | `qwen` (exact id only) | Private vLLM instance; requires separate API key. Exact-match so the broader `qwen…` family still goes to NRP |
 
