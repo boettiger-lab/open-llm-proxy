@@ -177,12 +177,20 @@ function installFetchWrapper(proxyEndpoint, origin, onProxyFetch, perFetchTimeou
         try {
             const res = await originalFetch(input, init);
             const ms = Date.now() - t0;
-            let usage = null;
+            let usage = null, servedModel = null, servedProvider = null;
             try {
                 const data = await res.clone().json();
                 usage = data?.usage || null;
+                // What actually answered, as opposed to the route id we asked for:
+                // NRP echoes the upstream artifact (`deepseek-v4-flash` ->
+                // `deepseek-ai/DeepSeek-V4-Flash-...`), and OpenRouter adds the upstream
+                // host it picked (`provider: "Io Net"`). Route ids float; a score has to
+                // attach to what served it.
+                servedModel = data?.model || null;
+                servedProvider = data?.provider || null;
             } catch { /* non-JSON or already consumed; skip */ }
-            onProxyFetch({ ms, ok: res.ok, status: res.status, usage });
+            onProxyFetch({ ms, ok: res.ok, status: res.status, usage,
+                           served_model: servedModel, served_provider: servedProvider });
             return res;
         } catch (e) {
             onProxyFetch({ ms: Date.now() - t0, ok: false, error: e.message });
@@ -250,6 +258,17 @@ async function main() {
         Object.assign(transcript, extra);
         if (!transcript.finished_at) transcript.finished_at = new Date().toISOString();
         transcript.tool_call_count = transcript.turns.filter(t => t.type === 'call').length;
+        // One entry per distinct (served model, upstream provider) with its call count, so a
+        // cell that switched upstream mid-session (OpenRouter re-routing) says so.
+        const served = new Map();
+        for (const f of transcript.llm_fetches) {
+            if (!f.served_model) continue;
+            const k = `${f.served_model}\u0000${f.served_provider || ''}`;
+            const e = served.get(k) || { model: f.served_model, provider: f.served_provider, calls: 0 };
+            e.calls += 1;
+            served.set(k, e);
+        }
+        transcript.served_models = [...served.values()];
         transcript.llm_total_ms = transcript.llm_fetches.reduce((s, f) => s + f.ms, 0);
         const fetchesWithUsage = transcript.llm_fetches.filter(f => f.usage);
         transcript.prompt_tokens_total = fetchesWithUsage.reduce((s, f) => s + (f.usage.prompt_tokens || 0), 0);
