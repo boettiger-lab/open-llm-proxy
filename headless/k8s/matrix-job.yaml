@@ -8,7 +8,11 @@ metadata:
     matrix-app: ${APP_NAME}
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 86400
+  # 7 days. Logs are the only copy of a matrix's transcripts, and a 1-day TTL deleted a
+  # whole 688-cell run finished on a Friday before anyone was back to collect it. The
+  # matrix-archiver CronJob (k8s/matrix-archiver.yaml) copies every finished matrix Job's
+  # log to s3://logs-open-llm-proxy/benchmark/raw/ within ~15 min; this TTL is the backstop.
+  ttlSecondsAfterFinished: 604800
   template:
     metadata:
       labels:

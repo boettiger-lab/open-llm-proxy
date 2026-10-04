@@ -65,6 +65,20 @@ to the pod's stdout at the end, so `kubectl logs job/<JOB_NAME>` is
 self-sufficient. Proxy logs (filtered by ORIGIN) carry the full
 request/response pairs.
 
+### Logs outlive the Job: `matrix-archiver`
+
+A finished matrix Job is deleted 7 days after it ends (`ttlSecondsAfterFinished`), and
+its log is the only copy of the transcripts. The `matrix-archiver` CronJob
+([`k8s/matrix-archiver.yaml`](k8s/matrix-archiver.yaml)) copies every finished
+`app=headless-matrix` Job's log to `s3://logs-open-llm-proxy/benchmark/raw/<job>.log`
+within ~15 minutes, so collection never depends on someone being logged in before the
+TTL. Fetch with `rclone copy nrp:logs-open-llm-proxy/benchmark/raw/ <dir> --include '<job>*'`.
+
+Each transcript also records **what actually served** each call — `served_models`:
+`[{model, provider, calls}]` from the response body (NRP echoes the upstream artifact
+behind its floating alias; OpenRouter adds the upstream host it picked). The route id in
+`MODELS` is what you asked for; `served_models` is what answered.
+
 ### Required env / flags
 
 | Var | Notes |

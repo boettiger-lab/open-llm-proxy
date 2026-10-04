@@ -1,0 +1,128 @@
+# matrix-archiver — copy every finished headless-matrix Job's log to S3, so a run's
+# transcripts survive the Job.
+#
+# Why. A matrix Job's stdout is the only copy of its per-cell transcripts (the pod's runs/
+# dir is ephemeral), and the Job is garbage-collected `ttlSecondsAfterFinished` after it
+# ends. On 2026-10-02 a 688-cell benchmark finished on a Friday evening and its Jobs were
+# deleted, logs and all, before anyone was back to collect them. Nothing about collection
+# should depend on a person being logged in within a TTL.
+#
+# What. Every 15 minutes: for each Job labelled app=headless-matrix that has finished
+# (Complete or Failed) and has no archive yet, write its full log to
+#     s3://logs-open-llm-proxy/benchmark/raw/<job-name>.log
+# Idempotent — an existing object is never rewritten — so a missed tick just catches up.
+#
+# Why a separate CronJob rather than an upload step in the matrix pod. The only bucket
+# credential in this namespace is the `aws` Secret, which can read, write and delete every
+# NRP bucket. The matrix pod clones arbitrary app repos and runs LLM-driven agent code; it
+# should never hold that key. Here the key lives only in this pod, which runs nothing but
+# kubectl + aws, under a ServiceAccount that can only read Jobs, pods and pod logs.
+#
+# Apply once:   kubectl -n biodiversity apply -f headless/k8s/matrix-archiver.yaml
+# Run now:      kubectl -n biodiversity create job --from=cronjob/matrix-archiver archive-now
+# Fetch:        rclone copy nrp:logs-open-llm-proxy/benchmark/raw/ <dir> --include '<job>*'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: matrix-archiver
+  namespace: biodiversity
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: matrix-archiver
+  namespace: biodiversity
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: matrix-archiver
+  namespace: biodiversity
+subjects:
+  - kind: ServiceAccount
+    name: matrix-archiver
+    namespace: biodiversity
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: matrix-archiver
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: matrix-archiver
+  namespace: biodiversity
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: matrix-archiver
+        spec:
+          serviceAccountName: matrix-archiver
+          priorityClassName: opportunistic
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/pci-10de.present
+                        operator: NotIn
+                        values: ["true"]
+          containers:
+            - name: archive
+              # kubectl + aws-cli in one small image
+              image: alpine/k8s:1.31.4
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+                - name: AWS_DEFAULT_REGION
+                  value: us-east-1
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -uo pipefail
+                  NS=biodiversity
+                  DEST=s3://logs-open-llm-proxy/benchmark/raw
+                  # cluster-internal endpoint: no egress, same bucket as s3-west
+                  S3="aws --endpoint-url http://rook-ceph-rgw-nautiluss3.rook s3"
+                  n_new=0; n_fail=0
+                  # name + whether finished (a Complete or Failed condition is True)
+                  for row in $(kubectl -n $NS get jobs -l app=headless-matrix \
+                      -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .status.conditions[?(@.status=="True")]}{.type}{","}{end}{"\n"}{end}'); do
+                    job="${row%%|*}"; conds="${row#*|}"
+                    case "$conds" in *Complete*|*Failed*) ;; *) continue ;; esac
+                    if $S3 ls "$DEST/$job.log" >/dev/null 2>&1; then continue; fi
+                    tmp="/tmp/$job.log"
+                    if kubectl -n $NS logs "job/$job" --all-containers > "$tmp" 2>/tmp/err \
+                       && [ -s "$tmp" ]; then
+                      $S3 cp --only-show-errors "$tmp" "$DEST/$job.log" \
+                        && { echo "archived $job ($(wc -c < "$tmp") bytes, $conds)"; n_new=$((n_new+1)); } \
+                        || { echo "UPLOAD FAILED $job"; n_fail=$((n_fail+1)); }
+                    else
+                      echo "LOG READ FAILED $job: $(head -c 300 /tmp/err)"; n_fail=$((n_fail+1))
+                    fi
+                    rm -f "$tmp"
+                  done
+                  echo "matrix-archiver: $n_new archived, $n_fail failed"
+                  [ "$n_fail" -eq 0 ]
+              resources:
+                requests: { cpu: "250m", memory: "256Mi" }
+                limits:   { cpu: "250m", memory: "256Mi" }
