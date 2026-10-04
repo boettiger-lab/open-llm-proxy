@@ -124,5 +124,5 @@ spec:
                   echo "matrix-archiver: $n_new archived, $n_fail failed"
                   [ "$n_fail" -eq 0 ]
               resources:
-                requests: { cpu: "100m", memory: "128Mi" }
-                limits:   { cpu: "500m", memory: "512Mi" }
+                requests: { cpu: "250m", memory: "256Mi" }
+                limits:   { cpu: "250m", memory: "256Mi" }
