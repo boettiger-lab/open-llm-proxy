@@ -736,6 +736,13 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         if dialect_repaired:
             log_entry["tool_call_dialect_repaired"] = dialect_repaired
 
+        # The upstream host that actually served the call. OpenRouter fans one
+        # model id out across many providers (DeepInfra, Novita, ...) and names
+        # the one it picked in the body's top-level `provider`; `provider` above
+        # is only our route ("openrouter"). Absent for NRP/nimbus.
+        if response_data.get("provider"):
+            log_entry["upstream_provider"] = response_data["provider"]
+
         # Extract token usage if available
         if "usage" in response_data:
             log_entry["tokens"] = response_data["usage"]

@@ -489,6 +489,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `tool_calls` | Array of `{name, arguments}` — full tool call arguments including SQL query strings. Credential args (`s3_key`/`s3_secret`/…) are redacted. |
 | `tokens` | Token usage object from the provider (`prompt_tokens`, `completion_tokens`, `total_tokens`) |
 | `error` | Error detail string (only present on failed requests) |
+| `upstream_provider` | OpenRouter only: the host that actually served the call (e.g. `DeepInfra`, `Novita`), from the response body's `provider`. OpenRouter routes one model id across many providers with different prices, quantizations and speeds, so this is what lets cost/latency be broken down by provider. Absent for NRP/nimbus and on errors (a failed OpenRouter call names its providers inside `error`). Not a flat column — query via `json_extract_string(entry,'$.upstream_provider')`. |
 | `upstream_headers` | Allow-listed upstream response headers, captured only when the upstream returned an HTTP error response (#44). Tells a real rate-limit (`retry-after`/`x-ratelimit-*`) apart from a dead-backend gateway failure (naked `500`, `content-length: 0`, no `server`/`x-request-id`). Not a flat column — query via `json_extract(entry,'$.upstream_headers')`. |
 
 ### Wiring up `session_id`
