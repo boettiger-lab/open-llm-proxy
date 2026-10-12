@@ -85,6 +85,17 @@ def test_response_content_not_truncated_and_scrubbed():
     assert len(entry["content_preview"]) <= 200    # preview still capped
 
 
+def test_upstream_provider_logged_when_present():
+    # OpenRouter names the provider that served the call; NRP/nimbus don't.
+    p = _reload(LOG_CONTENT_MAX="0")
+    p._log_buffer.clear()
+    resp = {"provider": "DeepInfra", "choices": [{"message": {"content": "hi"}}]}
+    p.log_response("openrouter", "xiaomi/mimo-v2.6-pro", resp, 10, request_id="abc")
+    assert p._log_buffer[-1]["upstream_provider"] == "DeepInfra"
+    p.log_response("nrp", "qwen3", {"choices": [{"message": {"content": "hi"}}]}, 10, request_id="def")
+    assert "upstream_provider" not in p._log_buffer[-1]
+
+
 def test_reasoning_field_fallback_for_nimbus():
     # #66: NRP emits `reasoning_content`; the nimbus vLLM endpoint emits `reasoning`.
     # Both must set has_reasoning_content and land in the reasoning_content column.

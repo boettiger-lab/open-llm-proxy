@@ -9,6 +9,11 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Response log records the OpenRouter provider that served each call (`upstream_provider`).**
+  OpenRouter routes one model id across many hosts (34 endpoints for GLM-5.2, with output
+  prices from $1.68 to $10/M; 4 for MiMo-v2.6-pro), and its body names the one it picked.
+  The log previously kept only our route (`provider: "openrouter"`), so cost and latency
+  could not be broken down by host. Absent for NRP/nimbus and on errors.
 - **`PER_RUN_TIMEOUT_SEC` is now settable for matrix Jobs (`headless/run-matrix-k8s.sh`).**
   The knob already existed in `run_matrix.sh` (default 900), but it was neither exported
   nor in the `envsubst` allowlist, so it could not be set from outside the pod: a caller
