@@ -8,6 +8,16 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Changed
+- **Namespaced `vendor/model` ids route to OpenRouter without a prefix list (#154).** An id
+  containing `/` that matches no exact id or declared prefix now goes to the new
+  `namespaced_default_provider` (default `openrouter`) instead of `default_provider` (`nrp`).
+  NRP serves no slash-namespaced ids, so the old fallback sent every new OpenRouter vendor
+  (`reflection/`, `meta/`, `google/`) to the wrong backend, where it failed or was scored
+  under the wrong name. Bare ids still fall back to NRP; exact ids and declared prefixes
+  still win. Without a namespaced fallback the id is a 400, never NRP. `GET /v1/models` now
+  lists OpenRouter's whole catalog. Part of #142/#120.
+
 ### Added
 - **Response log records the OpenRouter provider that served each call (`upstream_provider`).**
   OpenRouter routes one model id across many hosts (34 endpoints for GLM-5.2, with output
