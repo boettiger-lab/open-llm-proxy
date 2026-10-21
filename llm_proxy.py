@@ -533,6 +533,27 @@ def resolve_default_provider(cfg: dict, providers: dict):
 DEFAULT_PROVIDER = resolve_default_provider(config, PROVIDERS)
 
 
+# Provider for a *namespaced* id (`vendor/model`) that matches no explicit entry
+# (#154). Bare ids and namespaced ids fail in opposite directions under a single
+# fallback: NRP publishes bare ids and never a slash-namespaced vendor id, while
+# OpenRouter's catalog is the authority for `vendor/model` and grows weekly. With
+# only `default_provider`, every new OpenRouter vendor needed a hand-added prefix,
+# and a forgotten one (`reflection/`) silently went to NRP instead.
+#
+# Absent key -> "openrouter" when this deployment configures it, else no
+# fallback: a namespaced id that routes nowhere is a 400, never a quiet trip to
+# `default_provider`. Set it to null/"" to require declared prefixes again.
+def resolve_namespaced_default_provider(cfg: dict, providers: dict):
+    """Pick the fallback for unmatched `vendor/model` ids, or None for a 400."""
+    name = cfg.get("namespaced_default_provider", "openrouter")
+    if not name or name not in providers:
+        return None
+    return name
+
+
+NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVIDERS)
+
+
 class UnknownModelError(Exception):
     """No provider matches this model id, and the deployment has no usable default.
 
@@ -547,8 +568,11 @@ class UnknownModelError(Exception):
             f"{name} ({', '.join(cfg['models'][:6])}{'…' if len(cfg['models']) > 6 else ''})"
             for name, cfg in PROVIDERS.items()
         )
+        hint = (" Namespaced `vendor/model` ids route to `namespaced_default_provider`,"
+                " which this deployment does not configure."
+                if "/" in model else "")
         super().__init__(
-            f"Unknown model '{model}'. This deployment serves: {served}"
+            f"Unknown model '{model}'. This deployment serves: {served}.{hint}"
         )
 
 
@@ -572,7 +596,8 @@ print("=" * 60)
 
 def get_provider_for_model(model: str) -> tuple[str, dict]:
     """Route a model id to a provider: exact ids first, then declared prefixes,
-    then the deployment's default provider (#110)."""
+    then the namespaced fallback for `vendor/model` ids (#154), then the
+    deployment's default provider for bare ids (#110)."""
     # Exact ids win over any prefix — this is what keeps a private endpoint
     # (`qwen` on nimbus, `gemma4`, `qwen3-6`) from being swallowed by a broader
     # vendor prefix declared elsewhere.
@@ -586,6 +611,13 @@ def get_provider_for_model(model: str) -> tuple[str, dict]:
         for model_prefix in config["prefixes"]:
             if model.startswith(model_prefix):
                 return provider_name, config
+
+    # A namespaced id goes to the namespaced fallback, or nowhere — never to
+    # `default_provider`, which serves bare ids (#154).
+    if "/" in model:
+        if NAMESPACED_DEFAULT_PROVIDER:
+            return NAMESPACED_DEFAULT_PROVIDER, PROVIDERS[NAMESPACED_DEFAULT_PROVIDER]
+        raise UnknownModelError(model)
 
     # Fall back to the deployment's default provider. This is the *designed*
     # route for the default provider's own models, not an anomaly: `nrp.models`
@@ -1058,8 +1090,8 @@ async def options_chat():
 # The routable set is filtered *through `get_provider_for_model` itself*, so the
 # listing cannot drift from actual routing: an id appears under a provider only
 # if the router would really send it there. A provider's own catalog may be far
-# larger than what we route (OpenRouter serves 400+ ids; we claim 11 vendor
-# prefixes), and that filter is what keeps the two honest.
+# larger than what we route, and that filter is what keeps the two honest. (Since
+# #154 every namespaced OpenRouter id routes there, so its whole catalog lists.)
 _MODELS_TTL = int(os.getenv("MODELS_CACHE_TTL", "300"))
 _MODELS_TIMEOUT = float(os.getenv("MODELS_FETCH_TIMEOUT", "8"))
 _models_cache = {"data": [], "providers": {}, "fetched_at": 0.0, "fetched_iso": None}

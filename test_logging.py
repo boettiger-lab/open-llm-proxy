@@ -1395,8 +1395,9 @@ def test_models_url_and_auth_derivation():
 
 def test_discovery_lists_only_what_this_deployment_would_actually_route():
     """The listing is filtered through get_provider_for_model itself, so it can
-    never disagree with routing. OpenRouter's real catalog is 400+ ids while we
-    claim 11 vendor prefixes — anything outside them must not be advertised."""
+    never disagree with routing. Namespaced ids route to OpenRouter whether or
+    not their vendor prefix is declared (#154), so they are all advertised there;
+    an id that routes nowhere is advertised nowhere."""
     import asyncio
     from unittest.mock import patch
 
@@ -1406,7 +1407,7 @@ def test_discovery_lists_only_what_this_deployment_would_actually_route():
         "https://openrouter.ai/api/v1/models": [
             "z-ai/glm-5.2",            # routes to openrouter (prefix)
             "~deepseek/x-latest",      # floating alias, also openrouter
-            "google/gemini-3.7-flash", # NOT a declared prefix -> must be excluded
+            "google/gemini-3.7-flash", # undeclared vendor, namespaced fallback (#154)
         ],
         "https://api.anthropic.com/v1/models": ["claude-opus-5", "claude-sonnet-5"],
         "https://vllm-nimbus.carlboettiger.info/v1/models": ["qwen"],
@@ -1419,9 +1420,9 @@ def test_discovery_lists_only_what_this_deployment_would_actually_route():
         by_provider.setdefault(m["provider"], set()).add(m["id"])
 
     assert {"qwen3", "glm-5", "deepseek-v4-flash"} <= by_provider["nrp"]
-    assert {"z-ai/glm-5.2", "~deepseek/x-latest"} <= by_provider["openrouter"]
-    # the id we cannot route is absent everywhere, not silently filed under nrp
-    assert not any(m["id"] == "google/gemini-3.7-flash" for m in cache["data"])
+    assert {"z-ai/glm-5.2", "~deepseek/x-latest",
+            "google/gemini-3.7-flash"} <= by_provider["openrouter"]
+    assert "google/gemini-3.7-flash" not in by_provider["nrp"]
     # claude ids come back even though config declares no exact claude id (#110)
     assert {"claude-opus-5", "claude-sonnet-5"} <= by_provider["anthropic"]
     assert by_provider["nimbus"] == {"qwen"}
@@ -1505,3 +1506,36 @@ def test_models_headers_survive_none_valued_config_keys():
     h = p._models_headers({**entry, "api_key": "k"})
     assert h["anthropic-version"] == "2023-06-01"
     assert all(v is not None for v in h.values())
+
+
+def test_namespaced_id_with_unlisted_vendor_routes_to_openrouter_not_nrp():
+    """#154: `reflection/` is in no prefix list. It used to fall through to NRP
+    and be answered by an NRP model under the wrong name."""
+    p = importlib.reload(llm_proxy)
+    assert p.NAMESPACED_DEFAULT_PROVIDER == "openrouter"
+    for model in ("reflection/beam-1.0-501b-a23b", "meta/muse-spark-open",
+                  "google/gemini-3.7-flash", "deepseek/deepseek-v4.1-flash-1017",
+                  "~anthropic/claude-sonnet-latest"):
+        assert p.get_provider_for_model(model)[0] == "openrouter", model
+    # bare ids keep falling back to NRP; exact ids still beat everything
+    assert p.get_provider_for_model("glm-5")[0] == "nrp"
+    assert p.get_provider_for_model("qwen")[0] == "nimbus"
+    assert p.get_provider_for_model("claude-sonnet-4-6")[0] == "anthropic"
+
+
+def test_namespaced_id_never_falls_back_to_default_provider():
+    """With no namespaced fallback, a `vendor/model` id is a 400, not a guess."""
+    p = importlib.reload(llm_proxy)
+    assert p.resolve_namespaced_default_provider({}, {"nrp": {}}) is None
+    assert p.resolve_namespaced_default_provider(
+        {"namespaced_default_provider": None}, {"openrouter": {}}) is None
+    p.NAMESPACED_DEFAULT_PROVIDER = None
+    assert p.DEFAULT_PROVIDER == "nrp"
+    try:
+        p.get_provider_for_model("reflection/beam-1.0-501b-a23b")
+    except p.UnknownModelError as e:
+        assert "namespaced_default_provider" in str(e)
+    else:
+        raise AssertionError("namespaced id must not land on default_provider")
+    # declared prefixes still route
+    assert p.get_provider_for_model("z-ai/glm-5")[0] == "openrouter"
