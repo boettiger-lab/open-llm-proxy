@@ -23,9 +23,17 @@ metadata:
   labels:
     app: open-llm-proxy
 spec:
-  # Two replicas on a one-worker cluster: enough for a zero-downtime rollout
-  # (maxUnavailable: 0 + surge) without pretending to be multi-node HA.
-  replicas: 2
+  # HALTED 2026-09-21. This local copy existed as a fallback for if NRP went
+  # down. That was not a good reason to keep a second deployment running: it
+  # served no real traffic (5 requests in 24h, all crawler hits on /,
+  # favicon.ico and robots.txt -- no API calls), while still holding a public
+  # hostname and needing upkeep. The NRP-facing deployment is the real one.
+  #
+  # To bring it back: set replicas to 2 and re-apply. The rest of the manifest
+  # is unchanged and still correct -- two replicas on a one-worker cluster is
+  # enough for a zero-downtime rollout (maxUnavailable: 0 + surge) without
+  # pretending to be multi-node HA.
+  replicas: 0
   strategy:
     type: RollingUpdate
     rollingUpdate:
