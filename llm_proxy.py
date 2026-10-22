@@ -483,6 +483,10 @@ def build_provider_entry(provider_config: dict) -> dict:
         "prefixes": provider_config.get("model_prefixes", provider_config.get("models", [])),
         "extra_headers": provider_config.get("extra_headers", {}),
         "thinking_models": provider_config.get("thinking_models", {}),
+        # How this provider takes a reasoning switch when a model is not in
+        # `thinking_models`. "openrouter" = OpenRouter's top-level `reasoning`
+        # object ({"effort": ...} or {"enabled": ...}); None = no fallback.
+        "thinking_dialect": provider_config.get("thinking_dialect"),
         # Models that 400 on sampling params (temperature/top_p) — e.g. the newest
         # Anthropic models. Must be carried through here: this rebuilt dict (not the
         # raw config) is what get_provider_for_model returns at request time.
@@ -660,7 +664,7 @@ def _never_raises(fn):
     return wrapper
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, reasoning_effort: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -703,6 +707,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         # observed reasoning trace on the response side. null = client didn't send
         # the flag / model default; True/False = explicit request override.
         "enable_thinking": enable_thinking,
+        "reasoning_effort": reasoning_effort,
         "user_question": _scrub_text(_cap(user_question, _USER_QUESTION_MAX)),
         "user_message_this_turn": _scrub_text(_cap(user_message_this_turn, _USER_QUESTION_MAX)),
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
@@ -832,6 +837,54 @@ def _slow_completion_warn_seconds() -> float:
 _SLOW_COMPLETION_WARN_SECONDS = _slow_completion_warn_seconds()
 _SLOW_COMPLETION_WARN_MS = _SLOW_COMPLETION_WARN_SECONDS * 1000
 
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high")
+
+
+def reasoning_payload(provider_config: dict, model: str,
+                      enable_thinking: Optional[bool], reasoning_effort: Optional[str]) -> dict:
+    """Payload keys that carry a client's reasoning request to one backend.
+
+    Clients send either a boolean `enable_thinking` or an OpenAI-style
+    `reasoning_effort` level; when both are sent, the level wins. Backends differ:
+
+    - Models listed in the provider's `thinking_models` (NRP vLLM) take a boolean
+      chat-template kwarg. A level maps to on, except "none", which maps to off;
+      intermediate levels cannot be expressed and are logged.
+    - A provider with `thinking_dialect: "openrouter"` takes OpenRouter's
+      `reasoning` object: `{"effort": level}`, `{"enabled": false}` for "none" or
+      `enable_thinking: false`, and `{"enabled": true}` for `enable_thinking: true`.
+      Models whose reasoning is mandatory may still reason; OpenRouter documents
+      this per model.
+    - Anything else gets nothing, with an info log, so the model default applies.
+    """
+    if reasoning_effort is not None:
+        effort = str(reasoning_effort).strip().lower()
+        if effort not in REASONING_EFFORTS:
+            print(f"ℹ️  reasoning_effort '{reasoning_effort}' for '{model}' is not one of {REASONING_EFFORTS} — ignoring")
+            effort = None
+    else:
+        effort = None
+    if effort is None and enable_thinking is None:
+        return {}
+
+    thinking_key = provider_config.get("thinking_models", {}).get(model)
+    if thinking_key:
+        on = (effort != "none") if effort is not None else enable_thinking
+        if effort not in (None, "none", "high"):
+            print(f"ℹ️  reasoning_effort '{effort}' for '{model}' sent as {thinking_key}=true (backend has no levels)")
+        return {"chat_template_kwargs": {thinking_key: on}}
+
+    if provider_config.get("thinking_dialect") == "openrouter":
+        if effort == "none" or (effort is None and enable_thinking is False):
+            return {"reasoning": {"enabled": False}}
+        if effort is not None:
+            return {"reasoning": {"effort": effort}}
+        return {"reasoning": {"enabled": True}}
+
+    print(f"ℹ️  reasoning control requested for '{model}' but its provider has no thinking_key or dialect — ignoring")
+    return {}
+
+
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]  # Accept any message format from OpenAI API
     tools: Optional[List[Dict[str, Any]]] = None
@@ -839,6 +892,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = "gpt-4"
     temperature: Optional[float] = 0.0
     enable_thinking: Optional[bool] = None  # None = use model default; True/False to override
+    reasoning_effort: Optional[str] = None  # "none" | "minimal" | "low" | "medium" | "high"; see reasoning_payload()
     user: Optional[str] = None  # OpenAI end-user id; geo-agent sets it to its per-session UUID. Logged as session_id (not forwarded upstream).
     # Declared only so it can be REJECTED explicitly (#129). This proxy is
     # deliberately non-streaming: it buffers the upstream completion and rebuilds
@@ -927,7 +981,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, enable_thinking=request.enable_thinking)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, enable_thinking=request.enable_thinking, reasoning_effort=request.reasoning_effort)
     
     # Prepare request to LLM provider
     headers = {
@@ -984,14 +1038,9 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if CACHE_SALT and provider_name == "nrp":
         payload["cache_salt"] = CACHE_SALT
 
-    # Thinking mode: inject per-model chat_template_kwargs if enable_thinking is set
-    if request.enable_thinking is not None:
-        thinking_models = provider_config.get("thinking_models", {})
-        thinking_key = thinking_models.get(request.model)
-        if thinking_key:
-            payload["chat_template_kwargs"] = {thinking_key: request.enable_thinking}
-        else:
-            print(f"ℹ️  enable_thinking requested for '{request.model}' but no thinking_key configured — ignoring")
+    # Thinking mode / reasoning effort, translated to the backend's own knob.
+    payload.update(reasoning_payload(provider_config, request.model,
+                                     request.enable_thinking, request.reasoning_effort))
     
     # Make request to LLM provider. NB: name this `http_client`, NOT `client` —
     # `client` is the X-Client header value passed to log_response() below; an

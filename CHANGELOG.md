@@ -19,6 +19,15 @@ See [Releases](README.md#releases) for how a release is cut.
   lists OpenRouter's whole catalog. Part of #142/#120.
 
 ### Added
+- **Reasoning control for OpenRouter models, and a `reasoning_effort` level.**
+  `enable_thinking` previously reached only NRP models listed in `thinking_models`; for
+  OpenRouter ids it was dropped with an info log, so apps could not turn reasoning down on
+  OpenRouter models. In global-30x30, MiMo V2.6 Flash spent 4,759 of 4,985 completion
+  tokens (188 s) on reasoning in a single map-layer step. The OpenRouter provider now
+  declares `thinking_dialect: "openrouter"`, and the proxy sends OpenRouter's `reasoning`
+  object. Requests may also carry `reasoning_effort` (`none`/`minimal`/`low`/`medium`/`high`),
+  which maps to `reasoning.effort` on OpenRouter and to the boolean kwarg on NRP. Both
+  fields are logged on the request record.
 - **Response log records the OpenRouter provider that served each call (`upstream_provider`).**
   OpenRouter routes one model id across many hosts (34 endpoints for GLM-5.2, with output
   prices from $1.68 to $10/M; 4 for MiMo-v2.6-pro), and its body names the one it picked.

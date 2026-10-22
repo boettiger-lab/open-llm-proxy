@@ -68,7 +68,20 @@ To get the savings, the app (client-side) must (1) send the system prompt as con
 
 ### Thinking mode
 
-Set `"enable_thinking": true` in the request body to activate extended reasoning on supported models (`kimi`, `qwen3`, `glm-5`). The proxy injects the correct provider-specific parameter based on `config.json`.
+Clients control reasoning with either field in the request body:
+
+- `"enable_thinking": true | false`, a boolean switch;
+- `"reasoning_effort": "none" | "minimal" | "low" | "medium" | "high"`, an OpenAI-style level. If both are sent, the level wins.
+
+The proxy translates the request for each backend:
+
+| Backend | What is sent |
+|---|---|
+| NRP models listed in `thinking_models` (`kimi`, `qwen3`, `glm-5`, `deepseek-v4-flash`, ...) | `chat_template_kwargs: {<key>: true/false}`. These backends have no levels, so `"none"` turns reasoning off and any other level turns it on. |
+| OpenRouter (`thinking_dialect: "openrouter"`) | OpenRouter's `reasoning` object: `{"effort": <level>}` for a level, `{"enabled": false}` for `"none"` or `enable_thinking: false`, `{"enabled": true}` for `enable_thinking: true`. Models whose reasoning is mandatory may still reason. |
+| Anything else | Nothing; the model's default applies, and an info line is logged. |
+
+Both fields are recorded in the request log (`enable_thinking`, `reasoning_effort`).
 
 ### No streaming (by design)
 

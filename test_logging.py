@@ -934,6 +934,48 @@ def test_nrp_thinking_dialects_match_probed_behavior():
     assert "qwen3-embedding" not in thinking
 
 
+def test_reasoning_payload_nrp_chat_template_kwargs():
+    """NRP models in `thinking_models` keep the boolean chat-template kwarg; a
+    reasoning_effort level maps to on, except "none", which maps to off."""
+    p = importlib.reload(llm_proxy)
+    nrp = p.PROVIDERS["nrp"]
+    rp = p.reasoning_payload
+    assert rp(nrp, "qwen3", False, None) == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert rp(nrp, "deepseek-v4-flash", True, None) == {"chat_template_kwargs": {"thinking": True}}
+    assert rp(nrp, "qwen3", None, "none") == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert rp(nrp, "qwen3", None, "low") == {"chat_template_kwargs": {"enable_thinking": True}}
+    # The level wins over the boolean when both are sent.
+    assert rp(nrp, "qwen3", True, "none") == {"chat_template_kwargs": {"enable_thinking": False}}
+    # Nothing requested -> nothing sent; unknown NRP model -> nothing sent.
+    assert rp(nrp, "qwen3", None, None) == {}
+    assert rp(nrp, "gpt-oss", False, None) == {}
+
+
+def test_reasoning_payload_openrouter_dialect():
+    """OpenRouter ids (no thinking_models entry) get OpenRouter's `reasoning` object."""
+    p = importlib.reload(llm_proxy)
+    orr = p.PROVIDERS["openrouter"]
+    assert orr["thinking_dialect"] == "openrouter"
+    rp = p.reasoning_payload
+    m = "xiaomi/mimo-v2.6-flash"
+    assert rp(orr, m, False, None) == {"reasoning": {"enabled": False}}
+    assert rp(orr, m, True, None) == {"reasoning": {"enabled": True}}
+    assert rp(orr, m, None, "low") == {"reasoning": {"effort": "low"}}
+    assert rp(orr, m, None, "HIGH") == {"reasoning": {"effort": "high"}}
+    assert rp(orr, m, None, "none") == {"reasoning": {"enabled": False}}
+    assert rp(orr, m, False, "medium") == {"reasoning": {"effort": "medium"}}
+    # An invalid level is dropped; the boolean (if any) still applies.
+    assert rp(orr, m, None, "extreme") == {}
+    assert rp(orr, m, False, "extreme") == {"reasoning": {"enabled": False}}
+
+
+def test_reasoning_payload_provider_without_dialect_sends_nothing():
+    p = importlib.reload(llm_proxy)
+    assert p.PROVIDERS["nimbus"]["thinking_dialect"] is None
+    plain = {"thinking_models": {}, "thinking_dialect": None}
+    assert p.reasoning_payload(plain, "some-model", False, "low") == {}
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
