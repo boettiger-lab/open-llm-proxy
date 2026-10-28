@@ -14,6 +14,11 @@
 #   RUNS_DIR            output directory — default runs/<APP_NAME>
 #   MODELS              space-separated override for the model list
 #   QUESTIONS_FILE      path to a file with one question per line (blank lines and #-comments ignored)
+#   PROXY_ENDPOINT      LLM endpoint override, passed to run.js --proxy-endpoint —
+#                       default the NRP proxy. Point it straight at a vLLM server
+#                       (e.g. https://vllm-nimbus2.carlboettiger.info/v1) to test a
+#                       self-hosted model the proxy has no route for. /tmp/proxy_key
+#                       must then hold that server's key.
 #   MCP_URL             MCP endpoint override — default the app config's mcp_url.
 #                       Set it to the dev server when gating an mcp-data-server
 #                       guidance change: the injected guides come from whichever
@@ -152,6 +157,7 @@ for trial in $(seq 1 "$TRIALS"); do
                     --system-prompt "$SYSTEM_PROMPT" \
                     ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} \
                     --model "$m" \
+                    ${PROXY_ENDPOINT:+--proxy-endpoint "$PROXY_ENDPOINT"} \
                     --origin "$ORIGIN" \
                     --max-turns "$MAX_TURNS" \
                     --run-timeout "$PER_RUN_TIMEOUT_SEC" \
