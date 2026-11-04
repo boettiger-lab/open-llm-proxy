@@ -60,10 +60,20 @@ kubectl -n biodiversity logs -f job/<JOB_NAME>     # printed by step 2
 
 The Job clones `open-llm-proxy`, `geo-agent`, and the app repo in the
 sibling layout the runner expects, `npm ci`s, and delegates to
-`run_matrix.sh`. The per-cell JSON transcripts and `summary.tsv` are dumped
-to the pod's stdout at the end, so `kubectl logs job/<JOB_NAME>` is
-self-sufficient. Proxy logs (filtered by ORIGIN) carry the full
+`run_matrix.sh`. Each cell's JSON transcript is printed to the pod's stdout
+under a `----- qN__model__tK.json -----` marker as soon as that cell finishes,
+and `summary.tsv` follows at the end, so `kubectl logs job/<JOB_NAME>` is
+self-sufficient. A Job that stops early (preempted, killed, out of memory)
+still holds every cell it finished; rerun only the rest with `SKIP_CELLS`
+(the cell names already printed, same `QUESTIONS_FILE`/`MODELS`/`TRIALS` so
+`qN` and `tK` line up). Proxy logs (filtered by ORIGIN) carry the full
 request/response pairs.
+
+Matrix Jobs run at the cluster's default priority. A matrix is a long serial
+run, and at `opportunistic` priority one preemption throws away the hour already
+spent (#157); the 1 CPU / 2 GiB request keeps the pod inside NRP's usage
+exemption. Set `PRIORITY_CLASS=opportunistic` only for short, massively parallel
+work.
 
 ### Logs outlive the Job: `matrix-archiver`
 

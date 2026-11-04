@@ -9,6 +9,16 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Changed
+- **Matrix Jobs run at the cluster's default priority and print each transcript as its
+  cell finishes (#157).** `matrix-job.yaml` hard-coded `priorityClassName: opportunistic`
+  and printed transcripts only after the whole run, so a preempted Job lost every cell it
+  had finished (two benchmark Jobs on 2026-11-04, one after 60 minutes). The priority is
+  now the new `PRIORITY_CLASS` variable of `run-matrix-k8s.sh`; empty (the default) omits
+  the line. `run_matrix.sh` gains `EMIT_TRANSCRIPTS=1`, which the Job sets, to print each
+  transcript under the same `----- <name>.json -----` marker right after its cell, and the
+  end-of-run dump (and its `=== per-cell transcripts (json) ===` header) is gone, so each
+  transcript still appears exactly once. New `SKIP_CELLS` (space-separated `qN__model__tK`
+  names) reruns only the cells a stopped Job did not finish.
 - **Namespaced `vendor/model` ids route to OpenRouter without a prefix list (#154).** An id
   containing `/` that matches no exact id or declared prefix now goes to the new
   `namespaced_default_provider` (default `openrouter`) instead of `default_provider` (`nrp`).
