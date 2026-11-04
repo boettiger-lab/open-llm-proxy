@@ -24,6 +24,15 @@
 #                       guidance change: the injected guides come from whichever
 #                       MCP the run talks to, and every committed app config
 #                       points at a production head.
+#   EMIT_TRANSCRIPTS    1 = print each cell's transcript to stdout as soon as the
+#                       cell finishes, under a `----- <name>.json -----` marker
+#                       (default 0). The k8s matrix Job sets it, so a Job that is
+#                       preempted or killed can still be collected up to the
+#                       point it stopped (#157).
+#   SKIP_CELLS          space-separated cell names (qN__model__tK, model with `/`
+#                       written as `_`) to skip, e.g. the cells a stopped run
+#                       already finished. They appear in summary.tsv as
+#                       no_transcript, like any other cell with no transcript.
 set -u
 cd "$(dirname "$0")"
 
@@ -143,6 +152,11 @@ for trial in $(seq 1 "$TRIALS"); do
                 echo "[$(date +%H:%M:%S)] SKIP    ${name}"
                 continue
             fi
+            case " ${SKIP_CELLS:-} " in
+                *" ${name} "*)
+                    echo "[$(date +%H:%M:%S)] SKIP    ${name} (SKIP_CELLS)"
+                    continue;;
+            esac
 
             echo "[$(date +%H:%M:%S)] START   ${name}"
             t0="$(date +%s)"
@@ -187,6 +201,11 @@ for trial in $(seq 1 "$TRIALS"); do
                 124) echo "[$(date +%H:%M:%S)] TIMEOUT ${name} (${dt}s)";;
                 *)   echo "[$(date +%H:%M:%S)] FAIL    ${name} (rc=$rc, ${dt}s)";;
             esac
+            if [ "${EMIT_TRANSCRIPTS:-0}" = 1 ] && [ -s "$transcript" ]; then
+                echo "----- ${name}.json -----"
+                cat "$transcript"
+                echo
+            fi
         done
     done
 done

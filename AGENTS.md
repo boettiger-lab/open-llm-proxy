@@ -119,7 +119,7 @@ Tag experimental runs with a distinctive `--origin` suffix (e.g. `…/agent_runn
 
 **Always run matrix sweeps as a Kubernetes Job, not locally.** `PROXY_KEY` lives in the `open-llm-proxy-secrets` Secret in the `biodiversity` namespace; on-cluster runs mount it directly, avoiding the local credential dance (stale `/tmp/proxy_key`, 401 sprees, laptop sleep killing a 20-minute matrix mid-run).
 
-`headless/run-matrix-k8s.sh APP_REPO` templates `headless/k8s/matrix-job.yaml` and `kubectl create`s a one-shot Job. The Job clones `open-llm-proxy` + `geo-agent` + the app repo in the sibling layout the runner expects, `npm ci`s, runs `run_matrix.sh`, and dumps per-cell transcripts + `summary.tsv` to pod stdout. Proxy logs (filtered by `ORIGIN`) carry the full request/response pairs.
+`headless/run-matrix-k8s.sh APP_REPO` templates `headless/k8s/matrix-job.yaml` and `kubectl create`s a one-shot Job. The Job clones `open-llm-proxy` + `geo-agent` + the app repo in the sibling layout the runner expects, `npm ci`s, runs `run_matrix.sh` at the cluster's default priority (`PRIORITY_CLASS` overrides), prints each cell's transcript to pod stdout as the cell finishes, and `summary.tsv` at the end. A Job that stops early keeps every finished cell; `SKIP_CELLS` reruns only the rest. Proxy logs (filtered by `ORIGIN`) carry the full request/response pairs.
 
 ```bash
 # 1. Write questions to a file (one per line, blank/#-comment lines ignored).

@@ -45,6 +45,15 @@
 #                          mcp-data-server guidance change — the injected guides
 #                          come from whichever MCP the run talks to, so a run
 #                          against prod measures the old guidance.
+#   PRIORITY_CLASS         pod priorityClassName (default empty = the cluster
+#                          default). A matrix is a long serial run, and at
+#                          `opportunistic` a preemption loses the hour already
+#                          spent (#157). Set it to `opportunistic` only for short,
+#                          massively parallel work.
+#   SKIP_CELLS             space-separated cell names (qN__model__tK, `/` in the
+#                          model written as `_`) to skip, e.g. the cells a
+#                          preempted Job already printed. Rerun with the same
+#                          QUESTIONS_FILE, MODELS and TRIALS so qN and tK line up.
 #   NAMESPACE              k8s namespace (default biodiversity)
 #   SYSTEM_PROMPT_APPEND_FILE
 #                          path to a local file whose contents are appended to
@@ -56,7 +65,8 @@
 #
 # After applying, the script prints the JOB_NAME and the kubectl/duckdb
 # follow-up commands. The Job logs (kubectl logs job/$JOB_NAME) include the
-# per-cell JSON transcripts and the summary.tsv on completion; the proxy logs
+# per-cell JSON transcripts, each printed as its cell finishes, and the summary.tsv
+# on completion; the proxy logs
 # (filterable by ORIGIN) carry the full request/response pairs for analysis.
 
 set -euo pipefail
@@ -93,6 +103,16 @@ GEO_AGENT_BRANCH="${GEO_AGENT_BRANCH:-main}"
 PROXY_BRANCH="${PROXY_BRANCH:-main}"
 MCP_URL="${MCP_URL:-}"
 NAMESPACE="${NAMESPACE:-biodiversity}"
+PRIORITY_CLASS="${PRIORITY_CLASS:-}"
+if ! [[ "$PRIORITY_CLASS" =~ ^[a-z0-9-]*$ ]]; then
+    echo "ERROR: PRIORITY_CLASS must match [a-z0-9-]* (got: '$PRIORITY_CLASS')" >&2
+    exit 2
+fi
+SKIP_CELLS="${SKIP_CELLS:-}"
+if ! [[ "$SKIP_CELLS" =~ ^[A-Za-z0-9._:\ -]*$ ]]; then
+    echo "ERROR: SKIP_CELLS must be space-separated qN__model__tK names (got: '$SKIP_CELLS')" >&2
+    exit 2
+fi
 
 TS="$(date -u +%Y%m%d-%H%M%S)"
 JOB_NAME="hmx-${APP_NAME}-${TAG}-${TS}"
@@ -111,19 +131,22 @@ fi
 
 export APP_REPO APP_BRANCH GEO_AGENT_BRANCH PROXY_BRANCH APP_NAME JOB_NAME ORIGIN TAG TRIALS MAX_TURNS MODELS \
     PER_RUN_TIMEOUT_SEC \
-    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 ENABLE_THINKING MCP_URL
+    QUESTIONS_B64 SYSTEM_PROMPT_APPEND_B64 ENABLE_THINKING MCP_URL PRIORITY_CLASS SKIP_CELLS
 
 # Allowlist: only these placeholders are substituted. Without this, envsubst
 # also replaces every $VAR reference in the bash script body (e.g. $QFILE,
 # $PROXY_KEY, $rc) with empty strings, breaking the pod at runtime.
-envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${PROXY_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${PER_RUN_TIMEOUT_SEC} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING} ${MCP_URL}' \
-    < k8s/matrix-job.yaml | kubectl -n "$NAMESPACE" create -f -
+envsubst '${APP_REPO} ${APP_BRANCH} ${GEO_AGENT_BRANCH} ${PROXY_BRANCH} ${APP_NAME} ${JOB_NAME} ${ORIGIN} ${TAG} ${TRIALS} ${MAX_TURNS} ${PER_RUN_TIMEOUT_SEC} ${MODELS} ${QUESTIONS_B64} ${SYSTEM_PROMPT_APPEND_B64} ${ENABLE_THINKING} ${MCP_URL} ${PRIORITY_CLASS} ${SKIP_CELLS}' \
+    < k8s/matrix-job.yaml \
+    | if [ -z "$PRIORITY_CLASS" ]; then sed '/^ *priorityClassName: *$/d'; else cat; fi \
+    | kubectl -n "$NAMESPACE" create -f -
 
 cat <<EOF
 
 job:    $JOB_NAME
 origin: $ORIGIN
 mcp:    ${MCP_URL:-<from app config>}
+priority: ${PRIORITY_CLASS:-<cluster default>}
 
 follow:
   kubectl -n $NAMESPACE logs -f job/$JOB_NAME

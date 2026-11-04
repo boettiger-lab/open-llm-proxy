@@ -20,7 +20,11 @@ spec:
         matrix-tag: ${TAG}
         matrix-app: ${APP_NAME}
     spec:
-      priorityClassName: opportunistic
+      # PRIORITY_CLASS (run-matrix-k8s.sh). Empty by default, and the wrapper then
+      # deletes this line, so the Job runs at the cluster default. A matrix is a long
+      # serial run; preemption at opportunistic priority threw away every finished
+      # cell (#157). The 1 CPU / 2 GiB request keeps it inside NRP's usage exemption.
+      priorityClassName: ${PRIORITY_CLASS}
       restartPolicy: Never
       affinity:
         nodeAffinity:
@@ -67,6 +71,8 @@ spec:
               value: "${QUESTIONS_B64}"
             - name: SYSTEM_PROMPT_APPEND_B64
               value: "${SYSTEM_PROMPT_APPEND_B64}"
+            - name: SKIP_CELLS
+              value: "${SKIP_CELLS}"
             - name: JOB_NAME
               value: "${JOB_NAME}"
           command: ["/bin/bash", "-c"]
@@ -190,7 +196,10 @@ spec:
               echo
 
               # Delegate to the existing matrix script. RUNS_DIR is pod-local;
-              # transcripts are dumped to stdout below so kubectl logs captures them.
+              # EMIT_TRANSCRIPTS=1 prints each cell's transcript to stdout as soon as
+              # the cell finishes, so kubectl logs holds every finished cell even if
+              # the Job is preempted or killed mid-run (#157). They are printed once
+              # only: consumers (collect_run.py) do not deduplicate.
               RUNS_DIR_REL="runs/$JOB_NAME"
               rc=0
               QUESTIONS_FILE="$QFILE" \
@@ -201,17 +210,11 @@ spec:
               MODELS="$MODELS" \
               MCP_URL="$MCP_URL" \
               RUNS_DIR="$RUNS_DIR_REL" \
+              SKIP_CELLS="$SKIP_CELLS" \
+              EMIT_TRANSCRIPTS=1 \
                   ./run_matrix.sh "/work/$APP_NAME" || rc=$?
 
               echo
-              echo "=== per-cell transcripts (json) ==="
-              for f in "$RUNS_DIR_REL"/*.json; do
-                  [ -f "$f" ] || continue
-                  echo "----- $(basename "$f") -----"
-                  cat "$f"
-                  echo
-              done
-
               echo "=== summary.tsv ==="
               cat "$RUNS_DIR_REL/summary.tsv" 2>/dev/null || echo "(no summary written)"
 
