@@ -101,6 +101,7 @@ behind its floating alias; OpenRouter adds the upstream host it picked). The rou
 | `GEO_AGENT_BRANCH` | Optional; `boettiger-lab/geo-agent` branch to clone (default `main`). The runner imports its framework from this checkout, so set it to A/B-test a code-level geo-agent change on the open models before it ships in a pinned release. Pair with a second run on `main` for the baseline. |
 | `PROXY_BRANCH` | Optional; `boettiger-lab/open-llm-proxy` branch to clone (default `main`). This repo supplies the runner itself (`run.js`, `run_matrix.sh`, the vendored MCP client), so set it to exercise a runner change **on the cluster before merging** — without it the Job always runs `main`, and a headless fix can only be tested somewhere other than where matrix runs actually happen. Recorded as `proxy_branch` in the `##BENCH-VERSIONS##` line. |
 | `MCP_URL` | Optional MCP endpoint override (default: the app config's `mcp_url`). Every app commits a production head, so a gate run for an `mcp-data-server` guidance change **must** set this to `https://dev-duckdb-mcp.nrp-nautilus.io/mcp` — the injected guides come from whichever MCP the run talks to. Recorded per cell in the transcript, so a run's target is auditable after the fact. |
+| `MCP_AUTH_TOKEN` | Not set by you: the Job mounts it from Secret `duckdb-mcp-auth`. The public MCP endpoints return 401 without it (geo-query#453). |
 
 ## Local single-run usage (ad-hoc debugging only)
 
@@ -114,6 +115,11 @@ matrix testing — use the k8s Job above.**
 - `boettiger-lab/geo-agent` available — the `../../geo-agent/` sibling by default,
   or point `GEO_AGENT_DIR` at any checkout (see below)
 - A valid proxy key, via `PROXY_KEY` env var or `--api-key`
+- `MCP_AUTH_TOKEN` set to the duckdb-mcp Bearer token when the app's `mcp_url`
+  is one of the public `*.nrp-nautilus.io` MCP endpoints (required since
+  2026-11-07, SchmidtDSE/geo-query#453). It is in Secret `duckdb-mcp-auth`, key
+  `MCP_AUTH_TOKEN`, namespace `biodiversity`. The matrix Job mounts it for you.
+  Without it the run exits 3 with an MCP 401 error.
 
 ### Isolating from the shared geo-agent checkout (`GEO_AGENT_DIR`)
 
