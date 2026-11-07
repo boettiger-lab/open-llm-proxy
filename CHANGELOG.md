@@ -8,6 +8,15 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Fixed
+- **Headless runs send the duckdb-mcp Bearer token.** Since 2026-11-07 the public MCP
+  endpoints (`duckdb-mcp`, `dev-duckdb-mcp`, `experimental-duckdb-mcp`, `ca30x30-mcp`)
+  return 401 without `Authorization: Bearer <token>` (SchmidtDSE/geo-query#453), so every
+  matrix cell exited rc=1 within seconds. `run.js` now reads `MCP_AUTH_TOKEN` (or
+  `config.mcp_auth_token`) and sends it as a Bearer header without logging it; a 401 exits
+  3 with a clear message. `matrix-job.yaml` mounts the token from the `duckdb-mcp-auth`
+  Secret (key `MCP_AUTH_TOKEN`, optional).
+
 ### Changed
 - **Matrix Jobs run at the cluster's default priority and print each transcript as its
   cell finishes (#157).** `matrix-job.yaml` hard-coded `priorityClassName: opportunistic`
