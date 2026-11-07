@@ -111,6 +111,8 @@ Options:
   --api-key KEY            Proxy key (or env PROXY_KEY / OPENAI_API_KEY)
   --max-turns N            Max tool-call iterations (default: 20)
   --mcp-url URL            Override MCP server URL (default: config.mcp_url)
+                           Env MCP_AUTH_TOKEN (or config.mcp_auth_token) is sent
+                           as a Bearer token; never written to the transcript.
   --transcript PATH        Write full transcript JSON to PATH
   --run-timeout N          Hard wall-clock cap in seconds; writes partial
                            transcript with timed_out=true and exits 124
@@ -313,8 +315,12 @@ async function main() {
     await catalog.load(config);
     err(`[headless] loaded ${catalog.getAll().length} datasets`);
 
-    err(`[headless] MCP: ${mcpUrl}`);
-    const mcp = new MCPClient(mcpUrl);
+    // The public duckdb-mcp endpoints require a Bearer token since 2026-11-07
+    // (geo-query#453). Env first, so the k8s Job can mount it from a Secret; the
+    // token is never logged or written to the transcript.
+    const mcpToken = (process.env.MCP_AUTH_TOKEN || config.mcp_auth_token || '').trim();
+    err(`[headless] MCP: ${mcpUrl} (auth token: ${mcpToken ? 'set' : 'none'})`);
+    const mcp = new MCPClient(mcpUrl, mcpToken ? { Authorization: `Bearer ${mcpToken}` } : {});
 
     const toolRegistry = new ToolRegistry();
     const stubMapManager = new StubMapManager(catalog);
@@ -330,7 +336,16 @@ async function main() {
         err(`[headless] Refreshed MCP tools after reconnect: ${tools.length} tools`);
     });
 
-    await mcp.connect();
+    try {
+        await mcp.connect();
+    } catch (e) {
+        if (/401|Unauthorized/i.test(String(e?.message ?? e))) {
+            console.error(`ERROR: MCP server refused the connection (401). Set MCP_AUTH_TOKEN ` +
+                `(token ${mcpToken ? 'was set but rejected' : 'is not set'}).`);
+            process.exit(3);
+        }
+        throw e;
+    }
     const mcpTools = await mcp.listTools();
     err(`[headless] MCP tools: ${mcpTools.map(t => t.name).join(', ')}`);
     toolRegistry.registerRemote(mcpTools, mcp);

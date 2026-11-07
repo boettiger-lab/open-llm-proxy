@@ -43,6 +43,13 @@ spec:
                 secretKeyRef:
                   name: open-llm-proxy-secrets
                   key: proxy-key
+            # Bearer token for the public duckdb-mcp endpoints (geo-query#453).
+            - name: MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: duckdb-mcp-auth
+                  key: MCP_AUTH_TOKEN
+                  optional: true
             - name: APP_REPO
               value: "${APP_REPO}"
             - name: APP_BRANCH
