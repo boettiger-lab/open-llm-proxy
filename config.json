@@ -135,5 +135,20 @@
     }
   },
   "default_key_tier": "public",
-  "primary_key_tier": "private"
+  "primary_key_tier": "private",
+  "budgets": {
+    "window_hours": 24,
+    "per_key": {
+      "public": 10000000,
+      "private": 50000000
+    },
+    "per_client": {
+      "public": 3000000,
+      "private": 10000000
+    },
+    "per_user": {
+      "public": 3000000,
+      "private": 10000000
+    }
+  }
 }

@@ -9,6 +9,15 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Daily token budgets and a deny-list (#168).**
+  - Prompt + completion tokens are counted per key, per visitor address and per signed-in user
+    over a rolling 24h window. Each is checked against its tier's limit in `config.json`
+    `budgets`. Over budget gets a 429 with `Retry-After`.
+  - Counters live in a small Redis (`redis.yaml`), shared by all 12 workers. If Redis errors,
+    requests are allowed and the error is logged.
+  - A deny-list ConfigMap (`open-llm-proxy-denylist`) blocks a key, address or user within about
+    a minute, with no restart.
+  - Rows gain `user`, a salted hash of `X-Forwarded-Email`.
 - **Named client keys (#162).** Keys can be issued per app or per person as `name:key` lines
   in the `open-llm-proxy-client-keys` Secret, mounted at `PROXY_KEYS_FILE`. The proxy
   re-reads the file when it changes, so issuing or revoking a key needs no restart.

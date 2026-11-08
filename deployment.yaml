@@ -117,7 +117,7 @@ spec:
           mountPath: /etc/coredns
       - name: open-llm-proxy
         image: astral/uv:python3.12-bookworm-slim
-        command: ["uvx", "--from", "uvicorn", "--with", "fastapi", "--with", "httpx", "--with", "pydantic", "--with", "boto3", "uvicorn", "llm_proxy:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
+        command: ["uvx", "--from", "uvicorn", "--with", "fastapi", "--with", "httpx", "--with", "pydantic", "--with", "boto3", "--with", "redis==5.2.1", "uvicorn", "llm_proxy:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
         workingDir: /app
         ports:
         - containerPort: 8002
@@ -169,6 +169,19 @@ spec:
         # only PROXY_KEY / PROXY_KEYS_EXTRA are accepted, as before.
         - name: PROXY_KEYS_FILE
           value: /etc/llm-proxy/client-keys/keys
+        # Shared counters for the daily token budgets (#168): 12 workers across 3
+        # pods must count against one total. See redis.yaml.
+        - name: BUDGET_REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: redis-password
+              optional: true
+        - name: BUDGET_REDIS_URL
+          value: "redis://:$(BUDGET_REDIS_PASSWORD)@open-llm-proxy-redis.biodiversity.svc.cluster.local:6379/0"
+        # Deny-list (#168): ConfigMap open-llm-proxy-denylist, re-read on change.
+        - name: DENYLIST_FILE
+          value: /etc/llm-proxy/denylist/denylist
         # End-user address from the app nginx's X-Real-IP is logged as a salted
         # hash (CLIENT_IP_LOG=hash); with no salt it is not logged at all.
         - name: CLIENT_IP_SALT
@@ -209,6 +222,9 @@ spec:
         - name: client-keys
           mountPath: /etc/llm-proxy/client-keys
           readOnly: true
+        - name: denylist
+          mountPath: /etc/llm-proxy/denylist
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /health
@@ -244,6 +260,10 @@ spec:
       - name: client-keys
         secret:
           secretName: open-llm-proxy-client-keys
+          optional: true
+      - name: denylist
+        configMap:
+          name: open-llm-proxy-denylist
           optional: true
       - name: dns-config
         configMap:
