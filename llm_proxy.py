@@ -493,6 +493,14 @@ def build_provider_entry(provider_config: dict) -> dict:
         "models_auth": provider_config.get("models_auth"),
         "models_endpoint": provider_config.get("models_endpoint"),
         "anthropic_version": provider_config.get("anthropic_version"),
+        # Output-token bounds (#150). `default_max_tokens` is sent when the client
+        # sends none; `max_tokens_ceiling` clamps what a client may ask for. Set per
+        # provider, not globally: vLLM (NRP, nimbus) 400s when prompt + max_tokens
+        # exceeds the model's context, so a blanket default would break the
+        # small-context models, while the paid providers are where a runaway
+        # costs money.
+        "default_max_tokens": provider_config.get("default_max_tokens"),
+        "max_tokens_ceiling": provider_config.get("max_tokens_ceiling"),
     }
 
 
@@ -554,6 +562,56 @@ def resolve_namespaced_default_provider(cfg: dict, providers: dict):
 NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVIDERS)
 
 
+# Which models callers may use at all (hardening, #163). Routing answers "where
+# would this id go"; this answers "may it go there". Without it, any key holder —
+# and so anyone using a public app's /api/llm/ relay — could name any OpenRouter
+# `vendor/model` id (#154 routes them all) or any direct `claude-*` id.
+#
+#   allowed_providers: every id routed to these providers is allowed (e.g. the
+#                      lab-hosted, unbilled ones: nrp, nimbus).
+#   allowed_models:    ids allowed whatever their provider; exact, or a trailing
+#                      `*` for a prefix.
+#
+# Neither key present -> no policy, everything routable is allowed (cirrus and
+# other deployments keep their behavior). Either present -> default deny.
+def resolve_model_policy(cfg: dict):
+    """Return (providers, patterns), or None when the config sets no policy."""
+    providers = cfg.get("allowed_providers")
+    models = cfg.get("allowed_models")
+    if providers is None and models is None:
+        return None
+    return frozenset(providers or []), tuple(models or [])
+
+
+MODEL_POLICY = resolve_model_policy(config)
+
+
+def model_allowed(model: str, provider_name: str, policy=None) -> bool:
+    """True if `policy` (default: this deployment's MODEL_POLICY) permits the id."""
+    policy = MODEL_POLICY if policy is None else policy
+    if policy is None:
+        return True
+    providers, patterns = policy
+    if provider_name in providers:
+        return True
+    for pat in patterns:
+        if pat.endswith("*") and model.startswith(pat[:-1]):
+            return True
+        if model == pat:
+            return True
+    return False
+
+
+def effective_max_tokens(requested, provider_config: dict):
+    """Client value clamped to the provider's ceiling, else the provider default."""
+    ceiling = provider_config.get("max_tokens_ceiling")
+    value = requested if requested is not None else provider_config.get("default_max_tokens")
+    if value is not None and ceiling is not None:
+        value = min(value, ceiling)
+    return value
+
+
+
 class UnknownModelError(Exception):
     """No provider matches this model id, and the deployment has no usable default.
 
@@ -588,6 +646,10 @@ if not PROXY_KEY:
     print("⚠️  WARNING: PROXY_KEY not set - proxy will reject all requests!")
 elif len(VALID_PROXY_KEYS) > 1:
     print(f"✓ Accepting {len(VALID_PROXY_KEYS)} client keys (PROXY_KEY + {len(VALID_PROXY_KEYS)-1} from PROXY_KEYS_EXTRA)")
+if MODEL_POLICY is None:
+    print("ℹ️  No allowed_providers/allowed_models: every routable model is allowed")
+else:
+    print(f"✓ Model policy: all of {sorted(MODEL_POLICY[0])} + {len(MODEL_POLICY[1])} listed ids; others get 403")
 if CACHE_SALT:
     print("✓ CACHE_SALT configured - responses isolated from other NRP tenants")
 else:
@@ -917,6 +979,17 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         log_response("unrouted", request.model, {}, 0, error=str(e),
                      origin=origin, request_id=request_id, session_id=session_id, client=client)
         raise HTTPException(status_code=400, detail=str(e))
+
+    if not model_allowed(request.model, provider_name):
+        providers, patterns = MODEL_POLICY
+        error_msg = (
+            f"Model '{request.model}' is not enabled on this proxy. Allowed: every "
+            f"model on {', '.join(sorted(providers)) or 'no provider'}, plus "
+            f"{', '.join(patterns) or 'no others'}."
+        )
+        log_response("disallowed", request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client)
+        raise HTTPException(status_code=403, detail=error_msg)
     endpoint = provider_config["endpoint"]
     api_key = provider_config["api_key"]
     
@@ -963,7 +1036,10 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
 
     # Forward known-safe sampling/output knobs when the client sends them (#47).
     # Only set keys that are present (non-None) so provider defaults are untouched.
-    for field in ("top_p", "seed", "stop", "max_tokens", "response_format"):
+    max_tokens = effective_max_tokens(request.max_tokens, provider_config)
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    for field in ("top_p", "seed", "stop", "response_format"):
         value = getattr(request, field)
         if value is not None:
             if field == "top_p" and rejects_sampling:
@@ -1171,7 +1247,7 @@ async def refresh_models(force: bool = False) -> dict:
             routable = []
             for mid in ids:
                 try:
-                    if get_provider_for_model(mid)[0] == name:
+                    if get_provider_for_model(mid)[0] == name and model_allowed(mid, name):
                         routable.append(mid)
                 except UnknownModelError:
                     continue

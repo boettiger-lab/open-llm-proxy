@@ -934,18 +934,6 @@ def test_nrp_thinking_dialects_match_probed_behavior():
     assert "qwen3-embedding" not in thinking
 
 
-if __name__ == "__main__":
-    import sys
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception as e:
-            failed += 1
-            print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
-    sys.exit(1 if failed else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1402,6 +1390,7 @@ def test_discovery_lists_only_what_this_deployment_would_actually_route():
     from unittest.mock import patch
 
     p = importlib.reload(llm_proxy)
+    p.MODEL_POLICY = None   # routing/discovery under test, not the allow-list
     catalog = {
         "https://ellm.nrp-nautilus.io/v1/models": ["qwen3", "glm-5", "deepseek-v4-flash"],
         "https://openrouter.ai/api/v1/models": [
@@ -1435,6 +1424,7 @@ def test_unreachable_provider_degrades_instead_of_disappearing():
     from unittest.mock import patch
 
     p = importlib.reload(llm_proxy)
+    p.MODEL_POLICY = None   # routing/discovery under test, not the allow-list
     dead = "https://gemma4-nimbus.carlboettiger.info/v1/models"
 
     with patch.object(p.httpx, "AsyncClient", _fake_models_client({}, fail={dead})):
@@ -1539,3 +1529,103 @@ def test_namespaced_id_never_falls_back_to_default_provider():
         raise AssertionError("namespaced id must not land on default_provider")
     # declared prefixes still route
     assert p.get_provider_for_model("z-ai/glm-5")[0] == "openrouter"
+
+
+def test_model_policy_absent_allows_everything():
+    """No allowed_* keys (cirrus, third-party configs) -> no policy, no change."""
+    p = importlib.reload(llm_proxy)
+    assert p.resolve_model_policy({}) is None
+    p.MODEL_POLICY = None
+    assert p.model_allowed("openai/o3-pro", "openrouter")
+    assert p.model_allowed("claude-opus-4-8", "anthropic")
+
+
+def test_model_policy_default_denies_paid_ids():
+    """Hardening: lab-hosted providers open, paid ids only when listed."""
+    p = importlib.reload(llm_proxy)
+    policy = p.resolve_model_policy({"allowed_providers": ["nrp", "nimbus"],
+                                     "allowed_models": ["z-ai/glm-5.2", "xiaomi/*"]})
+    assert p.model_allowed("qwen3", "nrp", policy)
+    assert p.model_allowed("qwen", "nimbus", policy)
+    assert p.model_allowed("z-ai/glm-5.2", "openrouter", policy)
+    assert p.model_allowed("xiaomi/mimo-v2.6-pro", "openrouter", policy)
+    assert not p.model_allowed("z-ai/glm-5.2-preview", "openrouter", policy)
+    assert not p.model_allowed("openai/o3-pro", "openrouter", policy)
+    assert not p.model_allowed("claude-opus-4-8", "anthropic", policy)
+    # an empty allowed_models with providers set still denies everything else
+    assert not p.model_allowed("z-ai/glm-5.2", "openrouter",
+                               p.resolve_model_policy({"allowed_providers": ["nrp"]}))
+
+
+def test_shipped_config_denies_unlisted_paid_models():
+    """The NRP config.json must keep the expensive families closed."""
+    p = importlib.reload(llm_proxy)
+    assert p.MODEL_POLICY is not None
+    for model in ("openai/o3-pro", "anthropic/claude-opus-4-8", "claude-opus-4-8",
+                  "reflection/beam-1.0-501b-a23b"):
+        assert not p.model_allowed(model, p.get_provider_for_model(model)[0]), model
+    for model in ("qwen3", "glm-5", "qwen", "z-ai/glm-5.2"):
+        assert p.model_allowed(model, p.get_provider_for_model(model)[0]), model
+
+
+def test_disallowed_model_is_403_and_logged():
+    import asyncio
+    from fastapi import HTTPException
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    req = p.ChatRequest(model="openai/o3-pro", messages=[{"role": "user", "content": "hi"}])
+    try:
+        asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+    except HTTPException as e:
+        assert e.status_code == 403
+        assert "not enabled" in e.detail
+    else:
+        raise AssertionError("disallowed model must be refused")
+    rows = [e for e in p._log_buffer if e.get("type") == "response"]
+    assert rows and rows[-1]["provider"] == "disallowed"
+    assert rows[-1]["origin"] == "https://app"
+
+
+def test_max_tokens_default_and_ceiling():
+    """#150: default only when the client sends none; client values clamped."""
+    p = importlib.reload(llm_proxy)
+    capped = {"default_max_tokens": 32768, "max_tokens_ceiling": 32768}
+    assert p.effective_max_tokens(None, capped) == 32768
+    assert p.effective_max_tokens(131072, capped) == 32768
+    assert p.effective_max_tokens(500, capped) == 500
+    assert p.effective_max_tokens(None, {}) is None      # NRP: provider default
+    assert p.effective_max_tokens(900, {}) == 900
+
+
+def test_max_tokens_forwarded_per_provider():
+    or_cfg = {"endpoint": "http://upstream", "api_key": "k",
+              "default_max_tokens": 32768, "max_tokens_ceiling": 32768}
+    payload = _run_proxy_capture({"model": "z-ai/glm-5.2",
+                                  "messages": [{"role": "user", "content": "hi"}]},
+                                 provider=("openrouter", or_cfg))
+    assert payload["max_tokens"] == 32768
+    payload = _run_proxy_capture({"model": "z-ai/glm-5.2", "max_tokens": 200000,
+                                  "messages": [{"role": "user", "content": "hi"}]},
+                                 provider=("openrouter", or_cfg))
+    assert payload["max_tokens"] == 32768
+    payload = _run_proxy_capture({"model": "qwen3",
+                                  "messages": [{"role": "user", "content": "hi"}]})
+    assert "max_tokens" not in payload
+
+
+if __name__ == "__main__":
+    import sys
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print(f"PASS {fn.__name__}")
+        except Exception as e:
+            failed += 1
+            print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
+    sys.exit(1 if failed else 0)

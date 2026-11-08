@@ -37,7 +37,9 @@
         "xiaomi/",
         "~"
       ],
-      "models": []
+      "models": [],
+      "default_max_tokens": 32768,
+      "max_tokens_ceiling": 32768
     },
     "anthropic": {
       "endpoint": "https://api.anthropic.com/v1/chat/completions",
@@ -53,7 +55,9 @@
       "model_prefixes": [
         "claude-"
       ],
-      "models_auth": "x-api-key"
+      "models_auth": "x-api-key",
+      "default_max_tokens": 32768,
+      "max_tokens_ceiling": 32768
     },
     "nimbus": {
       "endpoint": "https://vllm-nimbus.carlboettiger.info/v1/chat/completions",
@@ -86,5 +90,23 @@
       "model_prefixes": []
     }
   },
-  "default_provider": "nrp"
+  "default_provider": "nrp",
+  "allowed_providers": [
+    "nrp",
+    "nimbus"
+  ],
+  "allowed_models": [
+    "anthropic/claude-sonnet-5",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash-0731",
+    "deepseek/deepseek-v4-flash-vision-exp",
+    "deepseek/deepseek-v4.1-flash",
+    "moonshotai/kimi-k3",
+    "xiaomi/mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-pro",
+    "z-ai/glm-5.2",
+    "z-ai/glm-5.3",
+    "~deepseek/deepseek-v4-flash-latest",
+    "~google/gemini-flash-latest"
+  ]
 }
