@@ -747,6 +747,183 @@ def tier_model_list(tier) -> list:
     return out
 
 
+# Daily token budgets and a deny-list (#168). Alerts (#165) say when to look;
+# these stop the spend. Counted per client key, per end-user address (the app
+# nginx's X-Real-IP) and per signed-in user (X-Forwarded-Email), each against its
+# tier's limit over a rolling window:
+#
+#   "budgets": {"window_hours": 24,
+#               "per_key":    {"public": 10000000, "private": 50000000},
+#               "per_client": {"public": 3000000,  "private": 10000000},
+#               "per_user":   {"public": 3000000,  "private": 10000000}}
+#
+# A tier missing from a scope has no limit there. Address and user are counted
+# separately, so a caller who rotates a forged X-Forwarded-Email still hits the
+# address budget. Tokens are prompt + completion as the provider reports them.
+#
+# The counters must be shared: the NRP deployment runs 3 pods x 4 workers, and
+# counters kept in each process would let a caller spend 12x the budget. So they
+# live in Redis (BUDGET_REDIS_URL). Without it they fall back to process memory,
+# with a warning. If Redis errors mid-flight the request is allowed (fail open)
+# and the error logged: a budget outage should not take the apps down.
+def resolve_budgets(cfg: dict):
+    b = cfg.get("budgets")
+    if not b:
+        return None
+    return {"window_hours": int(b.get("window_hours", 24)),
+            "per_key": dict(b.get("per_key") or {}),
+            "per_client": dict(b.get("per_client") or {}),
+            "per_user": dict(b.get("per_user") or {})}
+
+
+BUDGETS = resolve_budgets(config)
+BUDGET_REDIS_URL = os.getenv("BUDGET_REDIS_URL")
+
+
+class MemoryBudgetStore:
+    """Per-process hourly buckets. Exact in tests; a 12x-loose cap in production."""
+
+    def __init__(self):
+        self.buckets = {}
+
+    async def window(self, counters, hours):
+        return [self.buckets.get((c, h), 0) for c in counters for h in hours]
+
+    async def charge(self, counters, hour, tokens, ttl_s):
+        for c in counters:
+            self.buckets[(c, hour)] = self.buckets.get((c, hour), 0) + tokens
+
+
+class RedisBudgetStore:
+    def __init__(self, url):
+        import redis.asyncio as aioredis  # imported lazily: only needed when configured
+        self.r = aioredis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+
+    async def window(self, counters, hours):
+        vals = await self.r.mget([f"tok:{c}:{h}" for c in counters for h in hours])
+        return [int(v) if v else 0 for v in vals]
+
+    async def charge(self, counters, hour, tokens, ttl_s):
+        pipe = self.r.pipeline(transaction=False)
+        for c in counters:
+            pipe.incrby(f"tok:{c}:{hour}", tokens)
+            pipe.expire(f"tok:{c}:{hour}", ttl_s)
+        await pipe.execute()
+
+
+_budget_store = None
+_budget_errors = 0
+
+
+def budget_store():
+    global _budget_store
+    if _budget_store is None:
+        if BUDGET_REDIS_URL:
+            _budget_store = RedisBudgetStore(BUDGET_REDIS_URL)
+        else:
+            _budget_store = MemoryBudgetStore()
+    return _budget_store
+
+
+def budget_counters(tier, key_name, client_ip, user):
+    """[(counter id, limit, label)] that apply to this caller."""
+    if not BUDGETS:
+        return []
+    out = []
+    for scope, ident in (("key", key_name), ("client", client_ip), ("user", user)):
+        limit = BUDGETS[f"per_{scope}"].get(tier)
+        if ident and limit:
+            out.append((f"{scope}:{ident}", int(limit), scope))
+    return out
+
+
+async def check_budget(counters, now=None):
+    """None if within budget, else (label, used, limit, reset_epoch)."""
+    global _budget_errors
+    if not counters:
+        return None
+    now = time.time() if now is None else now
+    cur = int(now // 3600)
+    hours = list(range(cur - BUDGETS["window_hours"] + 1, cur + 1))
+    try:
+        vals = await budget_store().window([c for c, _, _ in counters], hours)
+    except Exception as e:  # fail open
+        _budget_errors += 1
+        if _budget_errors in (1, 10, 100) or _budget_errors % 1000 == 0:
+            print(f"⚠️  budget store unavailable ({_budget_errors}x), not enforcing: {type(e).__name__}: {e}", flush=True)
+        return None
+    n = len(hours)
+    for i, (_, limit, label) in enumerate(counters):
+        row = vals[i * n:(i + 1) * n]
+        used = sum(row)
+        if used >= limit:
+            first = next(h for h, v in zip(hours, row) if v)
+            return label, used, limit, (first + BUDGETS["window_hours"]) * 3600
+    return None
+
+
+async def charge_budget(counters, tokens, now=None):
+    global _budget_errors
+    if not counters or not tokens:
+        return
+    now = time.time() if now is None else now
+    try:
+        await budget_store().charge([c for c, _, _ in counters], int(now // 3600), int(tokens),
+                                    (BUDGETS["window_hours"] + 1) * 3600)
+    except Exception as e:
+        _budget_errors += 1
+        if _budget_errors in (1, 10, 100) or _budget_errors % 1000 == 0:
+            print(f"⚠️  budget charge failed ({_budget_errors}x): {type(e).__name__}: {e}", flush=True)
+
+
+# Deny-list: a mounted ConfigMap (DENYLIST_FILE), re-read when it changes, so one
+# key, address or user can be blocked in about a minute without a restart or a
+# key rotation. One entry per line, `#` comments allowed:
+#   key tpl                    a client key, by name
+#   client 529b5c72100fa917    an address, as logged in `client_ip`
+#   user 3f0c...               a signed-in user, as logged in `user`
+DENYLIST_FILE = os.getenv("DENYLIST_FILE")
+_denylist = {"mtime": None, "entries": frozenset()}
+
+
+def denylist() -> frozenset:
+    if not DENYLIST_FILE:
+        return frozenset()
+    try:
+        mtime = os.stat(DENYLIST_FILE).st_mtime
+    except OSError:
+        return frozenset()
+    if mtime != _denylist["mtime"]:
+        entries = set()
+        try:
+            with open(DENYLIST_FILE) as f:
+                for line in f:
+                    parts = line.split("#", 1)[0].split()
+                    if len(parts) == 2 and parts[0] in ("key", "client", "user"):
+                        entries.add((parts[0], parts[1]))
+        except OSError as e:
+            print(f"⚠️  Could not read DENYLIST_FILE: {e}")
+        _denylist.update(mtime=mtime, entries=frozenset(entries))
+        print(f"🚫 Deny-list loaded: {len(entries)} entries")
+    return _denylist["entries"]
+
+
+def is_denied(key_name, client_ip, user) -> bool:
+    d = denylist()
+    return bool(d) and (("key", key_name) in d or ("client", client_ip) in d or ("user", user) in d)
+
+
+def user_for_log(headers) -> Optional[str]:
+    """Signed-in user (oauth2-proxy's X-Forwarded-Email via the app nginx),
+    salted-hashed like the address. Only trustworthy where that nginx strips a
+    client-supplied value; budgets count address and user separately for that
+    reason."""
+    email = (headers.get("x-forwarded-email") or "").strip().lower()
+    if not email or not CLIENT_IP_SALT:
+        return None
+    return hashlib.sha256(f"{CLIENT_IP_SALT}:user:{email}".encode()).hexdigest()[:16]
+
+
 def effective_max_tokens(requested, provider_config: dict):
     """Client value clamped to the provider's ceiling, else the provider default."""
     ceiling = provider_config.get("max_tokens_ceiling")
@@ -800,6 +977,10 @@ else:
     print("✓ Model tiers: " + "; ".join(
         f"{t} ({len(v['models'])} models, default {v['default_model']})" for t, v in TIERS.items())
         + f". Unmarked keys: {DEFAULT_KEY_TIER}; shared PROXY_KEY: {PRIMARY_KEY_TIER}")
+if BUDGETS:
+    print(f"✓ Token budgets over {BUDGETS['window_hours']}h: key {BUDGETS['per_key']}, "
+          f"client {BUDGETS['per_client']}, user {BUDGETS['per_user']}; store: "
+          + ("redis" if BUDGET_REDIS_URL else "PROCESS MEMORY (limits are per worker, not shared)"))
 if CACHE_SALT:
     print("✓ CACHE_SALT configured - responses isolated from other NRP tenants")
 else:
@@ -872,7 +1053,7 @@ def _never_raises(fn):
     return wrapper
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -909,6 +1090,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "key_name": key_name,       # name of the client key (#162); never the key
         "client_ip": client_ip,     # X-Real-IP, hashed unless CLIENT_IP_LOG=raw
         "tier": tier,               # model tier of the key: public / private (#163)
+        "user": user,               # signed-in user (X-Forwarded-Email), salted hash
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -929,7 +1111,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _log("📥 REQUEST", log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -940,6 +1122,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         "key_name": key_name,
         "client_ip": client_ip,
         "tier": tier,
+        "user": user,
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -1098,13 +1281,19 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
     key_name, tier = ident
     client_ip = client_ip_for_log(http_request.headers)
+    user = user_for_log(http_request.headers)
+    request_id = uuid.uuid4().hex[:8]
+    if is_denied(key_name, client_ip, user):
+        log_response("blocked", request.model, {}, 0, error="deny-list",
+                     origin=http_request.headers.get("origin") or http_request.headers.get("referer"),
+                     request_id=request_id, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+        raise HTTPException(status_code=403, detail="Forbidden")
 
     # Caller identity, derived before any early return: the three rejections below
     # (streaming, unroutable model, missing provider key) each log a response row,
     # and a row without `origin` cannot be traced to the app that sent it — which is
     # the whole point of logging the rejection. This used to be computed after
     # routing, so those rows carried "origin": null.
-    request_id = uuid.uuid4().hex[:8]
     origin = http_request.headers.get("origin") or http_request.headers.get("referer")
     # Session id: prefer the OpenAI `user` body field (geo-agent already sends its
     # per-session UUID there); fall back to the X-Session-Id header for other clients.
@@ -1121,7 +1310,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             "log the request/response pair. Omit `stream` or set it to false."
         )
         log_response("streaming-unsupported", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
         raise HTTPException(status_code=400, detail=error_msg)
 
     # Determine provider based on model
@@ -1132,7 +1321,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         # synthetic provider so the miss is visible in the logs (the request never
         # reaches log_request, which runs after routing succeeds).
         log_response("unrouted", request.model, {}, 0, error=str(e),
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
         raise HTTPException(status_code=400, detail=str(e))
 
     if not model_in_tier(request.model, tier):
@@ -1140,19 +1329,33 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         error_msg = (f"Model '{request.model}' is not available to {tier} apps. "
                      f"Available: {listed}.")
         log_response("disallowed", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
         raise HTTPException(status_code=403, detail=error_msg)
+
+    counters = budget_counters(tier, key_name, client_ip, user)
+    over = await check_budget(counters)
+    if over:
+        label, used, limit, reset = over
+        resets = datetime.utcfromtimestamp(reset).strftime("%Y-%m-%d %H:%M UTC")
+        error_msg = (f"Daily token budget exceeded for this {label} "
+                     f"({used:,} of {limit:,} tokens in {BUDGETS['window_hours']}h). "
+                     f"It starts freeing up at {resets}.")
+        log_response("budget-exceeded", request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client,
+                     key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+        raise HTTPException(status_code=429, detail=error_msg,
+                            headers={"Retry-After": str(max(60, int(reset - time.time())))})
     endpoint = provider_config["endpoint"]
     api_key = provider_config["api_key"]
     
     if not api_key:
         error_msg = f"{provider_name.upper()} API key not configured on server"
         log_response(provider_name, request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, enable_thinking=request.enable_thinking)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, enable_thinking=request.enable_thinking)
     
     # Prepare request to LLM provider
     headers = {
@@ -1255,8 +1458,11 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                       f"(model={request.model}, request_id={request_id}) — the caller may "
                       f"already have given up on this turn and seen a gateway 502/504",
                       flush=True)
-            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, dialect_repaired=dialect_repaired)
+            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, dialect_repaired=dialect_repaired)
 
+            usage = result.get("usage") or {}
+            await charge_budget(counters, (usage.get("prompt_tokens") or 0)
+                                + (usage.get("completion_tokens") or 0))
             return result
 
         except asyncio.CancelledError:
@@ -1269,13 +1475,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # then re-raise so the cancellation still propagates correctly.
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Client disconnected/cancelled after {latency_ms}ms (upstream still pending)"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
             raise
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
             raise HTTPException(status_code=504, detail=error_detail)
 
         except httpx.HTTPStatusError as e:
@@ -1285,7 +1491,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # retry-after/x-ratelimit-*) vs dead-backend (naked 500, no
             # server/x-request-id) distinction is queryable from logs (#44).
             upstream_headers = _capture_upstream_headers(e.response.headers)
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, upstream_headers=upstream_headers)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, upstream_headers=upstream_headers)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
@@ -1298,7 +1504,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors

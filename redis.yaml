@@ -1,0 +1,62 @@
+# Shared counters for the proxy's daily token budgets (#168).
+#
+# The proxy runs 3 pods x 4 uvicorn workers; budgets must count against one
+# total, so the counters live here. Nothing durable is stored: losing the pod
+# only resets the current window, so there is no persistence and no volume.
+# Password from open-llm-proxy-secrets/redis-password (required here; the proxy
+# side is optional and falls back to per-process counters without it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-llm-proxy-redis
+  namespace: biodiversity
+  labels: {app: open-llm-proxy-redis}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: open-llm-proxy-redis}
+  template:
+    metadata:
+      labels: {app: open-llm-proxy-redis}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: redis
+        image: redis:7.4-alpine
+        command: ["sh", "-c", "exec redis-server --requirepass \"$REDIS_PASSWORD\" --save '' --appendonly no --maxmemory 64mb --maxmemory-policy volatile-ttl --protected-mode no"]
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef: {name: open-llm-proxy-secrets, key: redis-password}
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          tcpSocket: {port: 6379}
+          periodSeconds: 10
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 128Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+      volumes:
+      - name: data
+        emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-llm-proxy-redis
+  namespace: biodiversity
+spec:
+  selector: {app: open-llm-proxy-redis}
+  ports:
+  - port: 6379
+    targetPort: 6379

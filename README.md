@@ -88,6 +88,42 @@ The proxy keeps two curated model lists in `config.json`: one for public apps an
 
 Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
 
+### Token budgets and the deny-list
+
+**Budgets (#168).** The proxy counts prompt + completion tokens over a rolling window. Each counter is checked against its tier's limit in `config.json` `budgets`:
+
+| Counter | Identifies | Public | Private |
+|---|---|---|---|
+| `per_key` | an app or job | 10M | 50M |
+| `per_client` | a visitor's address (`X-Real-IP`) | 3M | 10M |
+| `per_user` | a signed-in user (`X-Forwarded-Email`) | 3M | 10M |
+
+- **The window** is 24 hours.
+- **Over budget:** the request gets a **429** with `Retry-After`, saying which budget was hit and when it starts freeing up. It is logged with `provider: "budget-exceeded"`.
+- **Address and user are counted separately,** so a forged email header can't escape the address limit.
+- **The starting numbers** come from two days of logs (2026-11-06/07). The busiest real-user session used 589k tokens in a day, the busiest app about 975k, and a benchmark run up to 9M. Revisit them with more data.
+
+**The counter store.** Counters live in Redis (`redis.yaml`, password `redis-password` in `open-llm-proxy-secrets`), because 3 pods × 4 workers must count against one total.
+- **Without `BUDGET_REDIS_URL`,** each process keeps its own counters, which would allow 12 times the budget. A warning is printed at startup.
+- **If Redis errors,** requests are allowed, so a budget outage never takes the apps down, and the error is logged.
+
+**The deny-list.** ConfigMap `open-llm-proxy-denylist`, key `denylist`, one entry per line:
+
+```
+key tpl                    # a client key, by name
+client 529b5c72100fa917    # an address, as logged in client_ip
+user 3f0c9a1b2c3d4e5f      # a signed-in user, as logged in user
+```
+
+```bash
+kubectl -n biodiversity create configmap open-llm-proxy-denylist \
+  --from-file=denylist=denylist.txt --dry-run=client -o yaml | kubectl apply -f -
+```
+
+- **Taking effect:** the proxy re-reads the file when it changes, usually within a minute, with no restart.
+- **What a blocked caller sees:** a bare 403, logged with `provider: "blocked"`.
+- **Finding an entry:** use the hashes as they appear in the logs. The same salt hashes the address and the user, so the raw values are never needed.
+
 ### Thinking mode
 
 Set `"enable_thinking": true` in the request body to activate extended reasoning on supported models (`kimi`, `qwen3`, `glm-5`). The proxy injects the correct provider-specific parameter based on `config.json`.

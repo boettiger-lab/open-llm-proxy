@@ -1802,6 +1802,167 @@ def test_no_public_api_schema():
     p = importlib.reload(llm_proxy)
     assert p.app.openapi_url is None and p.app.docs_url is None and p.app.redoc_url is None
 
+def _budget_proxy(budgets, store=None):
+    p = importlib.reload(llm_proxy)
+    p.BUDGETS = p.resolve_budgets({"budgets": budgets})
+    p._budget_store = store or p.MemoryBudgetStore()
+    return p
+
+
+def test_budget_counters_by_tier_and_scope():
+    p = _budget_proxy({"per_key": {"public": 100}, "per_client": {"public": 10, "private": 50}})
+    assert p.budget_counters("public", "tpl", "ip1", "u1") == [("key:tpl", 100, "key"), ("client:ip1", 10, "client")]
+    assert p.budget_counters("private", "coasts", "ip1", None) == [("client:ip1", 50, "client")]
+    assert p.budget_counters("public", "tpl", None, None) == [("key:tpl", 100, "key")]
+    p.BUDGETS = None
+    assert p.budget_counters("public", "tpl", "ip1", "u1") == []
+
+
+def test_budget_rolling_window_and_reset():
+    import asyncio
+    p = _budget_proxy({"window_hours": 24, "per_client": {"public": 1000}})
+    c = p.budget_counters("public", "tpl", "ip1", None)
+    t0 = 1_800_000_000
+    asyncio.run(p.charge_budget(c, 600, now=t0))
+    assert asyncio.run(p.check_budget(c, now=t0 + 60)) is None
+    asyncio.run(p.charge_budget(c, 500, now=t0 + 3600))
+    over = asyncio.run(p.check_budget(c, now=t0 + 7200))
+    assert over and over[0] == "client" and over[1] == 1100 and over[2] == 1000
+    assert over[3] == (int(t0 // 3600) + 24) * 3600        # first bucket ages out
+    # 24h after the first charge, only the second (500) is left in the window
+    assert asyncio.run(p.check_budget(c, now=t0 + 24 * 3600 + 1)) is None
+    # address and key are separate counters: another address is untouched
+    assert asyncio.run(p.check_budget(p.budget_counters("public", "tpl", "ip2", None), now=t0 + 7200)) is None
+
+
+def test_budget_store_failure_fails_open():
+    import asyncio
+
+    class _Down:
+        async def window(self, *a):
+            raise ConnectionError("redis down")
+        async def charge(self, *a):
+            raise ConnectionError("redis down")
+
+    p = _budget_proxy({"per_key": {"public": 1}}, store=_Down())
+    c = p.budget_counters("public", "tpl", None, None)
+    assert asyncio.run(p.check_budget(c)) is None
+    asyncio.run(p.charge_budget(c, 10))       # must not raise
+
+
+def test_redis_store_key_format():
+    """The shared store writes tok:<scope>:<id>:<hour> with a TTL past the window."""
+    import asyncio
+    calls = []
+
+    class _Pipe:
+        def incrby(self, k, n): calls.append(("incrby", k, n))
+        def expire(self, k, t): calls.append(("expire", k, t))
+        async def execute(self): return []
+
+    class _R:
+        async def mget(self, keys):
+            calls.append(("mget", tuple(keys)))
+            return [b"7", None] * (len(keys) // 2)
+        def pipeline(self, transaction=False): return _Pipe()
+
+    store = llm_proxy.RedisBudgetStore.__new__(llm_proxy.RedisBudgetStore)
+    store.r = _R()
+    assert asyncio.run(store.window(["key:tpl"], [10, 11])) == [7, 0]
+    asyncio.run(store.charge(["key:tpl", "client:ab"], 11, 5, 90000))
+    assert ("mget", ("tok:key:tpl:10", "tok:key:tpl:11")) in calls
+    assert ("incrby", "tok:client:ab:11", 5) in calls and ("expire", "tok:key:tpl:11", 90000) in calls
+
+
+def _drive(p, model="qwen3", auth="Bearer k-tpl", headers=None, usage=None):
+    import asyncio
+    from unittest.mock import patch
+
+    class _FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}], "usage": usage or {}}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return _FakeResp()
+
+    class _FakeRequest:
+        pass
+    _FakeRequest.headers = headers or {}
+    req = p.ChatRequest(model=model, messages=[{"role": "user", "content": "hi"}])
+    with patch.object(p, "get_provider_for_model",
+                      return_value=("nrp", {"endpoint": "http://upstream", "api_key": "k"})), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+        return asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization=auth))
+
+
+def test_budget_enforced_end_to_end_with_429():
+    from fastapi import HTTPException
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p.BUDGETS = p.resolve_budgets({"budgets": {"per_key": {"public": 100}}})
+        p._budget_store = p.MemoryBudgetStore()
+        p._log_buffer.clear()
+        _drive(p, usage={"prompt_tokens": 60, "completion_tokens": 50})   # 110 >= 100
+        try:
+            _drive(p)
+        except HTTPException as e:
+            assert e.status_code == 429
+            assert "budget exceeded for this key" in e.detail
+            assert int(e.headers["Retry-After"]) >= 60
+        else:
+            raise AssertionError("over-budget request must get 429")
+        row = [e for e in p._log_buffer if e.get("type") == "response"][-1]
+        assert row["provider"] == "budget-exceeded" and row["key_name"] == "tpl"
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_denylist_blocks_key_client_and_user_live():
+    import tempfile, time as _t
+    from fastapi import HTTPException
+    with tempfile.NamedTemporaryFile("w", suffix=".deny", delete=False) as fh:
+        fh.write("# nothing yet\n")
+        path = fh.name
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl"
+    os.environ["DENYLIST_FILE"] = path
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p.CLIENT_IP_LOG, p.CLIENT_IP_SALT = "hash", "salt"
+        hdr = {"x-real-ip": "198.51.100.9", "x-forwarded-email": "Someone@Example.org"}
+        _drive(p, headers=hdr)                                   # allowed
+        ip_hash = p.client_ip_for_log(hdr)
+        user_hash = p.user_for_log(hdr)
+        assert user_hash and user_hash != ip_hash and "example" not in user_hash
+        for entry in (f"client {ip_hash}", f"user {user_hash}", "key tpl"):
+            with open(path, "w") as fh:
+                fh.write(entry + "  # abuse 2026-11-08\n")
+            os.utime(path, (_t.time() + 5, _t.time() + 5))
+            try:
+                _drive(p, headers=hdr)
+            except HTTPException as e:
+                assert e.status_code == 403 and e.detail == "Forbidden", entry
+            else:
+                raise AssertionError(f"{entry} must block")
+            _t.sleep(0.01)
+        rows = [e for e in p._log_buffer if e.get("provider") == "blocked"]
+        assert rows and rows[-1]["key_name"] == "tpl"
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"], os.environ["DENYLIST_FILE"]
+        os.unlink(path)
+        _reload(PROXY_KEY="testkey")
+
+
+def test_user_not_logged_without_salt():
+    p = importlib.reload(llm_proxy)
+    p.CLIENT_IP_SALT = None
+    assert p.user_for_log({"x-forwarded-email": "a@b.org"}) is None
+
 
 if __name__ == "__main__":
     import sys
