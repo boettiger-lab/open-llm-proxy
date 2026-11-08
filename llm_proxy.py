@@ -441,21 +441,119 @@ PROXY_KEY = os.getenv("PROXY_KEY")  # Primary client key (prod apps)
 CACHE_SALT = os.getenv("CACHE_SALT")  # Optional: isolate cached responses per deployment
 
 
+# Client keys and their names (#162). Every request is attributed to the name of
+# the key that sent it, so one app's or one person's usage can be measured,
+# limited and cut off without touching the others. The name is logged; the key
+# never is.
+#
+# Sources, merged:
+#   PROXY_KEY          the legacy shared key, named "primary".
+#   PROXY_KEYS_EXTRA   comma-separated; each entry `name:key`, or a bare `key`
+#                      (named "unnamed-<sha256 prefix>" so it is still traceable).
+#   PROXY_KEYS_FILE    one `name:key` per line, `#` comments allowed. Meant to be a
+#                      mounted Secret: kubelet refreshes it in place, and the proxy
+#                      re-reads it when its mtime changes, so issuing or revoking a
+#                      key needs no restart.
+# A revoked key gets the same 401 as an unknown one.
+_KEY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _key_fingerprint(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
+def _parse_key_entry(entry: str, where: str):
+    """`name:key` or bare `key` -> (key, name), or None for a blank/invalid entry."""
+    entry = entry.strip()
+    if not entry or entry.startswith("#"):
+        return None
+    name, sep, key = entry.partition(":")
+    if not sep:
+        return entry, f"unnamed-{_key_fingerprint(entry)}"
+    name, key = name.strip(), key.strip()
+    if not key or not _KEY_NAME_RE.match(name):
+        print(f"⚠️  Ignoring malformed client key entry in {where} (name {name!r})")
+        return None
+    return key, name
+
+
+def parse_client_keys(primary, extra, file_text=None) -> dict:
+    """Map of accepted client key -> its name. Later sources win on a duplicate key."""
+    keys = {}
+    if primary and primary.strip():
+        keys[primary.strip()] = "primary"
+    for entry in (extra or "").split(","):
+        parsed = _parse_key_entry(entry, "PROXY_KEYS_EXTRA")
+        if parsed:
+            keys[parsed[0]] = parsed[1]
+    for line in (file_text or "").splitlines():
+        parsed = _parse_key_entry(line, "PROXY_KEYS_FILE")
+        if parsed:
+            keys[parsed[0]] = parsed[1]
+    return keys
+
+
 def compute_valid_keys(primary, extra):
-    """Set of accepted client keys: the primary PROXY_KEY plus any comma-separated
-    revocable extras (PROXY_KEYS_EXTRA) — e.g. per-user eval keys. Blank/whitespace
-    entries are dropped. Deliberately NOT a key-management layer: keys are accepted
-    equally, with no per-key rate limits or attribution. Revoke a key by removing it
-    from PROXY_KEYS_EXTRA and restarting; spend caps are enforced upstream at the
-    providers, not here."""
-    return frozenset(
-        k.strip() for k in ([primary] + (extra or "").split(",")) if k and k.strip()
-    )
+    """Set of accepted client keys from PROXY_KEY and PROXY_KEYS_EXTRA."""
+    return frozenset(parse_client_keys(primary, extra))
 
 
-# All client keys the proxy will accept. Backward-compatible: with no
-# PROXY_KEYS_EXTRA this is exactly {PROXY_KEY}, identical to the old behavior.
-VALID_PROXY_KEYS = compute_valid_keys(PROXY_KEY, os.getenv("PROXY_KEYS_EXTRA", ""))
+PROXY_KEYS_FILE = os.getenv("PROXY_KEYS_FILE")
+_client_keys = {"mtime": None, "keys": {}}
+
+
+def client_keys() -> dict:
+    """Current key -> name map, re-reading PROXY_KEYS_FILE if it changed."""
+    mtime, text = None, None
+    if PROXY_KEYS_FILE:
+        try:
+            mtime = os.stat(PROXY_KEYS_FILE).st_mtime
+        except OSError:
+            mtime = None
+    if _client_keys["keys"] and mtime == _client_keys["mtime"]:
+        return _client_keys["keys"]
+    if mtime is not None:
+        try:
+            with open(PROXY_KEYS_FILE) as f:
+                text = f.read()
+        except OSError as e:
+            print(f"⚠️  Could not read PROXY_KEYS_FILE: {e}")
+    keys = parse_client_keys(PROXY_KEY, os.getenv("PROXY_KEYS_EXTRA", ""), text)
+    if _client_keys["mtime"] is not None or mtime is not None:
+        print(f"🔑 Client keys loaded: {len(keys)} ({', '.join(sorted(set(keys.values())))})")
+    _client_keys.update(mtime=mtime, keys=keys)
+    return keys
+
+
+def key_name_for(authorization) -> Optional[str]:
+    """Name of the client key in an `Authorization: Bearer` header, or None."""
+    if not authorization:
+        return None
+    key = authorization.replace("Bearer ", "", 1).strip()
+    return client_keys().get(key) if key else None
+
+
+# End-user address as forwarded by the app's nginx (`X-Real-IP`). Only as
+# trustworthy as the caller that set it: the apps derive it from HAProxy's
+# X-Forwarded-For, but a direct in-cluster caller can send anything.
+#   CLIENT_IP_LOG=hash (default)  salted sha256 prefix; needs CLIENT_IP_SALT,
+#                                 and logs nothing without one.
+#   CLIENT_IP_LOG=raw             the address itself.
+#   CLIENT_IP_LOG=off             nothing.
+CLIENT_IP_LOG = (os.getenv("CLIENT_IP_LOG") or "hash").strip().lower()
+CLIENT_IP_SALT = os.getenv("CLIENT_IP_SALT")
+
+
+def client_ip_for_log(headers) -> Optional[str]:
+    ip = (headers.get("x-real-ip") or "").strip()
+    if not ip or CLIENT_IP_LOG == "off":
+        return None
+    if CLIENT_IP_LOG == "raw":
+        return ip
+    if not CLIENT_IP_SALT:
+        return None
+    return hashlib.sha256(f"{CLIENT_IP_SALT}:{ip}".encode()).hexdigest()[:16]
+
 
 # Build PROVIDERS dictionary from config
 def build_provider_entry(provider_config: dict) -> dict:
@@ -642,10 +740,13 @@ for provider, config in PROVIDERS.items():
     has_key = bool(config["api_key"])
     status = "✓" if has_key else "✗"
     print(f"{status} {provider.upper()}: {config['endpoint']} (key: {'set' if has_key else 'MISSING'})")
-if not PROXY_KEY:
-    print("⚠️  WARNING: PROXY_KEY not set - proxy will reject all requests!")
-elif len(VALID_PROXY_KEYS) > 1:
-    print(f"✓ Accepting {len(VALID_PROXY_KEYS)} client keys (PROXY_KEY + {len(VALID_PROXY_KEYS)-1} from PROXY_KEYS_EXTRA)")
+if not client_keys():
+    print("⚠️  WARNING: no client keys (PROXY_KEY, PROXY_KEYS_EXTRA, PROXY_KEYS_FILE) - proxy will reject all requests!")
+else:
+    _names = sorted(set(client_keys().values()))
+    print(f"✓ Accepting {len(client_keys())} client keys: {', '.join(_names)}")
+if CLIENT_IP_LOG == "hash" and not CLIENT_IP_SALT:
+    print("ℹ️  CLIENT_IP_LOG=hash but CLIENT_IP_SALT is unset - client addresses are not logged")
 if MODEL_POLICY is None:
     print("ℹ️  No allowed_providers/allowed_models: every routable model is allowed")
 else:
@@ -722,7 +823,7 @@ def _never_raises(fn):
     return wrapper
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -756,6 +857,8 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "request_id": request_id,
         "session_id": session_id,
         "client": client,           # e.g. "geo-agent/v3.13.1"; null until clients send X-Client
+        "key_name": key_name,       # name of the client key (#162); never the key
+        "client_ip": client_ip,     # X-Real-IP, hashed unless CLIENT_IP_LOG=raw
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -776,7 +879,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _log("📥 REQUEST", log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -784,6 +887,8 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         "request_id": request_id,
         "session_id": session_id,
         "client": client,
+        "key_name": key_name,
+        "client_ip": client_ip,
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -934,15 +1039,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     start_time = time.time()
     
     # Check client authorization
-    if not PROXY_KEY:
-        raise HTTPException(status_code=500, detail="PROXY_KEY not configured on server")
-    
-    client_key = None
-    if authorization:
-        client_key = authorization.replace('Bearer ', '').strip()
-    
-    if not client_key or client_key not in VALID_PROXY_KEYS:
+    if not client_keys():
+        raise HTTPException(status_code=500, detail="No client keys configured on server")
+
+    key_name = key_name_for(authorization)
+    if not key_name:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
+    client_ip = client_ip_for_log(http_request.headers)
 
     # Caller identity, derived before any early return: the three rejections below
     # (streaming, unroutable model, missing provider key) each log a response row,
@@ -966,7 +1069,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             "log the request/response pair. Omit `stream` or set it to false."
         )
         log_response("streaming-unsupported", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
         raise HTTPException(status_code=400, detail=error_msg)
 
     # Determine provider based on model
@@ -977,7 +1080,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         # synthetic provider so the miss is visible in the logs (the request never
         # reaches log_request, which runs after routing succeeds).
         log_response("unrouted", request.model, {}, 0, error=str(e),
-                     origin=origin, request_id=request_id, session_id=session_id, client=client)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
         raise HTTPException(status_code=400, detail=str(e))
 
     if not model_allowed(request.model, provider_name):
@@ -988,7 +1091,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             f"{', '.join(patterns) or 'no others'}."
         )
         log_response("disallowed", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
         raise HTTPException(status_code=403, detail=error_msg)
     endpoint = provider_config["endpoint"]
     api_key = provider_config["api_key"]
@@ -996,11 +1099,11 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if not api_key:
         error_msg = f"{provider_name.upper()} API key not configured on server"
         log_response(provider_name, request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, enable_thinking=request.enable_thinking)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, enable_thinking=request.enable_thinking)
     
     # Prepare request to LLM provider
     headers = {
@@ -1103,7 +1206,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                       f"(model={request.model}, request_id={request_id}) — the caller may "
                       f"already have given up on this turn and seen a gateway 502/504",
                       flush=True)
-            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, dialect_repaired=dialect_repaired)
+            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, dialect_repaired=dialect_repaired)
 
             return result
 
@@ -1117,13 +1220,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # then re-raise so the cancellation still propagates correctly.
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Client disconnected/cancelled after {latency_ms}ms (upstream still pending)"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
             raise
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
             raise HTTPException(status_code=504, detail=error_detail)
 
         except httpx.HTTPStatusError as e:
@@ -1133,7 +1236,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # retry-after/x-ratelimit-*) vs dead-backend (naked 500, no
             # server/x-request-id) distinction is queryable from logs (#44).
             upstream_headers = _capture_upstream_headers(e.response.headers)
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, upstream_headers=upstream_headers)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, upstream_headers=upstream_headers)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
@@ -1146,7 +1249,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors
@@ -1281,10 +1384,9 @@ async def list_models(authorization: str = Header(None), refresh: bool = False):
     app pointed at a narrower deployment sees a narrower list, rather than
     offering ids that will 400.
     """
-    if not VALID_PROXY_KEYS:
+    if not client_keys():
         raise HTTPException(status_code=500, detail="PROXY_KEY not configured on server")
-    client_key = (authorization or "").replace("Bearer ", "").strip()
-    if client_key not in VALID_PROXY_KEYS:
+    if not key_name_for(authorization):
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
 
     cache = await refresh_models(force=refresh)

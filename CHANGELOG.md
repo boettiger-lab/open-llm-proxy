@@ -8,6 +8,16 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **Named client keys (#162).** Keys can be issued per app or per person as `name:key` lines
+  in the `open-llm-proxy-client-keys` Secret, mounted at `PROXY_KEYS_FILE`. The proxy
+  re-reads the file when it changes, so issuing or revoking a key needs no restart.
+  `PROXY_KEYS_EXTRA` also accepts `name:key`. Every request and response row now carries
+  `key_name`, never the key itself. The legacy `PROXY_KEY` is logged as `primary`.
+- **Client address logging (#162).** `X-Real-IP` from the app's nginx is logged as
+  `client_ip`, a salted hash by default (`CLIENT_IP_LOG`, `CLIENT_IP_SALT`). With no salt
+  set, nothing is logged.
+
 ### Security
 - **Model allow-list.** `config.json` now sets `allowed_providers` (`nrp`, `nimbus`) and
   `allowed_models` (the paid OpenRouter ids the apps' configs use today). Any other id gets

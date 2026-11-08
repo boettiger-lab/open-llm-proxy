@@ -162,6 +162,21 @@ spec:
             secretKeyRef:
               name: open-llm-proxy-secrets
               key: cache-salt
+        # Named client keys (#162): one `name:key` per line in the
+        # open-llm-proxy-client-keys Secret. Mounted (not an env var) so kubelet
+        # refreshes it in place and the proxy picks up issued or revoked keys
+        # within about a minute, with no restart. optional=true: absent Secret ->
+        # only PROXY_KEY / PROXY_KEYS_EXTRA are accepted, as before.
+        - name: PROXY_KEYS_FILE
+          value: /etc/llm-proxy/client-keys/keys
+        # End-user address from the app nginx's X-Real-IP is logged as a salted
+        # hash (CLIENT_IP_LOG=hash); with no salt it is not logged at all.
+        - name: CLIENT_IP_SALT
+          valueFrom:
+            secretKeyRef:
+              name: open-llm-proxy-secrets
+              key: client-ip-salt
+              optional: true
         # Logging fidelity (see LOGGING.md). Credentials are always scrubbed.
         # "summary" (default): full response content + generously-capped inputs.
         # "full": additionally log the entire scrubbed `messages` array per turn
@@ -191,6 +206,9 @@ spec:
         volumeMounts:
         - name: app-code
           mountPath: /app
+        - name: client-keys
+          mountPath: /etc/llm-proxy/client-keys
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /health
@@ -223,6 +241,10 @@ spec:
       volumes:
       - name: app-code
         emptyDir: {}
+      - name: client-keys
+        secret:
+          secretName: open-llm-proxy-client-keys
+          optional: true
       - name: dns-config
         configMap:
           name: open-llm-proxy-dns-cache
