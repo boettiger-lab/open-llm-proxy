@@ -379,7 +379,10 @@ async def lifespan(app: FastAPI):
     task.cancel()
     await _flush_to_s3()  # final flush on shutdown
 
-app = FastAPI(title="Multi-Provider LLM Proxy", lifespan=lifespan)
+# No /docs, /redoc or /openapi.json: the API is documented in the README, and the
+# schema only helped the November 2026 prober map the service.
+app = FastAPI(title="Multi-Provider LLM Proxy", lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
 
 # Enable CORS - allow requests from GitHub Pages and k8s deployment
 app.add_middleware(
@@ -450,12 +453,13 @@ CACHE_SALT = os.getenv("CACHE_SALT")  # Optional: isolate cached responses per d
 #   PROXY_KEY          the legacy shared key, named "primary".
 #   PROXY_KEYS_EXTRA   comma-separated; each entry `name:key`, or a bare `key`
 #                      (named "unnamed-<sha256 prefix>" so it is still traceable).
-#   PROXY_KEYS_FILE    one `name:key` per line, `#` comments allowed. Meant to be a
+#   PROXY_KEYS_FILE    one `tier/name:key` (or `name:key`) per line, `#` comments
+#                      allowed. Meant to be a
 #                      mounted Secret: kubelet refreshes it in place, and the proxy
 #                      re-reads it when its mtime changes, so issuing or revoking a
 #                      key needs no restart.
 # A revoked key gets the same 401 as an unknown one.
-_KEY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_KEY_NAME_RE = re.compile(r"^(?:[a-z][a-z0-9-]{0,31}/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _key_fingerprint(key: str) -> str:
@@ -463,7 +467,7 @@ def _key_fingerprint(key: str) -> str:
 
 
 def _parse_key_entry(entry: str, where: str):
-    """`name:key` or bare `key` -> (key, name), or None for a blank/invalid entry."""
+    """`[tier/]name:key` or bare `key` -> (key, "[tier/]name"), or None."""
     entry = entry.strip()
     if not entry or entry.startswith("#"):
         return None
@@ -525,12 +529,29 @@ def client_keys() -> dict:
     return keys
 
 
-def key_name_for(authorization) -> Optional[str]:
-    """Name of the client key in an `Authorization: Bearer` header, or None."""
+def key_identity(authorization):
+    """(name, tier) of the client key in an `Authorization: Bearer` header, or None.
+
+    The tier comes from the key's `tier/` prefix in the keys file. Without one,
+    the legacy shared key gets `primary_key_tier` and any other key gets
+    `default_key_tier`, which is "public": an unmarked key never gets more
+    than the public list."""
     if not authorization:
         return None
     key = authorization.replace("Bearer ", "", 1).strip()
-    return client_keys().get(key) if key else None
+    raw = client_keys().get(key) if key else None
+    if not raw:
+        return None
+    tier, _, name = raw.rpartition("/")
+    if not tier:
+        tier = PRIMARY_KEY_TIER if name == "primary" else DEFAULT_KEY_TIER
+    return name, tier
+
+
+def key_name_for(authorization) -> Optional[str]:
+    """Name of the client key in an `Authorization: Bearer` header, or None."""
+    ident = key_identity(authorization)
+    return ident[0] if ident else None
 
 
 # End-user address as forwarded by the app's nginx (`X-Real-IP`). Only as
@@ -660,44 +681,70 @@ def resolve_namespaced_default_provider(cfg: dict, providers: dict):
 NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVIDERS)
 
 
-# Which models callers may use at all (hardening, #163). Routing answers "where
-# would this id go"; this answers "may it go there". Without it, any key holder —
-# and so anyone using a public app's /api/llm/ relay — could name any OpenRouter
-# `vendor/model` id (#154 routes them all) or any direct `claude-*` id.
+# Model tiers (#163). The proxy keeps two curated model lists, one for public
+# apps and one for private (signed-in) apps, and nothing per app. Every client
+# key belongs to a tier, so the list an app offers and the models it may call
+# are set here, once, for every app of that kind. Public apps are open relays
+# by construction — anyone on the internet can POST to their /api/llm/ — so the
+# public list holds only lab- and NRP-hosted models.
 #
-#   allowed_providers: every id routed to these providers is allowed (e.g. the
-#                      lab-hosted, unbilled ones: nrp, nimbus).
-#   allowed_models:    ids allowed whatever their provider; exact, or a trailing
-#                      `*` for a prefix.
+#   "tiers": {"public":  {"default_model": "deepseek-v4-flash", "models": [...]},
+#             "private": {"default_model": "deepseek-v4-flash", "models": [...]}}
 #
-# Neither key present -> no policy, everything routable is allowed (cirrus and
-# other deployments keep their behavior). Either present -> default deny.
-def resolve_model_policy(cfg: dict):
-    """Return (providers, patterns), or None when the config sets no policy."""
-    providers = cfg.get("allowed_providers")
-    models = cfg.get("allowed_models")
-    if providers is None and models is None:
+# `models` entries are exact ids, or a prefix ending in `*`. A model outside the
+# caller's tier gets a 403; `GET /v1/models` returns the tier's list, in order,
+# with the default flagged. No `tiers` key -> every routable model is allowed
+# (cirrus and other deployments keep their behavior).
+def resolve_tiers(cfg: dict):
+    """Map of tier -> {"default_model", "models"}, or None when unconfigured."""
+    tiers = cfg.get("tiers")
+    if not tiers:
         return None
-    return frozenset(providers or []), tuple(models or [])
+    out = {}
+    for name, spec in tiers.items():
+        models = tuple(spec.get("models") or [])
+        default = spec.get("default_model") or next((m for m in models if not m.endswith("*")), None)
+        if default and default not in models:
+            print(f"⚠️  tiers.{name}.default_model {default!r} is not in its models list")
+        out[name] = {"default_model": default, "models": models}
+    return out
 
 
-MODEL_POLICY = resolve_model_policy(config)
+TIERS = resolve_tiers(config)
+DEFAULT_KEY_TIER = config.get("default_key_tier", "public")
+# The legacy shared PROXY_KEY is still what every app sends until each moves to
+# its own key (#162). It stays "private" for that migration only, so private
+# apps keep working; set it to "public" (or revoke the key) once they have moved.
+PRIMARY_KEY_TIER = config.get("primary_key_tier", "private")
 
 
-def model_allowed(model: str, provider_name: str, policy=None) -> bool:
-    """True if `policy` (default: this deployment's MODEL_POLICY) permits the id."""
-    policy = MODEL_POLICY if policy is None else policy
-    if policy is None:
+def model_in_tier(model: str, tier) -> bool:
+    """True if `tier` may use `model`. Unknown tier -> False."""
+    if TIERS is None:
         return True
-    providers, patterns = policy
-    if provider_name in providers:
-        return True
-    for pat in patterns:
-        if pat.endswith("*") and model.startswith(pat[:-1]):
-            return True
-        if model == pat:
+    spec = TIERS.get(tier)
+    if spec is None:
+        return False
+    for pat in spec["models"]:
+        if model == pat or (pat.endswith("*") and model.startswith(pat[:-1])):
             return True
     return False
+
+
+def tier_model_list(tier) -> list:
+    """The tier's listable models (exact ids that route), in configured order."""
+    spec = (TIERS or {}).get(tier) or {"models": (), "default_model": None}
+    out = []
+    for mid in spec["models"]:
+        if mid.endswith("*"):
+            continue
+        try:
+            provider = get_provider_for_model(mid)[0]
+        except UnknownModelError:
+            continue
+        out.append({"id": mid, "object": "model", "owned_by": provider,
+                    "provider": provider, "default": mid == spec["default_model"]})
+    return out
 
 
 def effective_max_tokens(requested, provider_config: dict):
@@ -747,10 +794,12 @@ else:
     print(f"✓ Accepting {len(client_keys())} client keys: {', '.join(_names)}")
 if CLIENT_IP_LOG == "hash" and not CLIENT_IP_SALT:
     print("ℹ️  CLIENT_IP_LOG=hash but CLIENT_IP_SALT is unset - client addresses are not logged")
-if MODEL_POLICY is None:
-    print("ℹ️  No allowed_providers/allowed_models: every routable model is allowed")
+if TIERS is None:
+    print("ℹ️  No model tiers configured: every routable model is allowed")
 else:
-    print(f"✓ Model policy: all of {sorted(MODEL_POLICY[0])} + {len(MODEL_POLICY[1])} listed ids; others get 403")
+    print("✓ Model tiers: " + "; ".join(
+        f"{t} ({len(v['models'])} models, default {v['default_model']})" for t, v in TIERS.items())
+        + f". Unmarked keys: {DEFAULT_KEY_TIER}; shared PROXY_KEY: {PRIMARY_KEY_TIER}")
 if CACHE_SALT:
     print("✓ CACHE_SALT configured - responses isolated from other NRP tenants")
 else:
@@ -823,7 +872,7 @@ def _never_raises(fn):
     return wrapper
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -859,6 +908,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "client": client,           # e.g. "geo-agent/v3.13.1"; null until clients send X-Client
         "key_name": key_name,       # name of the client key (#162); never the key
         "client_ip": client_ip,     # X-Real-IP, hashed unless CLIENT_IP_LOG=raw
+        "tier": tier,               # model tier of the key: public / private (#163)
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -879,7 +929,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _log("📥 REQUEST", log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -889,6 +939,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         "client": client,
         "key_name": key_name,
         "client_ip": client_ip,
+        "tier": tier,
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -1042,9 +1093,10 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if not client_keys():
         raise HTTPException(status_code=500, detail="No client keys configured on server")
 
-    key_name = key_name_for(authorization)
-    if not key_name:
+    ident = key_identity(authorization)
+    if not ident:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
+    key_name, tier = ident
     client_ip = client_ip_for_log(http_request.headers)
 
     # Caller identity, derived before any early return: the three rejections below
@@ -1069,7 +1121,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             "log the request/response pair. Omit `stream` or set it to false."
         )
         log_response("streaming-unsupported", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
         raise HTTPException(status_code=400, detail=error_msg)
 
     # Determine provider based on model
@@ -1080,18 +1132,15 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         # synthetic provider so the miss is visible in the logs (the request never
         # reaches log_request, which runs after routing succeeds).
         log_response("unrouted", request.model, {}, 0, error=str(e),
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
         raise HTTPException(status_code=400, detail=str(e))
 
-    if not model_allowed(request.model, provider_name):
-        providers, patterns = MODEL_POLICY
-        error_msg = (
-            f"Model '{request.model}' is not enabled on this proxy. Allowed: every "
-            f"model on {', '.join(sorted(providers)) or 'no provider'}, plus "
-            f"{', '.join(patterns) or 'no others'}."
-        )
+    if not model_in_tier(request.model, tier):
+        listed = ", ".join(m["id"] for m in tier_model_list(tier)) or "none"
+        error_msg = (f"Model '{request.model}' is not available to {tier} apps. "
+                     f"Available: {listed}.")
         log_response("disallowed", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
         raise HTTPException(status_code=403, detail=error_msg)
     endpoint = provider_config["endpoint"]
     api_key = provider_config["api_key"]
@@ -1099,11 +1148,11 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if not api_key:
         error_msg = f"{provider_name.upper()} API key not configured on server"
         log_response(provider_name, request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, enable_thinking=request.enable_thinking)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, enable_thinking=request.enable_thinking)
     
     # Prepare request to LLM provider
     headers = {
@@ -1206,7 +1255,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                       f"(model={request.model}, request_id={request_id}) — the caller may "
                       f"already have given up on this turn and seen a gateway 502/504",
                       flush=True)
-            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, dialect_repaired=dialect_repaired)
+            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, dialect_repaired=dialect_repaired)
 
             return result
 
@@ -1220,13 +1269,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # then re-raise so the cancellation still propagates correctly.
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Client disconnected/cancelled after {latency_ms}ms (upstream still pending)"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
             raise
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
             raise HTTPException(status_code=504, detail=error_detail)
 
         except httpx.HTTPStatusError as e:
@@ -1236,7 +1285,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # retry-after/x-ratelimit-*) vs dead-backend (naked 500, no
             # server/x-request-id) distinction is queryable from logs (#44).
             upstream_headers = _capture_upstream_headers(e.response.headers)
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, upstream_headers=upstream_headers)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, upstream_headers=upstream_headers)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
@@ -1249,7 +1298,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors
@@ -1350,7 +1399,7 @@ async def refresh_models(force: bool = False) -> dict:
             routable = []
             for mid in ids:
                 try:
-                    if get_provider_for_model(mid)[0] == name and model_allowed(mid, name):
+                    if get_provider_for_model(mid)[0] == name:
                         routable.append(mid)
                 except UnknownModelError:
                     continue
@@ -1386,8 +1435,17 @@ async def list_models(authorization: str = Header(None), refresh: bool = False):
     """
     if not client_keys():
         raise HTTPException(status_code=500, detail="PROXY_KEY not configured on server")
-    if not key_name_for(authorization):
+    ident = key_identity(authorization)
+    if not ident:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
+
+    if TIERS is not None:
+        # The tier's curated list *is* the answer: an app's picker shows exactly
+        # what its tier may call, default first-class. No upstream catalog fetch,
+        # so callers can't make the proxy call every provider (`?refresh=true`).
+        data = tier_model_list(ident[1])
+        return {"object": "list", "data": data, "tier": ident[1],
+                "default_model": next((m["id"] for m in data if m["default"]), None)}
 
     cache = await refresh_models(force=refresh)
     return {

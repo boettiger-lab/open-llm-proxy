@@ -91,22 +91,49 @@
     }
   },
   "default_provider": "nrp",
-  "allowed_providers": [
-    "nrp",
-    "nimbus"
-  ],
-  "allowed_models": [
-    "anthropic/claude-sonnet-5",
-    "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4-flash-0731",
-    "deepseek/deepseek-v4-flash-vision-exp",
-    "deepseek/deepseek-v4.1-flash",
-    "moonshotai/kimi-k3",
-    "xiaomi/mimo-v2.6-flash",
-    "xiaomi/mimo-v2.6-pro",
-    "z-ai/glm-5.2",
-    "z-ai/glm-5.3",
-    "~deepseek/deepseek-v4-flash-latest",
-    "~google/gemini-flash-latest"
-  ]
+  "tiers": {
+    "public": {
+      "default_model": "deepseek-v4-flash",
+      "models": [
+        "deepseek-v4-flash",
+        "glm-5",
+        "kimi",
+        "qwen3",
+        "qwen3-small",
+        "gpt-oss",
+        "minimax-m2",
+        "gemma",
+        "gemma-small"
+      ]
+    },
+    "private": {
+      "default_model": "deepseek-v4-flash",
+      "models": [
+        "deepseek-v4-flash",
+        "glm-5",
+        "kimi",
+        "qwen3",
+        "qwen3-small",
+        "gpt-oss",
+        "minimax-m2",
+        "gemma",
+        "gemma-small",
+        "qwen",
+        "anthropic/claude-sonnet-5",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-v4.1-flash",
+        "moonshotai/kimi-k3",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2",
+        "z-ai/glm-5.3",
+        "~deepseek/deepseek-v4-flash-latest",
+        "~google/gemini-flash-latest"
+      ]
+    }
+  },
+  "default_key_tier": "public",
+  "primary_key_tier": "private"
 }

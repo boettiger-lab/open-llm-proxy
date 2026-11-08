@@ -19,12 +19,18 @@ See [Releases](README.md#releases) for how a release is cut.
   set, nothing is logged.
 
 ### Security
-- **Model allow-list.** `config.json` now sets `allowed_providers` (`nrp`, `nimbus`) and
-  `allowed_models` (the paid OpenRouter ids the apps' configs use today). Any other id gets
-  a 403 and is logged with `provider: "disallowed"`, and `GET /v1/models` lists only allowed
-  ids. Before this, anyone reaching a public app's `/api/llm/` relay could name any
-  OpenRouter `vendor/model` (via the #154 fallback) or any direct `claude-*` model.
-  Deployments without these keys, such as cirrus, are unchanged.
+- **Public and private model tiers (#163).** `config.json` holds two curated lists, `tiers.public`
+  (NRP models only, default `deepseek-v4-flash`) and `tiers.private` (those plus nimbus and the
+  curated OpenRouter models). Each client key's tier comes from its `tier/name:key` prefix.
+  - Unmarked keys are public. The shared `PROXY_KEY` stays private until the apps move off it.
+  - A model outside the caller's tier gets a 403. `GET /v1/models` returns the tier's list with the
+    default flagged, and no longer fetches upstream catalogs.
+  - Request and response rows carry `tier`.
+  - This replaces the per-model `allowed_providers` / `allowed_models` allow-list.
+  - Before this change, anyone using a public app's `/api/llm/` relay could name any OpenRouter
+    `vendor/model` (via the #154 fallback) or any direct `claude-*` model. The 2026-11-07 prober
+    reached `openai/gpt-5.6-sol` and `claude-opus-4-8` that way.
+- **No public API schema.** `/docs`, `/redoc` and `/openapi.json` are off.
 - **Output-token cap on paid providers (#150).** `openrouter` and `anthropic` send
   `max_tokens: 32768` when the client sends none and clamp larger client values to 32,768.
   The real-traffic p99 is 9,730; everything above 32k was a runaway. NRP and nimbus are not

@@ -66,21 +66,25 @@ Anthropic's OpenAI-compatibility endpoint (`/v1/chat/completions`) silently igno
 
 To get the savings, the app (client-side) must (1) send the system prompt as content parts with a `cache_control: {"type":"ephemeral"}` breakpoint, and (2) use the `anthropic/…` model id. Add `"usage": {"include": true}` to the request body to see the cache accounting (`cached_tokens` / `cache_write_tokens`) in the response and logs. Verified on `anthropic/claude-haiku-4.5`: a repeated ~6.8k-token prefix billed `cache_write_tokens` on the first call and `cached_tokens` on the second (~12× lower prefix cost).
 
-### Allowed models and output caps
+### Model tiers and output caps
 
-Routing decides where a model id would go. A separate allow-list in `config.json` decides whether it may go there at all:
+The proxy keeps two curated model lists in `config.json`: one for public apps and one for private (signed-in) apps. Nothing is configured per app.
 
 ```json
-"allowed_providers": ["nrp", "nimbus"],
-"allowed_models": ["z-ai/glm-5.2", "anthropic/claude-sonnet-5", "xiaomi/*"]
+"tiers": {
+  "public":  {"default_model": "deepseek-v4-flash", "models": ["deepseek-v4-flash", "qwen3", ...]},
+  "private": {"default_model": "deepseek-v4-flash", "models": ["deepseek-v4-flash", ..., "z-ai/glm-5.2"]}
+}
 ```
 
-- Every model on an `allowed_providers` provider is allowed. On NRP these are the lab-hosted, unbilled ones.
-- Any other id must appear in `allowed_models`, as an exact id or a prefix ending in `*`.
-- Anything else gets a **403** naming the allowed set, and is logged as a response row with `provider: "disallowed"`. `GET /v1/models` lists only allowed ids.
-- With neither key present, everything routable is allowed. cirrus mounts its own config and is unaffected.
-
-To enable a new paid model for an app, add its exact id to `allowed_models` in the same change that adds it to the app's model list.
+- **How a key gets its tier.** Each client key (see [Client keys](#client-keys)) carries its tier as a prefix in the keys file: `public/tpl:<key>` or `private/tpl-internal:<key>`.
+  - A key with no prefix is `public` (`default_key_tier`).
+  - The legacy shared `PROXY_KEY` is `private` (`primary_key_tier`) only while the apps move to their own keys. Set it to `public`, or revoke it, once they have.
+- **Requests.** A model outside the caller's tier gets a **403** that lists what the tier offers, and is logged with `provider: "disallowed"` and `tier`.
+- **The model list.** `GET /v1/models` returns the caller's tier list in order, flagging `default` on one entry and adding `default_model`. It doesn't fetch the upstream catalogs.
+- **Why public is NRP-only.** Public apps are open relays: anyone can POST to their `/api/llm/`. That's how the November 2026 prober reached the proxy. So the public list holds only NRP-hosted models.
+- **Adding a model.** To offer a new model to every private app, add one line to `tiers.private.models`.
+- **Other deployments.** With no `tiers` key, every routable model is allowed. cirrus mounts its own config and is unaffected.
 
 Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
 
@@ -175,7 +179,7 @@ Keys live in a separate Secret, one `name:key` per line:
 # issue a key: append a line and re-apply
 NEW=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
 kubectl -n biodiversity get secret open-llm-proxy-client-keys -o jsonpath='{.data.keys}' | base64 -d > /tmp/keys 2>/dev/null || : > /tmp/keys
-echo "tpl:$NEW" >> /tmp/keys
+echo "public/tpl:$NEW" >> /tmp/keys      # tier/name:key
 kubectl -n biodiversity create secret generic open-llm-proxy-client-keys \
   --from-file=keys=/tmp/keys --dry-run=client -o yaml | kubectl apply -f -
 shred -u /tmp/keys
@@ -183,7 +187,7 @@ shred -u /tmp/keys
 
 - **Revoking a key:** delete its line and re-apply the same way. The Secret is mounted as a file, and kubelet refreshes it in place, usually within a minute. The proxy re-reads the file when it changes, so no restart is needed.
 - **Unknown or revoked keys:** both get the same 401.
-- **Key names:** letters, digits, `.`, `_` and `-`.
+- **Key names:** letters, digits, `.`, `_` and `-`. The optional `tier/` prefix sets the model tier.
 - **Older forms:** `PROXY_KEY` (logged as `primary`) and `PROXY_KEYS_EXTRA` still work, as comma-separated `name:key` entries or bare keys. A bare key is logged as `unnamed-<hash prefix>`. Both need a restart to change.
 
 The app's nginx forwards the visitor's address as `X-Real-IP`, and the proxy logs it as `client_ip`. By default it is a salted hash (`CLIENT_IP_LOG=hash`, salt from the `client-ip-salt` key of `open-llm-proxy-secrets`), which is enough to count and block one visitor without storing the address itself. With no salt set, nothing is logged. Set `CLIENT_IP_LOG=raw` to log the address itself, or `off` to log nothing.
