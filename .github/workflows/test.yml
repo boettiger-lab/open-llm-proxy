@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install runtime deps (llm_proxy imports these at module load)
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest
       - name: Run logging/scrubbing tests
         run: python test_logging.py
       - name: Syntax-check the historical scrub job
