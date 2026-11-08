@@ -66,6 +66,24 @@ Anthropic's OpenAI-compatibility endpoint (`/v1/chat/completions`) silently igno
 
 To get the savings, the app (client-side) must (1) send the system prompt as content parts with a `cache_control: {"type":"ephemeral"}` breakpoint, and (2) use the `anthropic/…` model id. Add `"usage": {"include": true}` to the request body to see the cache accounting (`cached_tokens` / `cache_write_tokens`) in the response and logs. Verified on `anthropic/claude-haiku-4.5`: a repeated ~6.8k-token prefix billed `cache_write_tokens` on the first call and `cached_tokens` on the second (~12× lower prefix cost).
 
+### Allowed models and output caps
+
+Routing decides where a model id would go. A separate allow-list in `config.json` decides whether it may go there at all:
+
+```json
+"allowed_providers": ["nrp", "nimbus"],
+"allowed_models": ["z-ai/glm-5.2", "anthropic/claude-sonnet-5", "xiaomi/*"]
+```
+
+- Every model on an `allowed_providers` provider is allowed. On NRP these are the lab-hosted, unbilled ones.
+- Any other id must appear in `allowed_models`, as an exact id or a prefix ending in `*`.
+- Anything else gets a **403** naming the allowed set, and is logged as a response row with `provider: "disallowed"`. `GET /v1/models` lists only allowed ids.
+- With neither key present, everything routable is allowed. cirrus mounts its own config and is unaffected.
+
+To enable a new paid model for an app, add its exact id to `allowed_models` in the same change that adds it to the app's model list.
+
+Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
+
 ### Thinking mode
 
 Set `"enable_thinking": true` in the request body to activate extended reasoning on supported models (`kimi`, `qwen3`, `glm-5`). The proxy injects the correct provider-specific parameter based on `config.json`.

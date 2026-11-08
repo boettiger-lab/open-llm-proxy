@@ -8,6 +8,18 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Security
+- **Model allow-list.** `config.json` now sets `allowed_providers` (`nrp`, `nimbus`) and
+  `allowed_models` (the paid OpenRouter ids the apps' configs use today). Any other id gets
+  a 403 and is logged with `provider: "disallowed"`, and `GET /v1/models` lists only allowed
+  ids. Before this, anyone reaching a public app's `/api/llm/` relay could name any
+  OpenRouter `vendor/model` (via the #154 fallback) or any direct `claude-*` model.
+  Deployments without these keys, such as cirrus, are unchanged.
+- **Output-token cap on paid providers (#150).** `openrouter` and `anthropic` send
+  `max_tokens: 32768` when the client sends none and clamp larger client values to 32,768.
+  The real-traffic p99 is 9,730; everything above 32k was a runaway. NRP and nimbus are not
+  capped, because vLLM rejects prompt + `max_tokens` beyond the model's context.
+
 ### Fixed
 - **Headless runs send the duckdb-mcp Bearer token.** Since 2026-11-07 the public MCP
   endpoints (`duckdb-mcp`, `dev-duckdb-mcp`, `experimental-duckdb-mcp`, `ca30x30-mcp`)
