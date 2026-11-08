@@ -14,10 +14,16 @@ import llm_proxy
 
 
 def _reload(**env):
-    """Reload llm_proxy with the given env so module-level config is recomputed."""
+    """Reload llm_proxy with the given env so module-level config is recomputed.
+
+    The test PROXY_KEY stands in for a private caller: the shipped config puts
+    the shared key on the public tier (see test_shipped_shared_key_is_public),
+    but most handler tests exercise paid-provider paths."""
     for k, v in env.items():
         os.environ[k] = v
-    return importlib.reload(llm_proxy)
+    p = importlib.reload(llm_proxy)
+    p.PRIMARY_KEY_TIER = "private"
+    return p
 
 
 def test_compute_valid_keys_multi_and_backward_compat():
@@ -1962,6 +1968,14 @@ def test_user_not_logged_without_salt():
     p = importlib.reload(llm_proxy)
     p.CLIENT_IP_SALT = None
     assert p.user_for_log({"x-forwarded-email": "a@b.org"}) is None
+
+def test_shipped_shared_key_is_public():
+    """Every glen-ops app has its own key (glen-ops#246); the shared PROXY_KEY
+    must reach NRP models only until it is revoked."""
+    p = importlib.reload(llm_proxy)
+    assert p.PRIMARY_KEY_TIER == "public"
+    assert not p.model_in_tier("z-ai/glm-5.2", p.PRIMARY_KEY_TIER)
+    assert p.model_in_tier("deepseek-v4-flash", p.PRIMARY_KEY_TIER)
 
 
 if __name__ == "__main__":

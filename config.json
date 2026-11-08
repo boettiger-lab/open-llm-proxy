@@ -135,7 +135,7 @@
     }
   },
   "default_key_tier": "public",
-  "primary_key_tier": "private",
+  "primary_key_tier": "public",
   "budgets": {
     "window_hours": 24,
     "per_key": {
