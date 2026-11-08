@@ -8,6 +8,12 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Security
+- **The shared `PROXY_KEY` drops to the public tier.** Every app glen-ops deploys now sends its own
+  key (boettiger-lab/glen-ops#246). The shared key reaches NRP models only until it is revoked.
+  Its remaining callers are utah-public-lands, roadless-rule and glen-benchmark matrix Jobs
+  (boettiger-lab/glen-benchmark#114).
+
 ### Added
 - **Daily token budgets and a deny-list (#168).**
   - Prompt + completion tokens are counted per key, per visitor address and per signed-in user
