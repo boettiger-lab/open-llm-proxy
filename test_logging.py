@@ -1140,6 +1140,7 @@ def test_stream_false_and_absent_are_unaffected():
     from unittest.mock import patch
 
     p = _reload(PROXY_KEY="testkey")
+    p.TIERS = None   # stream handling under test, not tiers
 
     class _FakeRequest:
         headers = {"origin": "https://app"}
@@ -1390,7 +1391,6 @@ def test_discovery_lists_only_what_this_deployment_would_actually_route():
     from unittest.mock import patch
 
     p = importlib.reload(llm_proxy)
-    p.MODEL_POLICY = None   # routing/discovery under test, not the allow-list
     catalog = {
         "https://ellm.nrp-nautilus.io/v1/models": ["qwen3", "glm-5", "deepseek-v4-flash"],
         "https://openrouter.ai/api/v1/models": [
@@ -1424,7 +1424,6 @@ def test_unreachable_provider_degrades_instead_of_disappearing():
     from unittest.mock import patch
 
     p = importlib.reload(llm_proxy)
-    p.MODEL_POLICY = None   # routing/discovery under test, not the allow-list
     dead = "https://gemma4-nimbus.carlboettiger.info/v1/models"
 
     with patch.object(p.httpx, "AsyncClient", _fake_models_client({}, fail={dead})):
@@ -1450,6 +1449,7 @@ def test_models_endpoint_requires_the_proxy_key():
     from unittest.mock import patch
 
     p = _reload(PROXY_KEY="testkey")
+    p.TIERS = None   # catalog-based listing under test, not tiers
     with patch.object(p.httpx, "AsyncClient", _fake_models_client({})):
         with pytest.raises(HTTPException) as ei:
             asyncio.run(p.list_models(authorization=None))
@@ -1531,43 +1531,6 @@ def test_namespaced_id_never_falls_back_to_default_provider():
     assert p.get_provider_for_model("z-ai/glm-5")[0] == "openrouter"
 
 
-def test_model_policy_absent_allows_everything():
-    """No allowed_* keys (cirrus, third-party configs) -> no policy, no change."""
-    p = importlib.reload(llm_proxy)
-    assert p.resolve_model_policy({}) is None
-    p.MODEL_POLICY = None
-    assert p.model_allowed("openai/o3-pro", "openrouter")
-    assert p.model_allowed("claude-opus-4-8", "anthropic")
-
-
-def test_model_policy_default_denies_paid_ids():
-    """Hardening: lab-hosted providers open, paid ids only when listed."""
-    p = importlib.reload(llm_proxy)
-    policy = p.resolve_model_policy({"allowed_providers": ["nrp", "nimbus"],
-                                     "allowed_models": ["z-ai/glm-5.2", "xiaomi/*"]})
-    assert p.model_allowed("qwen3", "nrp", policy)
-    assert p.model_allowed("qwen", "nimbus", policy)
-    assert p.model_allowed("z-ai/glm-5.2", "openrouter", policy)
-    assert p.model_allowed("xiaomi/mimo-v2.6-pro", "openrouter", policy)
-    assert not p.model_allowed("z-ai/glm-5.2-preview", "openrouter", policy)
-    assert not p.model_allowed("openai/o3-pro", "openrouter", policy)
-    assert not p.model_allowed("claude-opus-4-8", "anthropic", policy)
-    # an empty allowed_models with providers set still denies everything else
-    assert not p.model_allowed("z-ai/glm-5.2", "openrouter",
-                               p.resolve_model_policy({"allowed_providers": ["nrp"]}))
-
-
-def test_shipped_config_denies_unlisted_paid_models():
-    """The NRP config.json must keep the expensive families closed."""
-    p = importlib.reload(llm_proxy)
-    assert p.MODEL_POLICY is not None
-    for model in ("openai/o3-pro", "anthropic/claude-opus-4-8", "claude-opus-4-8",
-                  "reflection/beam-1.0-501b-a23b"):
-        assert not p.model_allowed(model, p.get_provider_for_model(model)[0]), model
-    for model in ("qwen3", "glm-5", "qwen", "z-ai/glm-5.2"):
-        assert p.model_allowed(model, p.get_provider_for_model(model)[0]), model
-
-
 def test_disallowed_model_is_403_and_logged():
     import asyncio
     from fastapi import HTTPException
@@ -1582,7 +1545,7 @@ def test_disallowed_model_is_403_and_logged():
         asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
     except HTTPException as e:
         assert e.status_code == 403
-        assert "not enabled" in e.detail
+        assert "not available to private apps" in e.detail
     else:
         raise AssertionError("disallowed model must be refused")
     rows = [e for e in p._log_buffer if e.get("type") == "response"]
@@ -1735,6 +1698,109 @@ def test_unknown_and_revoked_keys_get_the_same_401():
         else:
             raise AssertionError("must be refused")
     assert len(details) == 1
+
+def test_tiers_absent_allows_everything():
+    """No `tiers` (cirrus, third-party configs) -> no model limits."""
+    p = importlib.reload(llm_proxy)
+    assert p.resolve_tiers({}) is None
+    p.TIERS = None
+    assert p.model_in_tier("openai/o3-pro", "public")
+    assert p.model_in_tier("claude-opus-4-8", None)
+
+
+def test_tier_lists_exact_prefix_and_unknown():
+    p = importlib.reload(llm_proxy)
+    p.TIERS = p.resolve_tiers({"tiers": {
+        "public": {"models": ["deepseek-v4-flash", "qwen3"]},
+        "private": {"default_model": "qwen3", "models": ["qwen3", "xiaomi/*"]}}})
+    assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"   # first entry
+    assert p.model_in_tier("qwen3", "public")
+    assert not p.model_in_tier("xiaomi/mimo-v2.6-pro", "public")
+    assert p.model_in_tier("xiaomi/mimo-v2.6-pro", "private")
+    assert not p.model_in_tier("deepseek-v4-flash", "private")
+    assert not p.model_in_tier("qwen3", "no-such-tier")
+
+
+def test_shipped_tiers_close_what_the_november_prober_reached():
+    """The 2026-11-07 prober reached openai/gpt-5.6-sol and claude-opus-4-8
+    through a public app's relay. Neither tier may reach them now, and the
+    public tier holds only NRP models."""
+    p = importlib.reload(llm_proxy)
+    for tier in ("public", "private"):
+        for model in ("openai/gpt-5.6-sol", "claude-opus-4-8", "openrouter/zzz-no-such-model"):
+            assert not p.model_in_tier(model, tier), (tier, model)
+    assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"
+    for m in p.tier_model_list("public"):
+        assert m["provider"] == "nrp", m
+    assert p.model_in_tier("z-ai/glm-5.2", "private")
+    assert not p.model_in_tier("z-ai/glm-5.2", "public")
+
+
+def test_key_tier_from_prefix_and_defaults():
+    """`tier/name:key` sets the tier; unmarked keys are public; the shared
+    PROXY_KEY keeps primary_key_tier during the migration."""
+    os.environ["PROXY_KEYS_EXTRA"] = "private/tpl-internal:k-int,public/tpl:k-tpl,bench:k-bench"
+    try:
+        p = _reload(PROXY_KEY="prod")
+        assert p.key_identity("Bearer k-int") == ("tpl-internal", "private")
+        assert p.key_identity("Bearer k-tpl") == ("tpl", "public")
+        assert p.key_identity("Bearer k-bench") == ("bench", "public")
+        assert p.key_identity("Bearer prod") == ("primary", p.PRIMARY_KEY_TIER)
+        assert p.key_name_for("Bearer k-int") == "tpl-internal"
+        assert p.key_identity("Bearer nope") is None
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_public_key_gets_403_and_row_carries_tier():
+    import asyncio
+    from fastapi import HTTPException
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p._log_buffer.clear()
+
+        class _FakeRequest:
+            headers = {}
+
+        req = p.ChatRequest(model="z-ai/glm-5.2", messages=[{"role": "user", "content": "hi"}])
+        try:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer k-tpl"))
+        except HTTPException as e:
+            assert e.status_code == 403
+            assert "not available to public apps" in e.detail
+            assert "deepseek-v4-flash" in e.detail
+        else:
+            raise AssertionError("public key must not reach a paid model")
+        row = [e for e in p._log_buffer if e.get("type") == "response"][-1]
+        assert (row["provider"], row["key_name"], row["tier"]) == ("disallowed", "tpl", "public")
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_models_endpoint_returns_the_callers_tier_list():
+    import asyncio
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl,private/coasts:k-coasts"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        pub = asyncio.run(p.list_models(authorization="Bearer k-tpl"))
+        prv = asyncio.run(p.list_models(authorization="Bearer k-coasts"))
+        assert pub["tier"] == "public" and prv["tier"] == "private"
+        assert pub["default_model"] == "deepseek-v4-flash"
+        assert [m["id"] for m in pub["data"]][0] == "deepseek-v4-flash"
+        assert sum(m["default"] for m in pub["data"]) == 1
+        assert "z-ai/glm-5.2" not in {m["id"] for m in pub["data"]}
+        assert "z-ai/glm-5.2" in {m["id"] for m in prv["data"]}
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_no_public_api_schema():
+    p = importlib.reload(llm_proxy)
+    assert p.app.openapi_url is None and p.app.docs_url is None and p.app.redoc_url is None
 
 
 if __name__ == "__main__":
