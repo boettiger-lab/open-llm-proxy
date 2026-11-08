@@ -1616,6 +1616,126 @@ def test_max_tokens_forwarded_per_provider():
                                   "messages": [{"role": "user", "content": "hi"}]})
     assert "max_tokens" not in payload
 
+def test_named_keys_parse_and_stay_backward_compatible():
+    """#162: `name:key` entries are named; bare entries still work, with a
+    fingerprint name; the legacy PROXY_KEY is "primary"."""
+    f = llm_proxy.parse_client_keys
+    keys = f("prod", "tpl:k-tpl, bare-key ,,", "# comment\nbench-carl:k-carl\n\nbad name:k-x\n")
+    assert keys["prod"] == "primary"
+    assert keys["k-tpl"] == "tpl"
+    assert keys["k-carl"] == "bench-carl"
+    assert keys["bare-key"].startswith("unnamed-") and "bare-key" not in keys["bare-key"]
+    assert "k-x" not in keys          # malformed name is dropped, not accepted
+    assert "" not in keys
+    assert llm_proxy.compute_valid_keys("prod", "tpl:k-tpl") == frozenset({"prod", "k-tpl"})
+
+
+def test_keys_file_reloads_on_change_and_revokes():
+    """Revoking a key in the mounted file takes effect without a restart."""
+    import tempfile, time as _t
+    with tempfile.NamedTemporaryFile("w", suffix=".keys", delete=False) as fh:
+        fh.write("tpl:k-tpl\npadus:k-padus\n")
+        path = fh.name
+    os.environ["PROXY_KEYS_FILE"] = path
+    try:
+        p = _reload(PROXY_KEY="prod")
+        assert p.key_name_for("Bearer k-padus") == "padus"
+        assert p.key_name_for("Bearer prod") == "primary"
+        with open(path, "w") as fh:
+            fh.write("tpl:k-tpl\n")
+        os.utime(path, (_t.time() + 5, _t.time() + 5))
+        assert p.key_name_for("Bearer k-padus") is None
+        assert p.key_name_for("Bearer k-tpl") == "tpl"
+        assert p.key_name_for("Bearer nope") is None
+        assert p.key_name_for(None) is None
+    finally:
+        del os.environ["PROXY_KEYS_FILE"]
+        os.unlink(path)
+        _reload(PROXY_KEY="testkey")
+
+
+def test_client_ip_logging_modes():
+    p = importlib.reload(llm_proxy)
+    h = {"x-real-ip": "203.0.113.7"}
+    p.CLIENT_IP_LOG, p.CLIENT_IP_SALT = "hash", None
+    assert p.client_ip_for_log(h) is None              # no salt -> nothing logged
+    p.CLIENT_IP_SALT = "s1"
+    hashed = p.client_ip_for_log(h)
+    assert hashed and "203.0.113.7" not in hashed and len(hashed) == 16
+    assert hashed == p.client_ip_for_log(h)            # stable, so it can be counted
+    p.CLIENT_IP_SALT = "s2"
+    assert p.client_ip_for_log(h) != hashed
+    p.CLIENT_IP_LOG = "raw"
+    assert p.client_ip_for_log(h) == "203.0.113.7"
+    p.CLIENT_IP_LOG = "off"
+    assert p.client_ip_for_log(h) is None
+    assert p.client_ip_for_log({}) is None
+
+
+def test_request_and_response_rows_carry_key_name_never_key():
+    import asyncio
+    from unittest.mock import patch
+    os.environ["PROXY_KEYS_EXTRA"] = "tpl:secret-tpl-key"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p.CLIENT_IP_LOG, p.CLIENT_IP_SALT = "hash", "salt"
+        p._log_buffer.clear()
+
+        class _FakeResp:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+        class _FakeAsyncClient:
+            def __init__(self, *a, **k):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def post(self, *a, **k):
+                return _FakeResp()
+
+        class _FakeRequest:
+            headers = {"origin": "https://tpl.nrp-nautilus.io", "x-real-ip": "198.51.100.4"}
+
+        req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+        with patch.object(p, "get_provider_for_model",
+                          return_value=("nrp", {"endpoint": "http://upstream", "api_key": "k"})), \
+             patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer secret-tpl-key"))
+        rows = [e for e in p._log_buffer if e.get("type") in ("request", "response")]
+        assert {r["type"] for r in rows} == {"request", "response"}
+        for r in rows:
+            assert r["key_name"] == "tpl"
+            assert r["client_ip"] and r["client_ip"] != "198.51.100.4"
+            assert "secret-tpl-key" not in json.dumps(r)
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_unknown_and_revoked_keys_get_the_same_401():
+    import asyncio
+    from fastapi import HTTPException
+    p = _reload(PROXY_KEY="testkey")
+
+    class _FakeRequest:
+        headers = {}
+
+    req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+    details = set()
+    for auth in ("Bearer revoked-or-unknown", None, "Bearer "):
+        try:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization=auth))
+        except HTTPException as e:
+            assert e.status_code == 401
+            details.add(e.detail)
+        else:
+            raise AssertionError("must be refused")
+    assert len(details) == 1
+
 
 if __name__ == "__main__":
     import sys

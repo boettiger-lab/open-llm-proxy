@@ -165,6 +165,29 @@ kubectl create secret generic open-llm-proxy-secrets \
 
 If your namespace has an `aws` secret with S3 credentials, logs will be flushed to S3 automatically. See `secrets.yaml.example` for the full secret structure and optional providers.
 
+#### Client keys
+
+Every caller should have its own named key: one per app, and one per person or job for out-of-cluster use (benchmarks, laptops). The proxy logs the key's **name** as `key_name` on every request and response row. It never logs the key. With named keys, one app's usage can be measured and one caller can be cut off without affecting the others.
+
+Keys live in a separate Secret, one `name:key` per line:
+
+```bash
+# issue a key: append a line and re-apply
+NEW=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+kubectl -n biodiversity get secret open-llm-proxy-client-keys -o jsonpath='{.data.keys}' | base64 -d > /tmp/keys 2>/dev/null || : > /tmp/keys
+echo "tpl:$NEW" >> /tmp/keys
+kubectl -n biodiversity create secret generic open-llm-proxy-client-keys \
+  --from-file=keys=/tmp/keys --dry-run=client -o yaml | kubectl apply -f -
+shred -u /tmp/keys
+```
+
+- **Revoking a key:** delete its line and re-apply the same way. The Secret is mounted as a file, and kubelet refreshes it in place, usually within a minute. The proxy re-reads the file when it changes, so no restart is needed.
+- **Unknown or revoked keys:** both get the same 401.
+- **Key names:** letters, digits, `.`, `_` and `-`.
+- **Older forms:** `PROXY_KEY` (logged as `primary`) and `PROXY_KEYS_EXTRA` still work, as comma-separated `name:key` entries or bare keys. A bare key is logged as `unnamed-<hash prefix>`. Both need a restart to change.
+
+The app's nginx forwards the visitor's address as `X-Real-IP`, and the proxy logs it as `client_ip`. By default it is a salted hash (`CLIENT_IP_LOG=hash`, salt from the `client-ip-salt` key of `open-llm-proxy-secrets`), which is enough to count and block one visitor without storing the address itself. With no salt set, nothing is logged. Set `CLIENT_IP_LOG=raw` to log the address itself, or `off` to log nothing.
+
 ### 2. Configure
 
 Copy `config.json` or use it as-is. To use only NRP (the common case), you can trim it to:

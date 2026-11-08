@@ -452,6 +452,8 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `model` | Model name as sent by the client |
 | `origin` | Origin or Referer header — identifies which app sent the request |
 | `client` | `X-Client` header — client app + version, e.g. `geo-agent/v3.13.1`. `null` until the client sends it. Correlates logged behavior with a specific release. |
+| `key_name` | Name of the client key that authenticated the request (#162): an app or person, `primary` for the legacy shared `PROXY_KEY`, `unnamed-<hash>` for a bare extra key. Unlike `origin`, the client cannot fake it. Absent before 2026-11. |
+| `client_ip` | End-user address from the app nginx's `X-Real-IP`: a salted 16-hex hash by default, the raw address with `CLIENT_IP_LOG=raw`. `null` when not forwarded or no salt is set. |
 | `session_id` | Stable per-browser-session id that ties together every turn **and every follow-up question** of one user session. Sourced from the request body's OpenAI `user` field (geo-agent already sends its per-session UUID there), falling back to the `X-Session-Id` header. **`null` in records written before this was wired up** (see wiring note below) — for those, fall back to the `(origin, user_question)` heuristic and mind the `user_question` caveat. |
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
@@ -477,6 +479,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `model` | Model used |
 | `origin` | Same as request — identifies which app |
 | `client` | Same as request — `X-Client` header (client app + version), `null` until sent |
+| `key_name`, `client_ip` | Same as request |
 | `session_id` | Same as request — per-session id from the `user` body field / `X-Session-Id` header |
 | `latency_ms` | End-to-end latency in milliseconds |
 | `has_content` | Whether the LLM returned text content |
