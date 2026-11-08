@@ -9,6 +9,13 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Per-key model limits (#163).** `key_policies` in `config.json` narrows what each named
+  key may use, on top of the global allow-list. Keys can reference a shared policy from
+  `policies` or carry their own. A disallowed model gets a 403 naming the key, and
+  `/v1/models` is filtered per key. The NRP config gives each of the 24 app keys the NRP
+  and nimbus models plus only the paid ids its own app config offers. Three apps
+  (`tpl-internal`, `wyoming`, `cacao-internal`) get no paid models. `glen-benchmark` and
+  the shared `primary` key have no entry and keep the global policy.
 - **Named client keys (#162).** Keys can be issued per app or per person as `name:key` lines
   in the `open-llm-proxy-client-keys` Secret, mounted at `PROXY_KEYS_FILE`. The proxy
   re-reads the file when it changes, so issuing or revoking a key needs no restart.

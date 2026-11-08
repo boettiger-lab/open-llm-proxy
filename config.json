@@ -108,5 +108,282 @@
     "z-ai/glm-5.3",
     "~deepseek/deepseek-v4-flash-latest",
     "~google/gemini-flash-latest"
-  ]
+  ],
+  "key_policies": {
+    "barred-owl": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "biodiversity-maplibre": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "bosl-high-seas": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "anthropic/claude-sonnet-5",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2",
+        "~deepseek/deepseek-v4-flash-latest"
+      ]
+    },
+    "bosl-high-seas-private": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "anthropic/claude-sonnet-5",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2",
+        "~deepseek/deepseek-v4-flash-latest"
+      ]
+    },
+    "ca-30x30": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash-0731",
+        "moonshotai/kimi-k3",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2",
+        "z-ai/glm-5.3"
+      ]
+    },
+    "ca-ccca5": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "z-ai/glm-5.2",
+        "~deepseek/deepseek-v4-flash-latest",
+        "~google/gemini-flash-latest"
+      ]
+    },
+    "ca-wolves": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "cacao-demo": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "cacao-internal": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": []
+    },
+    "calenviroscreen": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro"
+      ]
+    },
+    "coasts": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "anthropic/claude-sonnet-5",
+        "deepseek/deepseek-v4-flash-0731",
+        "moonshotai/kimi-k3",
+        "z-ai/glm-5.2",
+        "z-ai/glm-5.3"
+      ]
+    },
+    "forsys-agent": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2",
+        "~deepseek/deepseek-v4-flash-latest",
+        "~google/gemini-flash-latest"
+      ]
+    },
+    "global-30x30": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-v4.1-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "landscape-frontiers": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "padus": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2",
+        "~deepseek/deepseek-v4-flash-latest",
+        "~google/gemini-flash-latest"
+      ]
+    },
+    "roadless-rule": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "swap": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "tpl": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "tpl-ca": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "anthropic/claude-sonnet-5",
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "tpl-internal": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": []
+    },
+    "utah-public-lands": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "wetlands-v2": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    },
+    "wyoming": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": []
+    },
+    "wyoming-public-demo": {
+      "allowed_providers": [
+        "nrp",
+        "nimbus"
+      ],
+      "allowed_models": [
+        "deepseek/deepseek-v4-flash",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2"
+      ]
+    }
+  }
 }

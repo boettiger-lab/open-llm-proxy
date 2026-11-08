@@ -700,6 +700,47 @@ def model_allowed(model: str, provider_name: str, policy=None) -> bool:
     return False
 
 
+# Per-key model limits (#163), applied on top of the global policy above: a key
+# may use a model only if the global policy AND its own policy allow it. A key
+# with no entry gets the global policy alone, so this rolls out one app at a time.
+#
+#   "policies":     {"<policy>": {"allowed_providers": [...], "allowed_models": [...]}}
+#   "key_policies": {"<key name>": "<policy>" | {inline policy}}
+#
+# Key names are the ones from the client-keys file (#162), not keys.
+def resolve_key_policies(cfg: dict) -> dict:
+    """Map of key name -> (providers, patterns). Unknown policy names are skipped
+    with a warning rather than silently granting the global policy."""
+    named = cfg.get("policies") or {}
+    out = {}
+    for key_name, ref in (cfg.get("key_policies") or {}).items():
+        spec = named.get(ref) if isinstance(ref, str) else ref
+        if spec is None:
+            print(f"⚠️  key_policies[{key_name!r}] names unknown policy {ref!r}; "
+                  f"that key is denied every model until it is fixed")
+            out[key_name] = (frozenset(), ())
+            continue
+        out[key_name] = resolve_model_policy(spec) or (frozenset(), ())
+    return out
+
+
+KEY_POLICIES = resolve_key_policies(config)
+
+
+def model_allowed_for_key(model: str, provider_name: str, key_name) -> bool:
+    """Global policy, then the key's own policy if it has one."""
+    if not model_allowed(model, provider_name):
+        return False
+    policy = KEY_POLICIES.get(key_name)
+    return policy is None or model_allowed(model, provider_name, policy)
+
+
+def describe_policy(policy) -> str:
+    providers, patterns = policy
+    return (f"every model on {', '.join(sorted(providers)) or 'no provider'}, "
+            f"plus {', '.join(patterns) or 'no others'}")
+
+
 def effective_max_tokens(requested, provider_config: dict):
     """Client value clamped to the provider's ceiling, else the provider default."""
     ceiling = provider_config.get("max_tokens_ceiling")
@@ -751,6 +792,8 @@ if MODEL_POLICY is None:
     print("ℹ️  No allowed_providers/allowed_models: every routable model is allowed")
 else:
     print(f"✓ Model policy: all of {sorted(MODEL_POLICY[0])} + {len(MODEL_POLICY[1])} listed ids; others get 403")
+if KEY_POLICIES:
+    print(f"✓ Per-key model policies for {len(KEY_POLICIES)} keys: {', '.join(sorted(KEY_POLICIES))}")
 if CACHE_SALT:
     print("✓ CACHE_SALT configured - responses isolated from other NRP tenants")
 else:
@@ -1083,13 +1126,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                      origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
         raise HTTPException(status_code=400, detail=str(e))
 
-    if not model_allowed(request.model, provider_name):
-        providers, patterns = MODEL_POLICY
-        error_msg = (
-            f"Model '{request.model}' is not enabled on this proxy. Allowed: every "
-            f"model on {', '.join(sorted(providers)) or 'no provider'}, plus "
-            f"{', '.join(patterns) or 'no others'}."
-        )
+    if not model_allowed_for_key(request.model, provider_name, key_name):
+        if not model_allowed(request.model, provider_name):
+            error_msg = (f"Model '{request.model}' is not enabled on this proxy. "
+                         f"Allowed: {describe_policy(MODEL_POLICY)}.")
+        else:
+            error_msg = (f"Model '{request.model}' is not enabled for key '{key_name}'. "
+                         f"Allowed for this key: {describe_policy(KEY_POLICIES[key_name])}.")
         log_response("disallowed", request.model, {}, 0, error=error_msg,
                      origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip)
         raise HTTPException(status_code=403, detail=error_msg)
@@ -1386,13 +1429,16 @@ async def list_models(authorization: str = Header(None), refresh: bool = False):
     """
     if not client_keys():
         raise HTTPException(status_code=500, detail="PROXY_KEY not configured on server")
-    if not key_name_for(authorization):
+    key_name = key_name_for(authorization)
+    if not key_name:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
 
     cache = await refresh_models(force=refresh)
     return {
         "object": "list",
-        "data": cache["data"],
+        # Only what this key may use, so each app's picker offers what will route.
+        "data": [m for m in cache["data"]
+                 if model_allowed_for_key(m["id"], m["provider"], key_name)],
         # Non-standard, additive: OpenAI clients read `data` and ignore the rest.
         # `prefixes` matters because a family like `claude-` is routable without
         # any concrete id being enumerable.

@@ -82,6 +82,26 @@ Routing decides where a model id would go. A separate allow-list in `config.json
 
 To enable a new paid model for an app, add its exact id to `allowed_models` in the same change that adds it to the app's model list.
 
+#### Per-key limits
+
+Each client key (#162) can be narrowed further with `key_policies` (#163). A key may use a model only if the global policy **and** its own policy both allow it:
+
+```json
+"policies": {"public": {"allowed_providers": ["nrp", "nimbus"]}},
+"key_policies": {
+  "tpl": {"allowed_providers": ["nrp", "nimbus"], "allowed_models": ["z-ai/glm-5.2"]},
+  "padus": "public"
+}
+```
+
+- **Key names:** the names from the client-keys Secret, never keys.
+- **A key with no entry** gets the global policy alone.
+- **Unknown policy name:** a policy name that doesn't exist denies that key every model, rather than quietly granting the global set.
+- **Refusals:** a disallowed model gets a 403 naming the key and its allowed set.
+- **Model list:** `GET /v1/models` lists only what the calling key may use.
+
+The shipped config gives each app's key the NRP and nimbus models plus exactly the paid ids its own config offers. When an app adds a paid model, add the id to its `key_policies` entry (and to `allowed_models`) in the same change.
+
 Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
 
 ### Thinking mode

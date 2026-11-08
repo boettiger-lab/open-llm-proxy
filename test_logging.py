@@ -1736,6 +1736,92 @@ def test_unknown_and_revoked_keys_get_the_same_401():
             raise AssertionError("must be refused")
     assert len(details) == 1
 
+def test_key_policies_resolve_named_inline_and_unknown():
+    """#163: a key may reference a named policy or carry one inline; a typo'd
+    policy name denies that key everything rather than granting the global set."""
+    p = importlib.reload(llm_proxy)
+    pol = p.resolve_key_policies({
+        "policies": {"public": {"allowed_providers": ["nrp"]}},
+        "key_policies": {"tpl": "public",
+                         "coasts": {"allowed_providers": ["nrp"], "allowed_models": ["z-ai/glm-5.2"]},
+                         "typo": "pubic"},
+    })
+    assert pol["tpl"] == (frozenset({"nrp"}), ())
+    assert pol["coasts"] == (frozenset({"nrp"}), ("z-ai/glm-5.2",))
+    assert pol["typo"] == (frozenset(), ())
+
+
+def test_key_policy_intersects_global_policy():
+    p = importlib.reload(llm_proxy)
+    p.MODEL_POLICY = (frozenset({"nrp"}), ("z-ai/glm-5.2", "anthropic/claude-sonnet-5"))
+    p.KEY_POLICIES = {"tpl": (frozenset({"nrp"}), ("z-ai/glm-5.2", "openai/o3-pro"))}
+    assert p.model_allowed_for_key("qwen3", "nrp", "tpl")
+    assert p.model_allowed_for_key("z-ai/glm-5.2", "openrouter", "tpl")
+    assert not p.model_allowed_for_key("anthropic/claude-sonnet-5", "openrouter", "tpl")
+    assert not p.model_allowed_for_key("openai/o3-pro", "openrouter", "tpl")   # global still wins
+    # a key with no entry gets the global policy alone
+    assert p.model_allowed_for_key("anthropic/claude-sonnet-5", "openrouter", "glen-benchmark")
+
+
+def test_shipped_key_policies_match_app_usage():
+    """The NRP config gives tpl its own paid models and not Claude."""
+    p = importlib.reload(llm_proxy)
+    assert "tpl" in p.KEY_POLICIES
+    route = lambda m: p.get_provider_for_model(m)[0]
+    assert p.model_allowed_for_key("qwen3", route("qwen3"), "tpl")
+    assert p.model_allowed_for_key("z-ai/glm-5.2", route("z-ai/glm-5.2"), "tpl")
+    assert not p.model_allowed_for_key("anthropic/claude-sonnet-5", route("anthropic/claude-sonnet-5"), "tpl")
+    for name, (providers, _) in p.KEY_POLICIES.items():
+        assert providers, f"{name} would lose every NRP model"
+
+
+def test_disallowed_for_key_is_403_naming_the_key():
+    import asyncio
+    from fastapi import HTTPException
+    os.environ["PROXY_KEYS_EXTRA"] = "tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p._log_buffer.clear()
+
+        class _FakeRequest:
+            headers = {"origin": "https://tpl.nrp-nautilus.io"}
+
+        req = p.ChatRequest(model="anthropic/claude-sonnet-5",
+                            messages=[{"role": "user", "content": "hi"}])
+        try:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer k-tpl"))
+        except HTTPException as e:
+            assert e.status_code == 403
+            assert "for key 'tpl'" in e.detail
+        else:
+            raise AssertionError("tpl must not reach Claude")
+        row = [e for e in p._log_buffer if e.get("type") == "response"][-1]
+        assert row["provider"] == "disallowed" and row["key_name"] == "tpl"
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_models_endpoint_filtered_per_key():
+    import asyncio
+    os.environ["PROXY_KEYS_EXTRA"] = "tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        data = [{"id": "qwen3", "provider": "nrp"},
+                {"id": "z-ai/glm-5.2", "provider": "openrouter"},
+                {"id": "anthropic/claude-sonnet-5", "provider": "openrouter"}]
+
+        async def _fake_refresh(force=False):
+            return {"data": data, "providers": {}, "fetched_iso": "x"}
+
+        p.refresh_models = _fake_refresh
+        ids = lambda auth: {m["id"] for m in asyncio.run(p.list_models(authorization=auth))["data"]}
+        assert ids("Bearer k-tpl") == {"qwen3", "z-ai/glm-5.2"}
+        assert "anthropic/claude-sonnet-5" in ids("Bearer testkey")     # primary: global only
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
 
 if __name__ == "__main__":
     import sys
