@@ -27,6 +27,7 @@ restart.
 |---|---|---|
 | Service | `open-llm-proxy.biodiversity.svc.cluster.local:8002` | `open-llm-proxy.schmidtdse.svc.cluster.local:8002` |
 | Client keys | every key | the `schmidtdse` apps' keys only |
+| OpenRouter key | lab key | its own key (`SCHMIDTDSE_OPENROUTER_KEY`), billed and capped separately |
 | Budget counters | own redis | own redis, so the daily totals are counted separately |
 | Replicas | 3 | 2 |
 | Logs | `s3://logs-open-llm-proxy` | the same bucket and the same consolidation CronJobs |
@@ -40,8 +41,9 @@ They read the bucket, not the proxy, so this deployment needs no copy of them.
 Check `kubectl config current-context` first (it should be `nautilus`).
 
 ```bash
+set -a; . ~/.env; set +a                # SCHMIDTDSE_OPENROUTER_KEY
 ./schmidtdse/make-secrets.sh            # dry run: names only, no values
-./schmidtdse/make-secrets.sh --apply    # copy provider, S3 and redis secrets; write client keys
+./schmidtdse/make-secrets.sh --apply    # set OpenRouter key; copy Nimbus, S3, redis secrets; write client keys
 
 kubectl kustomize --load-restrictor LoadRestrictionsNone schmidtdse \
   | kubectl -n schmidtdse apply -f -
@@ -66,7 +68,7 @@ both proxies.
 
 ## Credentials in this namespace
 
-`make-secrets.sh` copies the OpenRouter, Anthropic, Nimbus and NRP keys and the
-general NRP S3 credential (`aws`) into `schmidtdse`. Anyone who can create pods
+`schmidtdse` holds its own OpenRouter key, plus copies of the Nimbus and NRP
+keys and the general NRP S3 credential (`aws`). Anyone who can create pods
 in `schmidtdse` can read them, as is already the case in `biodiversity`. See
 glen-ops#219 for the longer-term plan to put the proxy in a namespace of its own.

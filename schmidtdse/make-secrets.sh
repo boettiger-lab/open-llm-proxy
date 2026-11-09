@@ -2,8 +2,12 @@
 # Create the Secrets the schmidtdse proxy needs, copied from biodiversity.
 # Prints names only, never values. Safe to re-run; it overwrites the copies.
 #
+#   set -a; . ~/.env; set +a                # provides SCHMIDTDSE_OPENROUTER_KEY
 #   ./schmidtdse/make-secrets.sh            # dry run: report what would change
 #   ./schmidtdse/make-secrets.sh --apply
+#
+# OpenRouter: schmidtdse has its own OpenRouter key, so its spend is billed and
+# capped apart from biodiversity's. It comes from SCHMIDTDSE_OPENROUTER_KEY.
 #
 # Client keys: the schmidtdse proxy accepts only the apps that run in
 # schmidtdse. Their names come from schmidtdse/open-llm-proxy-app-keys (the
@@ -29,14 +33,21 @@ print(json.dumps({"apiVersion":"v1","kind":"Secret","type":o.get("type","Opaque"
                   "metadata":{"name":o["metadata"]["name"]},"data":o["data"]}))'
 }
 
-# 1. Provider and S3 credentials, copied whole.
-for s in openrouter-key nimbus-api-key anthropic-api-key aws; do
+# 1. OpenRouter: schmidtdse's own key, never biodiversity's.
+: "${SCHMIDTDSE_OPENROUTER_KEY:?set SCHMIDTDSE_OPENROUTER_KEY (see ~/.env)}"
+kubectl -n "$DST" create secret generic openrouter-key \
+  --from-literal=OPENROUTER_KEY="$SCHMIDTDSE_OPENROUTER_KEY" --dry-run=client -o yaml \
+  | kubectl -n "$DST" apply "${DRY[@]}" -f - >/dev/null
+echo "set secret/openrouter-key from SCHMIDTDSE_OPENROUTER_KEY"
+
+# 2. Nimbus and S3 credentials, copied whole.
+for s in nimbus-api-key aws; do
   kubectl -n "$SRC" get secret "$s" -o json | strip \
     | kubectl -n "$DST" apply "${DRY[@]}" -f - >/dev/null
   echo "copied secret/$s"
 done
 
-# 2. open-llm-proxy-secrets already exists in schmidtdse (cache-salt,
+# 3. open-llm-proxy-secrets already exists in schmidtdse (cache-salt,
 #    nrp-api-key, proxy-key). Add the keys it lacks; leave the rest alone,
 #    since app nginx configs may read proxy-key from it.
 for k in client-ip-salt redis-password; do
@@ -46,7 +57,7 @@ for k in client-ip-salt redis-password; do
   echo "set open-llm-proxy-secrets/$k"
 done
 
-# 3. Client keys for the schmidtdse apps only.
+# 4. Client keys for the schmidtdse apps only.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 kubectl -n "$SRC" get secret open-llm-proxy-client-keys -o jsonpath='{.data.keys}' | base64 -d > "$tmp/all"
 kubectl -n "$DST" get secret open-llm-proxy-app-keys -o json \

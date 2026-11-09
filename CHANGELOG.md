@@ -13,7 +13,12 @@ See [Releases](README.md#releases) for how a release is cut.
   pods outside `biodiversity` cannot connect into it, so tpl-ca, bosl-high-seas and the other
   `schmidtdse` apps lost the LLM. The new directory is a kustomize overlay of the root
   manifests (same code, `config.json` and log bucket; own Service, redis and client keys
-  limited to the `schmidtdse` apps). `make-secrets.sh` copies the secrets it needs.
+  limited to the `schmidtdse` apps). It uses its own OpenRouter key; `make-secrets.sh` sets
+  that and copies the rest.
+
+### Removed
+- **The direct Anthropic provider.** Unused since September; Claude stays reachable through
+  OpenRouter (`anthropic/…`). The deployment no longer reads the `anthropic-api-key` Secret.
 
 ### Security
 - **No public ingress.** The NRP proxy's Ingress was deleted on 2026-11-07 during the abuse
