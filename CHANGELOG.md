@@ -25,8 +25,16 @@ See [Releases](README.md#releases) for how a release is cut.
 - **Consolidation CronJobs read `LOG_BUCKET` and `LOG_S3_ENDPOINT`.** Unset, they behave as
   before (NRP Ceph `logs-open-llm-proxy`). They skip the rustfs mirror step when the logs
   already live on the mirror target.
+- **The `biodiversity` logs move from NRP Ceph to rustfs** (#178). The proxy and the
+  consolidation CronJobs use `rustfs-logs-write`, a key scoped to the one log bucket that
+  also names the bucket and endpoint, instead of the general NRP key (`aws`), which was
+  rotated on 2026-11-09. Both deployments now share this wiring, so the `schmidtdse`
+  overlay no longer patches it. rustfs holds the only copy; history before 2026-08-16 is
+  still only on Ceph.
 
 ### Removed
+- **`logs-mirror-raw-hourly` and the consolidation jobs' rustfs mirror step** (#178). They
+  copied Ceph to rustfs; the logs now start on rustfs.
 - **The direct Anthropic provider.** Unused since September; Claude stays reachable through
   OpenRouter (`anthropic/…`). The deployment no longer reads the `anthropic-api-key` Secret.
 

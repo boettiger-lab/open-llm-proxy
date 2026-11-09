@@ -5,9 +5,15 @@
 Logs are written to two places:
 
 1. **Pod stdout** — available immediately via `kubectl`, lost on pod restart
-2. **S3 bucket `logs-open-llm-proxy`** — flushed every 60 seconds (configurable via `FLUSH_INTERVAL` env var) as JSONL chunk files, persisted indefinitely
+2. **S3 bucket `logs-open-llm-proxy` on rustfs** (`https://rustfs.nrp-nautilus.io`) — flushed every 60 seconds (configurable via `FLUSH_INTERVAL` env var) as JSONL chunk files, persisted indefinitely
 
-> This document describes the **NRP** deployment (bucket on NRP Ceph). The cirrus
+The proxy and the consolidation CronJobs reach the bucket with `rustfs-logs-write`, a key
+scoped to this one bucket, which also names the bucket and endpoint. Until 2026-11-09 the
+logs lived on NRP Ceph under the general NRP key, with rustfs as a mirror (#178). The
+`schmidtdse` deployment logs the same way to its own bucket,
+`logs-open-llm-proxy-schmidtdse` (see [schmidtdse/README.md](schmidtdse/README.md)).
+
+> This document describes the **NRP** deployments. The cirrus
 > deployment writes the same record format to a same-named bucket on the
 > in-cluster MinIO mirror, but has **only the raw JSONL tier** — the Parquet
 > rollup, `sessions/**` view and `session-rollup/**` tier below are NRP-only for
@@ -188,15 +194,13 @@ GROUP BY 1, 2 ORDER BY run_tag, sessions DESC;
 
 ## Access pattern
 
-> ✅ **Reading logs no longer needs a privileged credential (#113).** `./sync-logs.sh`
-> reads the **rustfs mirror** with a credential scoped to this one bucket, Get/List only.
-> The old default was rclone's `nrp:` remote — the single NRP credential, which carries
-> read/write/delete on *every* NRP bucket, for a read-only task on a few MiB of logs.
+> ✅ **Reading logs needs no privileged credential (#113).** `./sync-logs.sh` reads the
+> rustfs bucket with `rustfs-logs-read`, a credential scoped to this one bucket, Get/List
+> only.
 >
-> NRP Ceph remains the system of record; the consolidation CronJobs copy `consolidated/**`
-> and `sessions/**` to rustfs after each run. rustfs shares the same rook Ceph, so the
-> mirror is a convenience copy, **not** a second failure domain, and must never hold the
-> only copy.
+> ⚠️ **rustfs holds the only copy (#178).** rustfs runs on the same rook Ceph as NRP S3, so
+> it is not a separate failure domain. Before #178 the NRP Ceph bucket was the system of
+> record and rustfs a mirror; history before 2026-08-16 is still only on Ceph.
 
 ### Local sync (recommended for interactive analysis)
 
@@ -220,16 +224,10 @@ Reference the Secret by **name**, never by value, so rotation touches nothing he
 
 Full sync is a few seconds (~63 MB). Re-syncs during the same session are near-instant — rclone only transfers what changed.
 
-> **Mirror freshness: ~1h.** It holds the query-ready tiers — `consolidated/**` and
-> `sessions/**`, refreshed by the consolidation CronJob at 03:00 UTC — **and today's raw
-> JSONL** under `YYYY-MM-DD/`, refreshed hourly by `logs-mirror-raw-hourly` (#124).
-> For fresher than that use [`kubectl`](#kubectl-live-logs--last-60s-before-next-flush).
->
-> This closed a 3–27h hole. Consolidation *structurally* excludes the current day, so
-> before #124 an event only reached the mirror at 03:00 the next day — ~3h for something
-> logged at 23:59, ~27h at 00:00, ~15h on average — and everything inside that window
-> needed the omnipotent NRP key. Running consolidation more often would not have helped:
-> the current day is excluded by construction, not by cadence.
+> **Freshness: about a minute.** The proxy writes today's raw JSONL straight to the
+> bucket at each flush, and the consolidation CronJob builds `consolidated/**`,
+> `sessions/**` and `session-rollup/**` at 03:00 UTC. The hourly `logs-mirror-raw-hourly`
+> job (#124) is retired: it existed only to copy raw JSONL from Ceph to rustfs.
 
 Then query the local path — no `CREATE SECRET` needed:
 
@@ -284,9 +282,8 @@ This key is **Get/List on `logs-open-llm-proxy` only** — it cannot write or de
 
 > ⚠️ **`LOG_S3_KEY` / `LOG_S3_SECRET` are a different thing — don't use them for reads.**
 > There is exactly **one** credential for NRP bucket access, so those variables hold it:
-> **read/write/delete across every NRP bucket**. They remain necessary only for reaching
-> the NRP source directly — chiefly *today's* raw JSONL, which the mirror doesn't carry.
-> Everything else should go through the scoped key above. (An older version of this note
+> **read/write/delete across every NRP bucket**. Since #178 they are needed only for the
+> pre-2026-08-16 history that is still on NRP Ceph. (An older version of this note
 > called them "scoped keys for this bucket"; that was wrong, and wrong in the direction
 > that hides risk.)
 
@@ -317,7 +314,9 @@ read_ndjson_auto('s3://.../YYYY-MM-DD/*.jsonl', union_by_name=true, ignore_error
 ```
 Do not treat this as a proxy bug unless you can point at an actual byte with a raw control character in a file that's not being actively written.
 
-Inside NRP pods, use the internal endpoint instead (`rook-ceph-rgw-nautiluss3.rook`, `USE_SSL false`) — faster and no public-endpoint throttling.
+Inside NRP pods, use the same public endpoint, `rustfs.nrp-nautilus.io`. The in-cluster
+rustfs Service (`rustfs-s3.boettiger-lab.svc`) does not answer from other namespaces
+since the 2026-11-07 network policy.
 
 ### kubectl (live logs / last ~60s before next flush)
 

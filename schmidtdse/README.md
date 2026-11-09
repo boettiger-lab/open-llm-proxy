@@ -21,7 +21,8 @@ namespace, the DNS search domain, the redis address and the replica count, and
 nothing else. The pods clone `main` and read the repo's `config.json`, the same
 as the `biodiversity` deployment. Model tiers, budgets and logging are therefore
 identical, and a change on `main` reaches both deployments at their next
-restart. Logs are the exception: they go to a bucket of their own.
+restart. Each namespace's `rustfs-logs-write` Secret names its own log bucket,
+so the logs stay apart.
 
 | | `biodiversity` (root manifests) | `schmidtdse` (this directory) |
 |---|---|---|
@@ -30,19 +31,17 @@ restart. Logs are the exception: they go to a bucket of their own.
 | OpenRouter key | lab key | its own key (`SCHMIDTDSE_OPENROUTER_KEY`), billed and capped separately |
 | Budget counters | own redis | own redis, so the daily totals are counted separately |
 | Replicas | 3 | 2 |
-| Logs | NRP Ceph `s3://logs-open-llm-proxy`, mirrored to rustfs | rustfs `s3://logs-open-llm-proxy-schmidtdse` |
-| Log credential | general NRP key (`aws`) | `rustfs-logs-write`, scoped to its one bucket |
+| Logs | rustfs `s3://logs-open-llm-proxy` | rustfs `s3://logs-open-llm-proxy-schmidtdse` |
+| Log credential | `rustfs-logs-write`, scoped to its one bucket | `rustfs-logs-write`, scoped to its one bucket |
 
 ## Logging
 
 The proxy writes raw JSONL to `logs-open-llm-proxy-schmidtdse` on rustfs
 (`https://rustfs.nrp-nautilus.io`; the in-cluster rustfs Service is not
 reachable from `schmidtdse`). The daily and monthly consolidation CronJobs run
-here too, from the same root manifests, with `LOG_BUCKET` and `LOG_S3_ENDPOINT`
-pointed at that bucket. They build the same `consolidated/`, `sessions/` and
-`session-rollup/` tiers as in `biodiversity`. There is no mirror job: the logs
-already live on rustfs, and the jobs skip their mirror step when source and
-target are the same bucket.
+here too, from the same root manifests, and take `LOG_BUCKET` and
+`LOG_S3_ENDPOINT` from that Secret. They build the same `consolidated/`,
+`sessions/` and `session-rollup/` tiers as in `biodiversity`.
 
 glen-ops mints the bucket and two Secrets in `schmidtdse`: `rustfs-logs-write`
 (Get/Put/List/Delete, used by the proxy and the CronJobs) and `rustfs-logs-read`
