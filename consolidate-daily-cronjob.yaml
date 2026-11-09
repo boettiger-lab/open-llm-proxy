@@ -66,8 +66,13 @@ spec:
                   from botocore.client import Config
                   from botocore.exceptions import ClientError
 
-                  BUCKET   = 'logs-open-llm-proxy'
-                  ENDPOINT = 'http://rook-ceph-rgw-nautiluss3.rook'
+                  # Defaults are the biodiversity deployment's NRP Ceph bucket; the
+                  # schmidtdse overlay points these at its rustfs bucket instead.
+                  from urllib.parse import urlparse
+                  BUCKET   = os.environ.get('LOG_BUCKET') or 'logs-open-llm-proxy'
+                  ENDPOINT = os.environ.get('LOG_S3_ENDPOINT') or 'http://rook-ceph-rgw-nautiluss3.rook'
+                  DUCK_HOST = urlparse(ENDPOINT).netloc
+                  DUCK_SSL  = 'true' if urlparse(ENDPOINT).scheme == 'https' else 'false'
 
                   s3 = boto3.client(
                       's3',
@@ -145,8 +150,8 @@ spec:
                           TYPE S3,
                           KEY_ID '{os.environ["AWS_ACCESS_KEY_ID"]}',
                           SECRET '{os.environ["AWS_SECRET_ACCESS_KEY"]}',
-                          ENDPOINT 'rook-ceph-rgw-nautiluss3.rook',
-                          USE_SSL false,
+                          ENDPOINT '{DUCK_HOST}',
+                          USE_SSL {DUCK_SSL},
                           URL_STYLE 'path'
                       )
                   """)
@@ -549,6 +554,10 @@ spec:
                           print("ℹ️  RUSTFS_KEY not set — skipping rustfs mirror (#116)")
                           return
                       dest_bucket = os.environ.get('RUSTFS_BUCKET') or BUCKET
+                      if (os.environ.get('RUSTFS_ENDPOINT', '').rstrip('/') == ENDPOINT.rstrip('/')
+                              and dest_bucket == BUCKET):
+                          print("ℹ️  logs already live on the mirror target — nothing to mirror")
+                          return
                       rustfs = boto3.client(
                           's3',
                           endpoint_url=os.environ['RUSTFS_ENDPOINT'],

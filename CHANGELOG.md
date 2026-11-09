@@ -8,6 +8,28 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **A second NRP deployment in `schmidtdse`** (`schmidtdse/`). Since the Nov 7 2026 incident,
+  pods outside `biodiversity` cannot connect into it, so tpl-ca, bosl-high-seas and the other
+  `schmidtdse` apps lost the LLM. The new directory is a kustomize overlay of the root
+  manifests (same code, `config.json` and log bucket; own Service, redis and client keys
+  limited to the `schmidtdse` apps). It uses its own OpenRouter key; `make-secrets.sh` sets
+  that and copies the rest. Its logs go to their own rustfs bucket,
+  `logs-open-llm-proxy-schmidtdse`, under a key scoped to that bucket, with their own
+  consolidation CronJobs.
+
+- **`app` log field from the `X-Glen-App` header.** Each app's nginx names itself, so traffic
+  stays attributable when several apps share one namespace key. A label, not authentication.
+
+### Changed
+- **Consolidation CronJobs read `LOG_BUCKET` and `LOG_S3_ENDPOINT`.** Unset, they behave as
+  before (NRP Ceph `logs-open-llm-proxy`). They skip the rustfs mirror step when the logs
+  already live on the mirror target.
+
+### Removed
+- **The direct Anthropic provider.** Unused since September; Claude stays reachable through
+  OpenRouter (`anthropic/…`). The deployment no longer reads the `anthropic-api-key` Secret.
+
 ### Security
 - **No public ingress.** The NRP proxy's Ingress was deleted on 2026-11-07 during the abuse
   response (#162) and stays off: apps call the in-cluster Service through their nginx, and
