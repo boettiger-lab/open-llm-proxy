@@ -18,6 +18,9 @@ See [Releases](README.md#releases) for how a release is cut.
   `logs-open-llm-proxy-schmidtdse`, under a key scoped to that bucket, with their own
   consolidation CronJobs.
 
+- **`app` log field from the `X-Glen-App` header.** Each app's nginx names itself, so traffic
+  stays attributable when several apps share one namespace key. A label, not authentication.
+
 ### Changed
 - **Consolidation CronJobs read `LOG_BUCKET` and `LOG_S3_ENDPOINT`.** Unset, they behave as
   before (NRP Ceph `logs-open-llm-proxy`). They skip the rustfs mirror step when the logs

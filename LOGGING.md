@@ -456,6 +456,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `client_ip` | End-user address from the app nginx's `X-Real-IP`: a salted 16-hex hash by default, the raw address with `CLIENT_IP_LOG=raw`. `null` when not forwarded or no salt is set. |
 | `tier` | Model tier of the key, `public` or `private` (#163). |
 | `user` | Signed-in user from `X-Forwarded-Email` (apps behind Google sign-in), a salted 16-hex hash. `null` when not forwarded. |
+| `app` | App name from the `X-Glen-App` header, set by the app's nginx. Names the app when several share one namespace key (`public/schmidtdse`). A label, not authentication: any caller with a valid key could send it. Trimmed to `[A-Za-z0-9._-]`, at most 64 characters. `null` when not sent; absent before 2026-11-09. |
 | `session_id` | Stable per-browser-session id that ties together every turn **and every follow-up question** of one user session. Sourced from the request body's OpenAI `user` field (geo-agent already sends its per-session UUID there), falling back to the `X-Session-Id` header. **`null` in records written before this was wired up** (see wiring note below) — for those, fall back to the `(origin, user_question)` heuristic and mind the `user_question` caveat. |
 | `message_count` | Total messages in the conversation at this turn |
 | `tools_count` | Number of tools available to the LLM |
@@ -481,7 +482,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `model` | Model used |
 | `origin` | Same as request — identifies which app |
 | `client` | Same as request — `X-Client` header (client app + version), `null` until sent |
-| `key_name`, `client_ip`, `tier`, `user` | Same as request. Rejections are logged with `provider` set to `disallowed` (model outside tier), `budget-exceeded` (429) or `blocked` (deny-list). |
+| `key_name`, `client_ip`, `tier`, `user`, `app` | Same as request. Rejections are logged with `provider` set to `disallowed` (model outside tier), `budget-exceeded` (429) or `blocked` (deny-list). |
 | `session_id` | Same as request — per-session id from the `user` body field / `X-Session-Id` header |
 | `latency_ms` | End-to-end latency in milliseconds |
 | `has_content` | Whether the LLM returned text content |

@@ -924,6 +924,16 @@ def user_for_log(headers) -> Optional[str]:
     return hashlib.sha256(f"{CLIENT_IP_SALT}:user:{email}".encode()).hexdigest()[:16]
 
 
+def app_for_log(headers) -> Optional[str]:
+    """App name from `X-Glen-App`, set by the app's nginx. A label for attribution
+    when several apps share one namespace key, not an identity: only a caller that
+    already holds a valid key can reach this point, and such a caller can send any
+    value. Trimmed to a short, log-safe token."""
+    v = (headers.get("x-glen-app") or "").strip()
+    v = re.sub(r"[^A-Za-z0-9._-]", "", v)[:64]
+    return v or None
+
+
 def effective_max_tokens(requested, provider_config: dict):
     """Client value clamped to the provider's ceiling, else the provider default."""
     ceiling = provider_config.get("max_tokens_ceiling")
@@ -1053,7 +1063,7 @@ def _never_raises(fn):
     return wrapper
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -1091,6 +1101,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "client_ip": client_ip,     # X-Real-IP, hashed unless CLIENT_IP_LOG=raw
         "tier": tier,               # model tier of the key: public / private (#163)
         "user": user,               # signed-in user (X-Forwarded-Email), salted hash
+        "app": app,                 # X-Glen-App from the app's nginx; a label, not auth
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -1111,7 +1122,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _log("📥 REQUEST", log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -1123,6 +1134,7 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         "client_ip": client_ip,
         "tier": tier,
         "user": user,
+        "app": app,
         "provider": provider,
         "model": model,
         "origin": origin,
@@ -1282,11 +1294,12 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     key_name, tier = ident
     client_ip = client_ip_for_log(http_request.headers)
     user = user_for_log(http_request.headers)
+    app = app_for_log(http_request.headers)
     request_id = uuid.uuid4().hex[:8]
     if is_denied(key_name, client_ip, user):
         log_response("blocked", request.model, {}, 0, error="deny-list",
                      origin=http_request.headers.get("origin") or http_request.headers.get("referer"),
-                     request_id=request_id, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+                     request_id=request_id, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=403, detail="Forbidden")
 
     # Caller identity, derived before any early return: the three rejections below
@@ -1310,7 +1323,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             "log the request/response pair. Omit `stream` or set it to false."
         )
         log_response("streaming-unsupported", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=400, detail=error_msg)
 
     # Determine provider based on model
@@ -1321,7 +1334,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         # synthetic provider so the miss is visible in the logs (the request never
         # reaches log_request, which runs after routing succeeds).
         log_response("unrouted", request.model, {}, 0, error=str(e),
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=400, detail=str(e))
 
     if not model_in_tier(request.model, tier):
@@ -1329,7 +1342,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         error_msg = (f"Model '{request.model}' is not available to {tier} apps. "
                      f"Available: {listed}.")
         log_response("disallowed", request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=403, detail=error_msg)
 
     counters = budget_counters(tier, key_name, client_ip, user)
@@ -1342,7 +1355,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                      f"It starts freeing up at {resets}.")
         log_response("budget-exceeded", request.model, {}, 0, error=error_msg,
                      origin=origin, request_id=request_id, session_id=session_id, client=client,
-                     key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+                     key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=429, detail=error_msg,
                             headers={"Retry-After": str(max(60, int(reset - time.time())))})
     endpoint = provider_config["endpoint"]
@@ -1351,11 +1364,11 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if not api_key:
         error_msg = f"{provider_name.upper()} API key not configured on server"
         log_response(provider_name, request.model, {}, 0, error=error_msg,
-                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, enable_thinking=request.enable_thinking)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking)
     
     # Prepare request to LLM provider
     headers = {
@@ -1458,7 +1471,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                       f"(model={request.model}, request_id={request_id}) — the caller may "
                       f"already have given up on this turn and seen a gateway 502/504",
                       flush=True)
-            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, dialect_repaired=dialect_repaired)
+            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, dialect_repaired=dialect_repaired)
 
             usage = result.get("usage") or {}
             await charge_budget(counters, (usage.get("prompt_tokens") or 0)
@@ -1475,13 +1488,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # then re-raise so the cancellation still propagates correctly.
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Client disconnected/cancelled after {latency_ms}ms (upstream still pending)"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
             raise
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
             raise HTTPException(status_code=504, detail=error_detail)
 
         except httpx.HTTPStatusError as e:
@@ -1491,7 +1504,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # retry-after/x-ratelimit-*) vs dead-backend (naked 500, no
             # server/x-request-id) distinction is queryable from logs (#44).
             upstream_headers = _capture_upstream_headers(e.response.headers)
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, upstream_headers=upstream_headers)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, upstream_headers=upstream_headers)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
@@ -1504,7 +1517,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user)
+            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors

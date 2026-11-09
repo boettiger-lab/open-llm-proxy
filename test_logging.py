@@ -884,11 +884,10 @@ def test_prefixes_still_route_vendor_families_and_floating_aliases():
     ):
         assert p.get_provider_for_model(model)[0] == expected, model
 
-    # `claude-` covers the whole family, including versions never added to config
-    # — which is why the three pinned claude ids were deleted rather than updated.
-    assert p.PROVIDERS["anthropic"]["models"] == []
-    for model in ("claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5", "claude-fable-5"):
-        assert p.get_provider_for_model(model)[0] == "anthropic", model
+    # No direct Anthropic provider (removed 2026-11-09): Claude goes through
+    # OpenRouter's `anthropic/` ids, and a bare `claude-*` id is not special.
+    assert "anthropic" not in p.PROVIDERS
+    assert p.get_provider_for_model("anthropic/claude-sonnet-5")[0] == "openrouter"
 
 
 def test_legacy_config_without_model_prefixes_keeps_double_duty():
@@ -1404,7 +1403,6 @@ def test_discovery_lists_only_what_this_deployment_would_actually_route():
             "~deepseek/x-latest",      # floating alias, also openrouter
             "google/gemini-3.7-flash", # undeclared vendor, namespaced fallback (#154)
         ],
-        "https://api.anthropic.com/v1/models": ["claude-opus-5", "claude-sonnet-5"],
         "https://vllm-nimbus.carlboettiger.info/v1/models": ["qwen"],
     }
     with patch.object(p.httpx, "AsyncClient", _fake_models_client(catalog)):
@@ -1418,8 +1416,7 @@ def test_discovery_lists_only_what_this_deployment_would_actually_route():
     assert {"z-ai/glm-5.2", "~deepseek/x-latest",
             "google/gemini-3.7-flash"} <= by_provider["openrouter"]
     assert "google/gemini-3.7-flash" not in by_provider["nrp"]
-    # claude ids come back even though config declares no exact claude id (#110)
-    assert {"claude-opus-5", "claude-sonnet-5"} <= by_provider["anthropic"]
+    assert "anthropic" not in by_provider   # no direct provider since 2026-11-09
     assert by_provider["nimbus"] == {"qwen"}
 
 
@@ -1463,9 +1460,9 @@ def test_models_endpoint_requires_the_proxy_key():
         body = asyncio.run(p.list_models(authorization="Bearer testkey"))
     assert body["object"] == "list"
     assert isinstance(body["data"], list)
-    # prefixes are surfaced: `claude-` is routable even with no enumerable id
-    assert body["providers"]["anthropic"]["prefixes"] == ["claude-"]
-    assert "ids" not in body["providers"]["anthropic"]   # internal detail stays internal
+    # prefixes are surfaced: `z-ai/` is routable even with no enumerable id
+    assert "z-ai/" in body["providers"]["openrouter"]["prefixes"]
+    assert "ids" not in body["providers"]["openrouter"]   # internal detail stays internal
 
 
 def test_models_are_cached_and_force_refresh_bypasses():
@@ -1516,7 +1513,7 @@ def test_namespaced_id_with_unlisted_vendor_routes_to_openrouter_not_nrp():
     # bare ids keep falling back to NRP; exact ids still beat everything
     assert p.get_provider_for_model("glm-5")[0] == "nrp"
     assert p.get_provider_for_model("qwen")[0] == "nimbus"
-    assert p.get_provider_for_model("claude-sonnet-4-6")[0] == "anthropic"
+    assert p.get_provider_for_model("claude-sonnet-4-6")[0] == "nrp"   # no direct Anthropic
 
 
 def test_namespaced_id_never_falls_back_to_default_provider():
@@ -1976,6 +1973,22 @@ def test_shipped_shared_key_is_public():
     assert p.PRIMARY_KEY_TIER == "public"
     assert not p.model_in_tier("z-ai/glm-5.2", p.PRIMARY_KEY_TIER)
     assert p.model_in_tier("deepseek-v4-flash", p.PRIMARY_KEY_TIER)
+
+
+def test_glen_app_header_logged_as_sanitised_label():
+    """X-Glen-App names the app when several share one namespace key. It is a
+    label, so it is trimmed to a log-safe token and absent when not sent."""
+    p = _reload()
+    assert p.app_for_log({"x-glen-app": "tpl-ca"}) == "tpl-ca"
+    assert p.app_for_log({"x-glen-app": ' bad"app\n<x> '}) == "badappx"
+    assert p.app_for_log({"x-glen-app": "a" * 200}) == "a" * 64
+    assert p.app_for_log({}) is None
+    p._log_buffer.clear()
+    p.log_request("nrp", "qwen3", [{"role": "user", "content": "hi"}], request_id="r1",
+                  key_name="public/schmidtdse", app="tpl-ca")
+    p.log_response("nrp", "qwen3", {"choices": [{"message": {"content": "ok"}}]}, 5,
+                   request_id="r1", key_name="public/schmidtdse", app="tpl-ca")
+    assert [e["app"] for e in p._log_buffer[-2:]] == ["tpl-ca", "tpl-ca"]
 
 
 if __name__ == "__main__":
