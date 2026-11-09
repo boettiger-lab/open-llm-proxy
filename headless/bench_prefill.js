@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 
-const PROXY  = process.env.PROXY_ENDPOINT || 'https://open-llm-proxy.nrp-nautilus.io/v1';
+const PROXY  = process.env.PROXY_ENDPOINT || 'http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1';
 const MODEL  = process.argv[2] || 'nemotron';
 const ORIGIN = process.env.ORIGIN || `https://benchmark.nrp-nautilus.io/prefill_${MODEL}`;
 const KEY    = process.env.PROXY_KEY;

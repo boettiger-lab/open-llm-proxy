@@ -164,7 +164,7 @@ Key flags:
 | `--system-prompt` | _(required)_ | App's `system-prompt.md` — the catalog section is appended automatically |
 | `--model` | `config.llm_model` or `qwen3` | Must be a model the proxy knows |
 | `--origin` | _(none)_ | Set this so logs are tagged and filterable |
-| `--proxy-endpoint` | `https://open-llm-proxy.nrp-nautilus.io/v1` | |
+| `--proxy-endpoint` | `http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1` | In-cluster only; the proxy has no public endpoint (#162), so run on the cluster (see matrix Jobs) |
 | `--max-turns` | 20 | Mirrors browser `Agent.maxToolCalls` |
 | `--llm-timeout` | 1200s | Per-LLM-call budget (env `LLM_TIMEOUT_SECONDS`), matching the proxy's own upstream budget — see below |
 | `--transcript` | _(none)_ | Write full JSON transcript for offline comparison |
@@ -182,7 +182,6 @@ Several hops each impose their own ceiling, and the lowest one wins:
 | undici (Node `fetch`) | **lifted to none** (#128); was 300s | — |
 | `--llm-timeout` (agent) | 1200s | clean `Request timed out after Ns`, retried on full budget |
 | fetch-wrapper `AbortSignal` | `--llm-timeout` + 60s | backstop for a wedged socket |
-| haproxy ingress (→ the proxy) | 1200s | connection cut |
 | proxy → provider (`UPSTREAM_TIMEOUT_SECONDS`) | 1200s | 504 `Request timed out after Nms` |
 | Traefik (`vllm` **cirrus and nimbus**) | **600s — still the binding cap for those two** | 504 mid-call |
 

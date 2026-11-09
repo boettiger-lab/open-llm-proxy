@@ -1,3 +1,9 @@
+# NOT APPLIED. The proxy has had no public ingress since 2026-11-07 (#162).
+# Apps reach it in-cluster through their own nginx, each with its own key, and
+# cluster Jobs use the Service directly, so nothing needs a public hostname.
+# A public endpoint let anyone holding a key skip the apps and their limits.
+# Bring this back only with keys issued for outside use, a check that refuses app
+# keys on this Host, and the shared PROXY_KEY revoked. Kept here for reference.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

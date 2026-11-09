@@ -2,7 +2,7 @@
 
 OpenAI-compatible LLM proxy for NRP Nautilus. Routes requests to LLM providers, authenticates clients with a proxy key (keeping provider API keys off the browser), and logs every request/response pair to S3.
 
-The canonical deployment lives at `https://open-llm-proxy.nrp-nautilus.io` in the `biodiversity` namespace, but the proxy is designed to be deployed independently into any namespace — each instance writes logs to its own namespace-scoped S3 bucket.
+The canonical deployment runs in the `biodiversity` namespace on NRP and is reachable **only inside the cluster**, at `http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1`. It has had no public ingress since 2026-11-07 (#162): browsers reach it through each app's nginx at `/api/llm/`, which adds that app's key, and batch work runs as cluster Jobs. The proxy is designed to be deployed independently into any namespace, but the proxy is designed to be deployed independently into any namespace — each instance writes logs to its own namespace-scoped S3 bucket.
 
 A second deployment runs on the lab's self-hosted k3s cluster at `https://llm-proxy.carlboettiger.info` (OpenRouter + DSE-nimbus only, logging to the in-cluster MinIO mirror). It is **config-only** — it runs this repo's unmodified code from `main` with a ConfigMap mounted over `config.json`, and changes nothing the NRP deployment reads. Manifests and operations: [cirrus/](cirrus/README.md).
 
@@ -252,7 +252,8 @@ enumerate models to send *specific* ids somewhere other than the default.
 Rather than hardcoding a model list, clients can query the deployment:
 
 ```bash
-curl -H "Authorization: Bearer $PROXY_KEY" https://open-llm-proxy.nrp-nautilus.io/v1/models
+# from a pod in the cluster (there is no public endpoint)
+curl -H "Authorization: Bearer $PROXY_KEY" http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1/models
 ```
 
 OpenAI-shaped (`{"object": "list", "data": [...]}`), with each entry annotated by
@@ -353,12 +354,11 @@ If you don't have S3 credentials or don't set this, logs still go to pod stdout.
 
 ```bash
 kubectl apply -f service.yaml -n <your-namespace>
-kubectl apply -f ingress.yaml -n <your-namespace>
 kubectl apply -f deployment.yaml -n <your-namespace>
 kubectl rollout status deployment/open-llm-proxy -n <your-namespace>
 ```
 
-Update the `host` in `ingress.yaml` to match your namespace's desired hostname.
+There is deliberately no Ingress. Apps in the cluster call the Service, and a browser never talks to the proxy directly. If you must expose one, `archive/ingress.yaml` is the old NRP manifest; read its header first.
 
 ## Update
 

@@ -9,6 +9,12 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Security
+- **No public ingress.** The NRP proxy's Ingress was deleted on 2026-11-07 during the abuse
+  response (#162) and stays off: apps call the in-cluster Service through their nginx, and
+  Jobs call it directly. `ingress.yaml` moves to `archive/` with a header saying what must be
+  true before it returns (keys for outside use, app keys refused on that Host, shared key
+  revoked). The headless runner now defaults to `http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1`,
+  so it works from cluster Jobs and fails fast from a laptop.
 - **The shared `PROXY_KEY` drops to the public tier.** Every app glen-ops deploys now sends its own
   key (boettiger-lab/glen-ops#246). The shared key reaches NRP models only until it is revoked.
   Its remaining callers are utah-public-lands, roadless-rule and glen-benchmark matrix Jobs

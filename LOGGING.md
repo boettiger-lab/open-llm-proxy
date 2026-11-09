@@ -508,10 +508,10 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
    upstream, so provider-side caching/abuse-monitoring is unaffected. This required
    no client change and lights up all existing geo-agent traffic.
 2. **The `X-Session-Id` header (fallback).** For non-geo-agent clients that prefer
-   a header. It is in the ingress `cors-allow-headers` allow-list (`ingress.yaml`);
-   CORS is enforced at the ingress, not the app, so any custom header must be
-   listed there or the browser preflight blocks the whole request (same gotcha as
-   `X-Client` in #26).
+   a header. Browsers reach the proxy only same-origin through an app's nginx
+   (there is no public ingress since #162), so the header needs no CORS listing;
+   it only has to pass that nginx. (Before #162 it had to be in the ingress
+   `cors-allow-headers` list, as `X-Client` did in #26.)
 
 Records written before this wiring have `session_id = null`; group those by the
 `(origin, user_question)` heuristic instead. For newer records, group by
