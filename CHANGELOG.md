@@ -31,6 +31,8 @@ See [Releases](README.md#releases) for how a release is cut.
   rotated on 2026-11-09. Both deployments now share this wiring, so the `schmidtdse`
   overlay no longer patches it. rustfs holds the only copy; history before 2026-08-16 is
   still only on Ceph.
+- **`matrix-archiver` writes benchmark transcripts to the rustfs log bucket** with
+  `rustfs-logs-write`, following the proxy logs (#178). Earlier archives stay on Ceph.
 
 ### Removed
 - **`logs-mirror-raw-hourly` and the consolidation jobs' rustfs mirror step** (#178). They

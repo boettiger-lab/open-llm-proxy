@@ -82,7 +82,8 @@ its log is the only copy of the transcripts. The `matrix-archiver` CronJob
 ([`k8s/matrix-archiver.yaml`](k8s/matrix-archiver.yaml)) copies every finished
 `app=headless-matrix` Job's log to `s3://logs-open-llm-proxy/benchmark/raw/<job>.log`
 within ~15 minutes, so collection never depends on someone being logged in before the
-TTL. Fetch with `rclone copy nrp:logs-open-llm-proxy/benchmark/raw/ <dir> --include '<job>*'`.
+TTL. The bucket is on rustfs, so `./sync-logs.sh` fetches the archives under
+`benchmark/raw/`. Archives from before 2026-11-10 are still only on NRP Ceph (#178).
 
 Each transcript also records **what actually served** each call — `served_models`:
 `[{model, provider, calls}]` from the response body (NRP echoes the upstream artifact
