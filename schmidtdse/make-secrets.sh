@@ -9,10 +9,11 @@
 # OpenRouter: schmidtdse has its own OpenRouter key, so its spend is billed and
 # capped apart from biodiversity's. It comes from SCHMIDTDSE_OPENROUTER_KEY.
 #
-# Client keys: the schmidtdse proxy accepts only the apps that run in
-# schmidtdse. Their names come from schmidtdse/open-llm-proxy-app-keys (the
-# Secret each app's nginx reads); their `tier/name:key` lines, tier included,
-# are taken from biodiversity/open-llm-proxy-client-keys so both proxies agree.
+# Client keys: one per tier for the whole namespace, not one per app. Every
+# pod in a namespace can read every Secret in it, so per-app keys never kept
+# apps apart. glen-ops mints them in schmidtdse/open-llm-proxy-namespace-keys
+# (`public`, `private`). An app gets the private key only if it sits behind a
+# login. Each app's nginx sends `X-Glen-App`, which the proxy logs as `app`.
 set -euo pipefail
 
 SRC=biodiversity
@@ -58,27 +59,17 @@ for k in client-ip-salt redis-password; do
   echo "set open-llm-proxy-secrets/$k"
 done
 
-# 4. Client keys for the schmidtdse apps only.
+# 4. Client keys: the namespace's two tier keys, named public/schmidtdse and
+#    private/schmidtdse so key_name in the logs shows namespace and tier.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-kubectl -n "$SRC" get secret open-llm-proxy-client-keys -o jsonpath='{.data.keys}' | base64 -d > "$tmp/all"
-kubectl -n "$DST" get secret open-llm-proxy-app-keys -o json \
+kubectl -n "$DST" get secret open-llm-proxy-namespace-keys -o json \
   | python3 -c 'import json,sys,base64
-for k,v in json.load(sys.stdin)["data"].items(): print(k, base64.b64decode(v).decode().strip())' > "$tmp/apps"
-
-: > "$tmp/keys"
-missing=0
-while read -r name key; do
-  # Match the line by key, so a tier prefix or a renamed entry cannot slip through.
-  line=$(grep -v '^[[:space:]]*#' "$tmp/all" | grep -F ":$key" | head -1 || true)
-  if [[ -z "$line" ]]; then
-    echo "MISSING: app key for '$name' is not in $SRC/open-llm-proxy-client-keys"
-    missing=1
-  else
-    echo "$line" >> "$tmp/keys"
-    echo "client key: ${line%%:*}"
-  fi
-done < "$tmp/apps"
-[[ $missing == 0 ]] || { echo "Refusing to continue: fix the missing keys first."; exit 1; }
+d=json.load(sys.stdin)["data"]
+for tier in ("public","private"):
+    v=base64.b64decode(d[tier]).decode().strip()
+    assert len(v)>=32 and ":" not in v and "\n" not in v, tier
+    print(f"{tier}/schmidtdse:{v}")' > "$tmp/keys"
+cut -d: -f1 "$tmp/keys" | sed 's/^/client key: /'
 
 kubectl -n "$DST" create secret generic open-llm-proxy-client-keys \
   --from-file=keys="$tmp/keys" --dry-run=client -o yaml \
