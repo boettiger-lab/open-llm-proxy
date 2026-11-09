@@ -40,8 +40,9 @@ kubectl -n "$DST" create secret generic openrouter-key \
   | kubectl -n "$DST" apply "${DRY[@]}" -f - >/dev/null
 echo "set secret/openrouter-key from SCHMIDTDSE_OPENROUTER_KEY"
 
-# 2. Nimbus and S3 credentials, copied whole.
-for s in nimbus-api-key aws; do
+# 2. Nimbus, copied whole. (Logs use rustfs-logs-write, minted by glen-ops for
+#    this bucket only; the general NRP `aws` credential is not copied.)
+for s in nimbus-api-key; do
   kubectl -n "$SRC" get secret "$s" -o json | strip \
     | kubectl -n "$DST" apply "${DRY[@]}" -f - >/dev/null
   echo "copied secret/$s"

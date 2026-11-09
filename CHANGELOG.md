@@ -14,7 +14,14 @@ See [Releases](README.md#releases) for how a release is cut.
   `schmidtdse` apps lost the LLM. The new directory is a kustomize overlay of the root
   manifests (same code, `config.json` and log bucket; own Service, redis and client keys
   limited to the `schmidtdse` apps). It uses its own OpenRouter key; `make-secrets.sh` sets
-  that and copies the rest.
+  that and copies the rest. Its logs go to their own rustfs bucket,
+  `logs-open-llm-proxy-schmidtdse`, under a key scoped to that bucket, with their own
+  consolidation CronJobs.
+
+### Changed
+- **Consolidation CronJobs read `LOG_BUCKET` and `LOG_S3_ENDPOINT`.** Unset, they behave as
+  before (NRP Ceph `logs-open-llm-proxy`). They skip the rustfs mirror step when the logs
+  already live on the mirror target.
 
 ### Removed
 - **The direct Anthropic provider.** Unused since September; Claude stays reachable through
