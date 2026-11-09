@@ -9,18 +9,19 @@
 #
 # What. Every 15 minutes: for each Job labelled app=headless-matrix that has finished
 # (Complete or Failed) and has no archive yet, write its full log to
-#     s3://logs-open-llm-proxy/benchmark/raw/<job-name>.log
+#     s3://logs-open-llm-proxy/benchmark/raw/<job-name>.log   (on rustfs since #178)
 # Idempotent — an existing object is never rewritten — so a missed tick just catches up.
 #
-# Why a separate CronJob rather than an upload step in the matrix pod. The only bucket
-# credential in this namespace is the `aws` Secret, which can read, write and delete every
-# NRP bucket. The matrix pod clones arbitrary app repos and runs LLM-driven agent code; it
-# should never hold that key. Here the key lives only in this pod, which runs nothing but
+# Why a separate CronJob rather than an upload step in the matrix pod. The key here,
+# `rustfs-logs-write`, can write and delete the whole proxy log bucket. The matrix pod
+# clones arbitrary app repos and runs LLM-driven agent code; it should never hold that key.
+# (Before #178 this used the `aws` Secret, which reaches every NRP bucket.) Here the key lives only in this pod, which runs nothing but
 # kubectl + aws, under a ServiceAccount that can only read Jobs, pods and pod logs.
 #
 # Apply once:   kubectl -n biodiversity apply -f headless/k8s/matrix-archiver.yaml
 # Run now:      kubectl -n biodiversity create job --from=cronjob/matrix-archiver archive-now
-# Fetch:        rclone copy nrp:logs-open-llm-proxy/benchmark/raw/ <dir> --include '<job>*'
+# Fetch:        ./sync-logs.sh (rustfs-logs-read), then look under benchmark/raw/.
+#               Archives from before 2026-11-10 are still only on NRP Ceph (#178).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -89,10 +90,15 @@ spec:
               # kubectl + aws-cli in one small image
               image: alpine/k8s:1.31.4
               env:
+                # The proxy's log bucket on rustfs, with the key scoped to it (#178).
                 - name: AWS_ACCESS_KEY_ID
-                  valueFrom: { secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID } }
+                  valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: AWS_ACCESS_KEY_ID } }
                 - name: AWS_SECRET_ACCESS_KEY
-                  valueFrom: { secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY } }
+                  valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: AWS_SECRET_ACCESS_KEY } }
+                - name: LOG_BUCKET
+                  valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: BUCKET } }
+                - name: LOG_S3_ENDPOINT
+                  valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: AWS_S3_ENDPOINT } }
                 - name: AWS_DEFAULT_REGION
                   value: us-east-1
               command: ["/bin/bash", "-c"]
@@ -100,9 +106,8 @@ spec:
                 - |
                   set -uo pipefail
                   NS=biodiversity
-                  DEST=s3://logs-open-llm-proxy/benchmark/raw
-                  # cluster-internal endpoint: no egress, same bucket as s3-west
-                  S3="aws --endpoint-url http://rook-ceph-rgw-nautiluss3.rook s3"
+                  DEST=s3://$LOG_BUCKET/benchmark/raw
+                  S3="aws --endpoint-url $LOG_S3_ENDPOINT s3"
                   n_new=0; n_fail=0
                   # name + whether finished (a Complete or Failed condition is True)
                   for row in $(kubectl -n $NS get jobs -l app=headless-matrix \
