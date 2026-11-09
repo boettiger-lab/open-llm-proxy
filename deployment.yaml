@@ -195,12 +195,18 @@ spec:
         # Defaults keep full final answer + full tool calls, bounded reasoning.
         - name: LOG_REASONING_MAX
           value: "4000"
+        # Logs go to rustfs, with a key scoped to the one log bucket
+        # (rustfs-logs-write), never the general NRP key (#178). The Secret also
+        # names the bucket and endpoint, so each deployment's own Secret decides
+        # where its logs land.
         - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef: { name: aws, key: AWS_ACCESS_KEY_ID }
+          valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: AWS_ACCESS_KEY_ID } }
         - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef: { name: aws, key: AWS_SECRET_ACCESS_KEY }
+          valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: AWS_SECRET_ACCESS_KEY } }
+        - name: LOG_BUCKET
+          valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: BUCKET } }
+        - name: AWS_S3_ENDPOINT_URL
+          valueFrom: { secretKeyRef: { name: rustfs-logs-write, key: AWS_S3_ENDPOINT } }
         resources:
           requests:
             # 950m, not 1000m: the dns-cache sidecar requests another 10m, and

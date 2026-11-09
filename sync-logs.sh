@@ -3,7 +3,7 @@
 # DuckDB — no credential expansion per query, and orders of magnitude faster
 # iteration than round-tripping S3.
 #
-# Reads from the **rustfs mirror** using a credential scoped to this one bucket,
+# Reads the rustfs log bucket using a credential scoped to this one bucket,
 # Get/List only (#113). That replaces the previous default of rclone's `nrp:`
 # remote, which is the single NRP credential and carries read/write/delete on
 # *every* NRP bucket — far beyond what reading a few MiB of logs needs.
@@ -18,12 +18,9 @@
 #   ./sync-logs.sh ~/scratch/logs     # syncs to a custom path
 #   LOGS_DIR=~/cache/logs ./sync-logs.sh
 #
-# NOTE ON FRESHNESS: the mirror carries the query-ready tiers — consolidated/**
-# and sessions/** — refreshed by the consolidation CronJob at 03:00 UTC, AND
-# today's raw JSONL under YYYY-MM-DD/, refreshed hourly by
-# `logs-mirror-raw-hourly` (#124). So the mirror is at most ~1h behind for
-# today, not the 3–27h it used to be. For anything fresher than that, use
-# kubectl (see LOGGING.md). Nothing here needs the NRP key any more.
+# FRESHNESS: since #178 the proxy writes raw JSONL straight to this bucket every
+# minute, and the 03:00 UTC CronJob builds the Parquet tiers. Nothing here needs
+# the NRP key.
 set -euo pipefail
 
 DEST="${1:-${LOGS_DIR:-/tmp/open-llm-proxy-logs}}"
