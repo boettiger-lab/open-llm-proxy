@@ -107,7 +107,7 @@ Options:
   --model NAME             Model name (default: config.llm_model or "qwen3")
   --origin URL             Origin header for proxy logging
   --proxy-endpoint URL     OpenAI-compatible LLM endpoint
-                           (default: https://open-llm-proxy.nrp-nautilus.io/v1)
+                           (default: http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1)
   --api-key KEY            Proxy key (or env PROXY_KEY / OPENAI_API_KEY)
   --max-turns N            Max tool-call iterations (default: 20)
   --mcp-url URL            Override MCP server URL (default: config.mcp_url)
@@ -215,7 +215,7 @@ async function main() {
     const config = JSON.parse(await fs.readFile(path.resolve(args.config), 'utf8'));
     const baseSystemPrompt = await fs.readFile(path.resolve(args.system_prompt), 'utf8');
 
-    const proxyEndpoint = args.proxy_endpoint || 'https://open-llm-proxy.nrp-nautilus.io/v1';
+    const proxyEndpoint = args.proxy_endpoint || 'http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1';
     const apiKey = args.api_key || process.env.PROXY_KEY || process.env.OPENAI_API_KEY;
     if (!apiKey) {
         console.error('ERROR: no proxy API key. Set PROXY_KEY env var or pass --api-key.');

@@ -34,10 +34,10 @@ not to point these manifests at a branch.
 
 | | NRP (`../deployment.yaml`) | cirrus (this directory) |
 |---|---|---|
-| Host | `open-llm-proxy.nrp-nautilus.io` | `llm-proxy.carlboettiger.info` |
+| Host | none, in-cluster only since #162 | `llm-proxy.carlboettiger.info` (parked) |
 | Namespace | `biodiversity` | `llm-proxy` |
 | Providers | nrp ELLM, OpenRouter, Anthropic, nimbus, gemma4-nimbus, vllm-cirrus | **OpenRouter + DSE-nimbus only** |
-| Ingress / CORS | HAProxy annotations | Traefik `Middleware` CRD (`middleware.yaml`) |
+| Ingress / CORS | none (old HAProxy manifest in `../archive/ingress.yaml`) | Traefik `Middleware` CRD (`middleware.yaml`) |
 | Log store | NRP Ceph `s3://logs-open-llm-proxy` | in-cluster MinIO `s3://logs-open-llm-proxy` |
 | Log tiers | raw JSONL → daily Parquet → monthly Parquet + `sessions/**` | **raw JSONL only** (see below) |
 | Replicas | 3, spread across nodes | 2, pinned to `cirrus` |

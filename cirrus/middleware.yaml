@@ -1,7 +1,7 @@
 # Traefik CRDs backing the cirrus ingress.
 #
 # On NRP, CORS and the long timeouts are HAProxy ingress annotations
-# (../ingress.yaml); Traefik expresses the same behaviour as first-class CRDs
+# (../archive/ingress.yaml, no longer applied); Traefik expresses the same behaviour as first-class CRDs
 # referenced from the Ingress via `router.middlewares` /
 # `service.servertransport`. Same split as mcp-data-server's cirrus recipe.
 ---
