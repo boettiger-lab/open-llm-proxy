@@ -8,6 +8,13 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Added
+- **A second NRP deployment in `schmidtdse`** (`schmidtdse/`). Since the Nov 7 2026 incident,
+  pods outside `biodiversity` cannot connect into it, so tpl-ca, bosl-high-seas and the other
+  `schmidtdse` apps lost the LLM. The new directory is a kustomize overlay of the root
+  manifests (same code, `config.json` and log bucket; own Service, redis and client keys
+  limited to the `schmidtdse` apps). `make-secrets.sh` copies the secrets it needs.
+
 ### Security
 - **No public ingress.** The NRP proxy's Ingress was deleted on 2026-11-07 during the abuse
   response (#162) and stays off: apps call the in-cluster Service through their nginx, and

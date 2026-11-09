@@ -1,0 +1,51 @@
+# Second NRP deployment of open-llm-proxy, in the schmidtdse namespace.
+#
+# It reuses the root manifests unchanged and patches only what names the
+# namespace. Root files sit outside this directory, so kustomize needs the load
+# restrictor lifted, which `kubectl apply -k` cannot do:
+#
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone schmidtdse \
+#     | kubectl -n schmidtdse apply -f -
+#
+# See README.md in this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: schmidtdse
+
+resources:
+  - ../deployment.yaml
+  - ../service.yaml
+  - ../redis.yaml
+  - ../dns-cache-configmap.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: open-llm-proxy
+    patch: |-
+      # Lighter traffic than biodiversity: two replicas still survive one bad node.
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      # The first DNS search domain is the pod's own namespace.
+      - op: replace
+        path: /spec/template/spec/dnsConfig/searches/0
+        value: schmidtdse.svc.cluster.local
+  - target:
+      kind: Deployment
+      name: open-llm-proxy
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: open-llm-proxy
+      spec:
+        template:
+          spec:
+            containers:
+            - name: open-llm-proxy
+              env:
+              # Budget counters are per deployment: this redis, not biodiversity's.
+              - name: BUDGET_REDIS_URL
+                value: "redis://:$(BUDGET_REDIS_PASSWORD)@open-llm-proxy-redis.schmidtdse.svc.cluster.local:6379/0"

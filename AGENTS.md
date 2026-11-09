@@ -14,7 +14,7 @@ This is an LLM proxy service that routes chat completion requests to NRP, OpenRo
 
 > **Non-streaming by design — never "fix" a slow turn by adding streaming.** The proxy buffers every completion, and that buffer is what produces the request/response log pair, the tool-call dialect repair, and the token accounting — i.e. the very corpus this file tells you to analyze. `stream: true` is refused with a **400** (`llm_proxy.py`, #129); streaming was rejected as *a change to the primary analysis artifact*, not for lack of demand. geo-agent is a **caching**-agentic design, not a streaming one: the browser `Agent` awaits a complete response and there is no SSE consumer anywhere in its `app/`, and prompt caching — not time-to-first-token — is the cost lever (cold-cache first turns cost *more* per call than deep ones). Consequence to expect when reading logs: every per-call deadline covers the whole generation, so a slow turn can reach the user as a sidecar 502/504 while the proxy logs a **200** — `latency_ms` is proxy-side and does not prove the client was still listening — a caveat that outlives the issues it was raised in (#82 closed, #129 closed as *not planned* — the latter is the decision not to stream, not a pending fix). Per-call ceilings are a *chain* (`UPSTREAM_TIMEOUT_SECONDS`, each app's nginx sidecar and its ingress, geo-agent's `llm_timeout_seconds`); raise them together or the cap just relocates to the next hop (#136). See [README → No streaming (by design)](README.md#no-streaming-by-design).
 
-## Two deployments
+## Deployments
 
 The canonical deployment is on **NRP** (namespace `biodiversity`, in-cluster
 only, no public hostname) — that is what the manifests at the repo root, and
@@ -35,6 +35,12 @@ Two rules for agents working on it:
 2. **Check which cluster `kubectl` is pointed at** (`kubectl config
    current-context`) before touching anything — a laptop configured for cirrus
    generally cannot reach NRP, and vice versa.
+
+A third, on NRP in namespace **`schmidtdse`**, serves the apps that run there,
+because pods outside `biodiversity` cannot connect into it since the Nov 7 2026
+incident. It is a kustomize overlay of the root manifests (same code and
+config; own Service, redis and client keys) and logs to the same bucket. See
+[schmidtdse/](schmidtdse/README.md).
 
 ## Evaluating Logs
 
