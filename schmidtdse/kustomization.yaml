@@ -49,6 +49,11 @@ patches:
             - name: open-llm-proxy
               env:
               # Budget counters are per deployment: this redis, not biodiversity's.
+              # The merge moves patched entries to the front of the env list, and
+              # $(VAR) only expands variables defined earlier, so the password is
+              # repeated here, ahead of the URL that uses it.
+              - name: BUDGET_REDIS_PASSWORD
+                valueFrom: { secretKeyRef: { name: open-llm-proxy-secrets, key: redis-password, optional: true } }
               - name: BUDGET_REDIS_URL
                 value: "redis://:$(BUDGET_REDIS_PASSWORD)@open-llm-proxy-redis.schmidtdse.svc.cluster.local:6379/0"
               # Logs go to this deployment's own rustfs bucket, with a key scoped
