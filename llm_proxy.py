@@ -602,6 +602,13 @@ def build_provider_entry(provider_config: dict) -> dict:
         "prefixes": provider_config.get("model_prefixes", provider_config.get("models", [])),
         "extra_headers": provider_config.get("extra_headers", {}),
         "thinking_models": provider_config.get("thinking_models", {}),
+        # Proxy id -> the id the upstream server knows it by. Lets two backends
+        # serve the same weights under the same upstream name without colliding
+        # in routing: NRP and vllm-nimbus2 both call DeepSeek V4 Flash
+        # `deepseek-v4-flash`, so nimbus2's copy is `deepseek-nimbus` here and is
+        # renamed on the way out. Every other lookup (tiers, thinking_models,
+        # no_sampling_params, logs) uses the proxy id.
+        "model_aliases": provider_config.get("model_aliases", {}),
         # Models that 400 on sampling params (temperature/top_p) — e.g. the newest
         # Anthropic models. Must be carried through here: this rebuilt dict (not the
         # raw config) is what get_provider_for_model returns at request time.
@@ -1380,8 +1387,9 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if "extra_headers" in provider_config and provider_config["extra_headers"]:
         headers.update(provider_config["extra_headers"])
     
+    upstream_model = provider_config.get("model_aliases", {}).get(request.model, request.model)
     payload = {
-        "model": request.model,
+        "model": upstream_model,
         "messages": request.messages,
     }
 
@@ -1446,6 +1454,9 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             response = await http_client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             result = response.json()
+            # Answer under the id the client asked for, not the upstream alias.
+            if upstream_model != request.model and isinstance(result, dict) and "model" in result:
+                result["model"] = request.model
 
             # Repair leaked tool-call arg dialect (#85) before returning OR
             # logging, so neither the client nor the log ever sees the markup.
@@ -1614,6 +1625,9 @@ async def refresh_models(force: bool = False) -> dict:
                 status = "stale" if previous.get("ids") else "declared"
             else:
                 status = "ok"
+                # Upstream reports its own names; translate aliased ones back.
+                reverse = {up: mine for mine, up in cfg.get("model_aliases", {}).items()}
+                ids = [reverse.get(mid, mid) for mid in ids]
             # Only keep ids this deployment would actually route *here*.
             routable = []
             for mid in ids:
