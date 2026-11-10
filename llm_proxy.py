@@ -784,6 +784,47 @@ def resolve_budgets(cfg: dict):
 
 
 BUDGETS = resolve_budgets(config)
+
+
+# Fallback models. When the backend for a model refuses a call because it is
+# rate-limited or down, retry it once on a named substitute:
+#
+#   "fallbacks": {"deepseek-v4-flash": "deepseek-nimbus"}
+#
+# NRP rate-limits deepseek-v4-flash; vllm-nimbus2 serves DeepSeek V4 Flash too.
+# Only these failures fall back: a 429, a 5xx, or no connection at all. A 4xx is
+# the request's own fault and would fail the same way anywhere; a read timeout
+# has already spent the caller's patience. The substitute must be in the
+# caller's tier. The response row names the substitute in `model`/`provider`
+# and the refused attempt in `fallback_from`.
+FALLBACK_STATUSES = {429, 500, 502, 503, 504}
+
+
+def resolve_fallbacks(cfg: dict) -> dict:
+    return {k: v for k, v in (cfg.get("fallbacks") or {}).items() if k and v and k != v}
+
+
+FALLBACKS = resolve_fallbacks(config)
+
+
+def should_fall_back(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in FALLBACK_STATUSES
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
+def fallback_route(model: str, tier: str):
+    """(provider_name, provider_config, model) to retry `model` on, or None."""
+    alt = FALLBACKS.get(model)
+    if not alt or not model_in_tier(alt, tier):
+        return None
+    try:
+        name, cfg = get_provider_for_model(alt)
+    except UnknownModelError:
+        return None
+    if not cfg.get("api_key"):
+        return None
+    return name, cfg, alt
 BUDGET_REDIS_URL = os.getenv("BUDGET_REDIS_URL")
 
 
@@ -1129,7 +1170,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _log("📥 REQUEST", log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, fallback_from: dict = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -1147,7 +1188,9 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
         "origin": origin,
         "latency_ms": latency_ms,
     }
-    
+    if fallback_from:
+        log_entry["fallback_from"] = fallback_from
+
     if error:
         log_entry["error"] = error
         # Allow-listed upstream response headers (#44) — present only on the
@@ -1280,6 +1323,78 @@ class ChatRequest(BaseModel):
     usage: Optional[Dict[str, Any]] = None  # e.g. OpenRouter {"include": true}
     provider: Optional[Dict[str, Any]] = None  # OpenRouter routing block (zdr/order/only/...)
 
+def build_upstream_call(request, provider_name: str, provider_config: dict, model: str):
+    """(endpoint, headers, payload) for sending `request` to one provider as `model`."""
+    api_key = provider_config["api_key"]
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    # Add provider-specific extra headers if configured
+    if "extra_headers" in provider_config and provider_config["extra_headers"]:
+        headers.update(provider_config["extra_headers"])
+    
+    upstream_model = provider_config.get("model_aliases", {}).get(model, model)
+    payload = {
+        "model": upstream_model,
+        "messages": request.messages,
+    }
+
+    # Sampling params: the newest Anthropic models (Sonnet 5, Opus 4.8/4.7, Fable 5,
+    # ...) reject `temperature`/`top_p`/`top_k` with a 400 — they were removed, not
+    # deprecated. `no_sampling_params` lists (per provider) the model IDs that must
+    # not receive them; matched exact-then-prefix like model routing. Everything else
+    # keeps the forced `temperature: 0.0` default (#33) for eval determinism.
+    no_sampling = provider_config.get("no_sampling_params", [])
+    rejects_sampling = model in no_sampling or any(
+        model.startswith(p) for p in no_sampling
+    )
+    if not rejects_sampling:
+        payload["temperature"] = request.temperature
+
+    # Add tools if provided
+    if request.tools:
+        payload["tools"] = request.tools
+        payload["tool_choice"] = request.tool_choice
+
+    # Forward known-safe sampling/output knobs when the client sends them (#47).
+    # Only set keys that are present (non-None) so provider defaults are untouched.
+    max_tokens = effective_max_tokens(request.max_tokens, provider_config)
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    for field in ("top_p", "seed", "stop", "response_format"):
+        value = getattr(request, field)
+        if value is not None:
+            if field == "top_p" and rejects_sampling:
+                continue  # same 400 as temperature on these models
+            payload[field] = value
+
+    # OpenRouter-only knobs: the `provider` routing block (zdr / order / only /
+    # require_parameters, ...) and top-level `usage` ({"include": true}). Both are
+    # OpenRouter-isms — meaningless, and potentially rejected by strict
+    # OpenAI-compatible servers (e.g. vllm), elsewhere — so guard by provider.
+    if provider_name == "openrouter":
+        if request.provider is not None:
+            payload["provider"] = request.provider
+        if request.usage is not None:
+            payload["usage"] = request.usage
+
+    # Cache salt: isolate this deployment's cached responses from other NRP tenants
+    if CACHE_SALT and provider_name == "nrp":
+        payload["cache_salt"] = CACHE_SALT
+
+    # Thinking mode: inject per-model chat_template_kwargs if enable_thinking is set
+    if request.enable_thinking is not None:
+        thinking_models = provider_config.get("thinking_models", {})
+        thinking_key = thinking_models.get(model)
+        if thinking_key:
+            payload["chat_template_kwargs"] = {thinking_key: request.enable_thinking}
+        else:
+            print(f"ℹ️  enable_thinking requested for '{model}' but no thinking_key configured — ignoring")
+    return provider_config["endpoint"], headers, payload
+
+
 @app.post("/v1/chat/completions")
 @app.post("/chat")  # Keep for backward compatibility
 async def proxy_chat(request: ChatRequest, http_request: Request, authorization: Optional[str] = Header(None)):
@@ -1365,7 +1480,6 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                      key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=429, detail=error_msg,
                             headers={"Retry-After": str(max(60, int(reset - time.time())))})
-    endpoint = provider_config["endpoint"]
     api_key = provider_config["api_key"]
     
     if not api_key:
@@ -1377,86 +1491,41 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     # Log incoming request
     log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking)
     
-    # Prepare request to LLM provider
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-    
-    # Add provider-specific extra headers if configured
-    if "extra_headers" in provider_config and provider_config["extra_headers"]:
-        headers.update(provider_config["extra_headers"])
-    
-    upstream_model = provider_config.get("model_aliases", {}).get(request.model, request.model)
-    payload = {
-        "model": upstream_model,
-        "messages": request.messages,
-    }
-
-    # Sampling params: the newest Anthropic models (Sonnet 5, Opus 4.8/4.7, Fable 5,
-    # ...) reject `temperature`/`top_p`/`top_k` with a 400 — they were removed, not
-    # deprecated. `no_sampling_params` lists (per provider) the model IDs that must
-    # not receive them; matched exact-then-prefix like model routing. Everything else
-    # keeps the forced `temperature: 0.0` default (#33) for eval determinism.
-    no_sampling = provider_config.get("no_sampling_params", [])
-    rejects_sampling = request.model in no_sampling or any(
-        request.model.startswith(p) for p in no_sampling
-    )
-    if not rejects_sampling:
-        payload["temperature"] = request.temperature
-
-    # Add tools if provided
-    if request.tools:
-        payload["tools"] = request.tools
-        payload["tool_choice"] = request.tool_choice
-
-    # Forward known-safe sampling/output knobs when the client sends them (#47).
-    # Only set keys that are present (non-None) so provider defaults are untouched.
-    max_tokens = effective_max_tokens(request.max_tokens, provider_config)
-    if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
-    for field in ("top_p", "seed", "stop", "response_format"):
-        value = getattr(request, field)
-        if value is not None:
-            if field == "top_p" and rejects_sampling:
-                continue  # same 400 as temperature on these models
-            payload[field] = value
-
-    # OpenRouter-only knobs: the `provider` routing block (zdr / order / only /
-    # require_parameters, ...) and top-level `usage` ({"include": true}). Both are
-    # OpenRouter-isms — meaningless, and potentially rejected by strict
-    # OpenAI-compatible servers (e.g. vllm), elsewhere — so guard by provider.
-    if provider_name == "openrouter":
-        if request.provider is not None:
-            payload["provider"] = request.provider
-        if request.usage is not None:
-            payload["usage"] = request.usage
-
-    # Cache salt: isolate this deployment's cached responses from other NRP tenants
-    if CACHE_SALT and provider_name == "nrp":
-        payload["cache_salt"] = CACHE_SALT
-
-    # Thinking mode: inject per-model chat_template_kwargs if enable_thinking is set
-    if request.enable_thinking is not None:
-        thinking_models = provider_config.get("thinking_models", {})
-        thinking_key = thinking_models.get(request.model)
-        if thinking_key:
-            payload["chat_template_kwargs"] = {thinking_key: request.enable_thinking}
-        else:
-            print(f"ℹ️  enable_thinking requested for '{request.model}' but no thinking_key configured — ignoring")
-    
     # Make request to LLM provider. NB: name this `http_client`, NOT `client` —
     # `client` is the X-Client header value passed to log_response() below; an
     # `as client` here shadowed it with the AsyncClient object, so json.dumps in
     # log_response raised and every response was silently dropped from S3 (#37).
     async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT) as http_client:
+        served_model, fallback_from = request.model, None
         try:
-            response = await http_client.post(endpoint, json=payload, headers=headers)
-            response.raise_for_status()
+            endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
+            try:
+                response = await http_client.post(endpoint, json=payload, headers=headers)
+                response.raise_for_status()
+            except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ConnectTimeout) as e:
+                alt = fallback_route(request.model, tier) if should_fall_back(e) else None
+                if not alt:
+                    raise
+                fallback_from = {
+                    "provider": provider_name, "model": request.model,
+                    "status": e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None,
+                    "error": (e.response.text[:300] if isinstance(e, httpx.HTTPStatusError)
+                              else f"{type(e).__name__}: {e}"[:300]),
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+                provider_name, provider_config, served_model = alt
+                print(f"↪️  {fallback_from['provider']} refused {request.model} "
+                      f"({fallback_from['status'] or fallback_from['error'][:60]}); "
+                      f"retrying on {provider_name} as {served_model} (request_id={request_id})",
+                      flush=True)
+                endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
+                response = await http_client.post(endpoint, json=payload, headers=headers)
+                response.raise_for_status()
             result = response.json()
-            # Answer under the id the client asked for, not the upstream alias.
-            if upstream_model != request.model and isinstance(result, dict) and "model" in result:
-                result["model"] = request.model
+            # Answer under the proxy's id for the model that served it, not the
+            # upstream alias (`deepseek-nimbus`, not nimbus2's `deepseek-v4-flash`).
+            if payload["model"] != served_model and isinstance(result, dict) and "model" in result:
+                result["model"] = served_model
 
             # Repair leaked tool-call arg dialect (#85) before returning OR
             # logging, so neither the client nor the log ever sees the markup.
@@ -1482,7 +1551,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                       f"(model={request.model}, request_id={request_id}) — the caller may "
                       f"already have given up on this turn and seen a gateway 502/504",
                       flush=True)
-            log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, dialect_repaired=dialect_repaired)
+            log_response(provider_name, served_model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, dialect_repaired=dialect_repaired, fallback_from=fallback_from)
 
             usage = result.get("usage") or {}
             await charge_budget(counters, (usage.get("prompt_tokens") or 0)
@@ -1499,13 +1568,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # then re-raise so the cancellation still propagates correctly.
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Client disconnected/cancelled after {latency_ms}ms (upstream still pending)"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from)
             raise
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from)
             raise HTTPException(status_code=504, detail=error_detail)
 
         except httpx.HTTPStatusError as e:
@@ -1515,7 +1584,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # retry-after/x-ratelimit-*) vs dead-backend (naked 500, no
             # server/x-request-id) distinction is queryable from logs (#44).
             upstream_headers = _capture_upstream_headers(e.response.headers)
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, upstream_headers=upstream_headers)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, upstream_headers=upstream_headers, fallback_from=fallback_from)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
@@ -1528,7 +1597,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, request.model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors
