@@ -133,6 +133,9 @@
       ]
     }
   },
+  "fallbacks": {
+    "deepseek-v4-flash": "deepseek-nimbus"
+  },
   "default_key_tier": "public",
   "primary_key_tier": "public",
   "budgets": {

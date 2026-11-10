@@ -1253,6 +1253,128 @@ def test_model_alias_sends_upstream_id_and_keeps_proxy_id_everywhere_else():
     assert {e.get("model") for e in p._log_buffer} == {"deepseek-nimbus"}
 
 
+def _fallback_harness(p, primary_status=None, primary_exc=None, fallback_status=None):
+    """Fake upstream: NRP answers with `primary_status`/`primary_exc`, nimbus2 with
+    `fallback_status` (or 200). Returns (captured posts, run(request) -> result)."""
+    import asyncio
+    from unittest.mock import patch
+
+    posts = []
+
+    class _Resp:
+        def __init__(self, url, status, model):
+            self.status_code, self.text, self.headers = status, f"status {status}", {}
+            self._model, self._url = model, url
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                req = p.httpx.Request("POST", self._url)
+                raise p.httpx.HTTPStatusError("x", request=req,
+                                              response=p.httpx.Response(self.status_code, text=self.text, request=req))
+
+        def json(self):
+            return {"model": self._model, "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                    "choices": [{"message": {"role": "assistant", "content": "hi"}}]}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, endpoint, json=None, headers=None):
+            posts.append((endpoint, json))
+            if "nimbus2" in endpoint:
+                return _Resp(endpoint, fallback_status or 200, json["model"])
+            if primary_exc:
+                raise primary_exc
+            return _Resp(endpoint, primary_status or 200, json["model"])
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    def run(req):
+        with patch.object(p.httpx, "AsyncClient", _Client), \
+             patch.dict(p.PROVIDERS["nimbus2"], {"api_key": "k"}), \
+             patch.dict(p.PROVIDERS["nrp"], {"api_key": "k"}):
+            return asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+    return posts, run
+
+
+def _ds_request(p, **kw):
+    return p.ChatRequest(model="deepseek-v4-flash", messages=[{"role": "user", "content": "hi"}], **kw)
+
+
+def test_nrp_429_falls_back_to_deepseek_nimbus():
+    p = _reload(PROXY_KEY="testkey")
+    assert p.FALLBACKS == {"deepseek-v4-flash": "deepseek-nimbus"}
+    p._log_buffer.clear()
+    posts, run = _fallback_harness(p, primary_status=429)
+    result = run(_ds_request(p, enable_thinking=True))
+    assert [("nimbus2" in e) for e, _ in posts] == [False, True]
+    nimbus_payload = posts[1][1]
+    assert nimbus_payload["model"] == "deepseek-v4-flash"          # upstream alias
+    assert nimbus_payload["chat_template_kwargs"] == {"thinking": True}
+    assert "cache_salt" not in nimbus_payload
+    assert result["model"] == "deepseek-nimbus"
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert len(resp) == 1, resp                      # one response row per request
+    assert resp[0]["provider"] == "nimbus2" and resp[0]["model"] == "deepseek-nimbus"
+    assert resp[0]["fallback_from"]["provider"] == "nrp"
+    assert resp[0]["fallback_from"]["status"] == 429
+    assert "error" not in resp[0]
+
+
+def test_connection_failure_and_5xx_fall_back_but_4xx_does_not():
+    import pytest
+    p = _reload(PROXY_KEY="testkey")
+    for kw in ({"primary_status": 503}, {"primary_status": 500},
+               {"primary_exc": p.httpx.ConnectError("refused")}):
+        posts, run = _fallback_harness(p, **kw)
+        assert run(_ds_request(p))["model"] == "deepseek-nimbus", kw
+    posts, run = _fallback_harness(p, primary_status=400)
+    with pytest.raises(p.HTTPException) as ei:
+        run(_ds_request(p))
+    assert ei.value.status_code == 400 and len(posts) == 1
+
+
+def test_read_timeout_does_not_fall_back():
+    import pytest
+    p = _reload(PROXY_KEY="testkey")
+    posts, run = _fallback_harness(p, primary_exc=p.httpx.ReadTimeout("slow"))
+    with pytest.raises(p.HTTPException) as ei:
+        run(_ds_request(p))
+    assert ei.value.status_code == 504 and len(posts) == 1
+
+
+def test_failed_fallback_is_logged_once_against_the_substitute():
+    import pytest
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    posts, run = _fallback_harness(p, primary_status=429, fallback_status=503)
+    with pytest.raises(p.HTTPException) as ei:
+        run(_ds_request(p))
+    assert ei.value.status_code == 502 and len(posts) == 2
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert len(resp) == 1
+    assert resp[0]["provider"] == "nimbus2" and resp[0]["fallback_from"]["status"] == 429
+
+
+def test_fallback_must_be_in_the_callers_tier():
+    import pytest
+    from unittest.mock import patch
+    p = _reload(PROXY_KEY="testkey")
+    posts, run = _fallback_harness(p, primary_status=429)
+    narrowed = {t: {**spec, "models": ("deepseek-v4-flash",)} for t, spec in p.TIERS.items()}
+    with patch.object(p, "TIERS", narrowed), pytest.raises(p.HTTPException) as ei:
+        run(_ds_request(p))
+    assert ei.value.status_code == 429 and len(posts) == 1
+
+
 def test_model_alias_maps_upstream_listing_back_to_proxy_id():
     import asyncio
 

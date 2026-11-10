@@ -9,6 +9,13 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Automatic fallback from NRP's DeepSeek to the DSE copy.** A new `fallbacks` map names a
+  substitute model for each primary. When NRP refuses `deepseek-v4-flash` with a 429 or 5xx,
+  or cannot be reached, the proxy retries the call once as `deepseek-nimbus` on vllm-nimbus2.
+  The response row names the model and provider that answered, and `fallback_from` records
+  the refused attempt (provider, model, status, error, latency). 4xx errors and read
+  timeouts do not fall back, and the substitute must be in the caller's tier.
+
 - **`model_aliases` per provider**: maps a proxy model id to the id the upstream server
   uses, so two backends serving the same model name don't collide in routing. Requests
   are sent under the upstream id; responses, logs, tiers and `thinking_models` use the
