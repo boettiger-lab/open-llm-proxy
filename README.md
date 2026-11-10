@@ -4,7 +4,7 @@ OpenAI-compatible LLM proxy for NRP Nautilus. Routes requests to LLM providers, 
 
 The canonical deployment runs in the `biodiversity` namespace on NRP and is reachable **only inside the cluster**, at `http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1`. It has had no public ingress since 2026-11-07 (#162): browsers reach it through each app's nginx at `/api/llm/`, which adds that app's key, and batch work runs as cluster Jobs. The proxy is designed to be deployed independently into any namespace, but the proxy is designed to be deployed independently into any namespace — each instance writes logs to its own namespace-scoped S3 bucket.
 
-A second deployment runs on the lab's self-hosted k3s cluster at `https://llm-proxy.carlboettiger.info` (OpenRouter + DSE-nimbus only, logging to the in-cluster MinIO mirror). It is **config-only** — it runs this repo's unmodified code from `main` with a ConfigMap mounted over `config.json`, and changes nothing the NRP deployment reads. Manifests and operations: [cirrus/](cirrus/README.md).
+A second deployment is defined for the lab's self-hosted k3s cluster (OpenRouter + DSE-nimbus only, logging to the in-cluster MinIO mirror). It is parked: `replicas: 0`, and its public hostname `llm-proxy.carlboettiger.info` is gone. It is **config-only** — it runs this repo's unmodified code from `main` with a ConfigMap mounted over `config.json`, and changes nothing the NRP deployment reads. Manifests and operations: [cirrus/](cirrus/README.md).
 
 ## Architecture
 

@@ -18,12 +18,13 @@ This is an LLM proxy service that routes chat completion requests to NRP, OpenRo
 
 The canonical deployment is on **NRP** (namespace `biodiversity`, in-cluster
 only, no public hostname) — that is what the manifests at the repo root, and
-everything below, describe. A second, narrower deployment runs on the lab's
-**self-hosted k3s cluster** (`llm-proxy.carlboettiger.info`, namespace
-`llm-proxy`): OpenRouter + DSE-nimbus only, raw-JSONL logs in the in-cluster
-MinIO mirror, Traefik instead of HAProxy. See [cirrus/](cirrus/README.md).
+everything below, describe. A second, narrower deployment is defined for the
+lab's **self-hosted k3s cluster** (namespace `llm-proxy`): OpenRouter +
+DSE-nimbus only, raw-JSONL logs in the in-cluster MinIO mirror, Traefik instead
+of HAProxy. It is **parked**: `replicas: 0` since 2026-09-21 (#144), and its
+public hostname is gone. See [cirrus/](cirrus/README.md).
 
-Two rules for agents working on it:
+Two rules for agents working on it, if it is ever brought back:
 
 1. **cirrus is config-only.** Everything cirrus-specific lives in `cirrus/` as
    deployment config (a ConfigMap mounted over `config.json`, env vars, Traefik
@@ -39,8 +40,8 @@ Two rules for agents working on it:
 A third, on NRP in namespace **`schmidtdse`**, serves the apps that run there,
 because pods outside `biodiversity` cannot connect into it since the Nov 7 2026
 incident. It is a kustomize overlay of the root manifests (same code and
-config; own Service, redis and client keys) and logs to the same bucket. See
-[schmidtdse/](schmidtdse/README.md).
+config; own Service, redis and client keys) and logs to its own rustfs bucket,
+`logs-open-llm-proxy-schmidtdse`. See [schmidtdse/](schmidtdse/README.md).
 
 ## Evaluating Logs
 
