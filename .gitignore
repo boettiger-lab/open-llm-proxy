@@ -18,7 +18,6 @@ ENV/
 
 # Node
 node_modules/
-headless/runs/
 
 # Editor / notebook artifacts
 .ipynb_checkpoints/
