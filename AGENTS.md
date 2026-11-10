@@ -81,7 +81,7 @@ SELECT * FROM read_ndjson_auto('/tmp/open-llm-proxy-logs/YYYY-MM-DD/*.jsonl',
 
 For automation, one-shot CI queries, or reads from inside a pod, query directly with the **scoped read-only credential** in the `rustfs-logs-read` Secret — Get/List on this one bucket, nothing else. See [LOGGING.md](LOGGING.md#direct-s3-one-shot-queries-automation-or-inside-nrp-pods) for the DuckDB snippet.
 
-> ⚠️ `LOG_S3_KEY` / `LOG_S3_SECRET` are **the general NRP credentials** — read/write/delete on every bucket, and there is only one. **Reading logs does not need them at all.** `./sync-logs.sh` and the direct-S3 snippet use the scoped key (#113), and since #178 the logs live on rustfs, so the whole corpus from 2026-08-16 on is reachable with the scoped key. Reach for the general credentials only to write to NRP, or to touch a bucket other than this one.
+> ⚠️ **Never read logs with the general NRP credential** (`LOG_S3_KEY` / `LOG_S3_SECRET`, the `aws` Secret): it reads, writes and deletes every NRP bucket. Since #178 the logs live on rustfs, `./sync-logs.sh` and the direct-S3 snippet use the scoped `rustfs-logs-read` key, and the old NRP Ceph bucket is a frozen copy that is no longer written. For the `schmidtdse` deployment's logs: `LOGS_SECRET_NAMESPACE=schmidtdse ./sync-logs.sh`.
 
 Each LLM call produces a `request` row and a `response` row linked by `request_id`. Key fields inside `entry` (Parquet) or as top-level columns (JSONL):
 

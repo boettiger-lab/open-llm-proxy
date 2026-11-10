@@ -165,7 +165,7 @@ still the binding cap (boettiger-lab/k8s#42).
 
 Every LLM call produces two JSONL log entries (a `request` on arrival and a `response` on completion) linked by `request_id`.
 
-Logs are written to **pod stdout** immediately and flushed to **S3** every 60 seconds (`FLUSH_INTERVAL`) as dated JSONL chunk files, plus a final flush on shutdown so a graceful restart does not drop the buffer. The target bucket is set by the `LOG_BUCKET` env var (e.g. `logs-cacao` for the cacao namespace). If no S3 credentials are present, logs go to stdout only.
+Logs are written to **pod stdout** immediately and flushed to **S3** every 60 seconds (`FLUSH_INTERVAL`) as dated JSONL chunk files, plus a final flush on shutdown so a graceful restart does not drop the buffer. The NRP deployments take the bucket, endpoint and a key scoped to that bucket from the `rustfs-logs-write` Secret in their namespace (`LOG_BUCKET`, `AWS_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). If no S3 credentials are present, logs go to stdout only.
 
 ```
 logs-<ns>/
@@ -174,12 +174,7 @@ logs-<ns>/
 │   └── ...
 ```
 
-Query with DuckDB:
-
-```sql
-CREATE SECRET (TYPE S3, ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL 'TRUE', URL_STYLE 'path');
-SELECT * FROM read_ndjson_auto('s3://logs-<ns>/2026-04-07/*.jsonl');
-```
+Sync them with `./sync-logs.sh`, which uses the read-only `rustfs-logs-read` key, and query the local copy with DuckDB.
 
 See [LOGGING.md](LOGGING.md) for the full field reference, conversation reconstruction patterns, and kubectl access.
 

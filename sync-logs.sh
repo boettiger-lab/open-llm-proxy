@@ -8,25 +8,32 @@
 # remote, which is the single NRP credential and carries read/write/delete on
 # *every* NRP bucket — far beyond what reading a few MiB of logs needs.
 #
-# Credential resolution, in order:
-#   1. $LOGS_READ_KEY / $LOGS_READ_SECRET from the environment
-#   2. the `rustfs-logs-read` Secret in the `biodiversity` namespace, via kubectl
-#   3. rclone's `nrp:` remote — the broad NRP key. Legacy fallback; warns.
+# Credential: $LOGS_READ_KEY / $LOGS_READ_SECRET from the environment, or else
+# the `rustfs-logs-read` Secret in $LOGS_SECRET_NAMESPACE (default biodiversity),
+# via kubectl. The Secret also names the bucket and endpoint. There is no
+# fallback to rclone's `nrp:` remote: that is the general NRP key, and since #178
+# the NRP Ceph bucket is a frozen copy that is no longer written.
 #
 # Usage:
 #   ./sync-logs.sh                    # syncs to /tmp/open-llm-proxy-logs
 #   ./sync-logs.sh ~/scratch/logs     # syncs to a custom path
 #   LOGS_DIR=~/cache/logs ./sync-logs.sh
+#   LOGS_SECRET_NAMESPACE=schmidtdse ./sync-logs.sh
+#                                     # schmidtdse's bucket, to /tmp/open-llm-proxy-logs-schmidtdse
 #
 # FRESHNESS: since #178 the proxy writes raw JSONL straight to this bucket every
 # minute, and the 03:00 UTC CronJob builds the Parquet tiers. Nothing here needs
 # the NRP key.
 set -euo pipefail
 
-DEST="${1:-${LOGS_DIR:-/tmp/open-llm-proxy-logs}}"
+NAMESPACE="${LOGS_SECRET_NAMESPACE:-biodiversity}"
+# A separate default directory per namespace: `rclone sync` deletes local files
+# the bucket lacks, so two buckets must never share one directory.
+default_dest=/tmp/open-llm-proxy-logs
+[ "$NAMESPACE" != biodiversity ] && default_dest="$default_dest-$NAMESPACE"
+DEST="${1:-${LOGS_DIR:-$default_dest}}"
 BUCKET="${LOGS_BUCKET:-logs-open-llm-proxy}"
 ENDPOINT="${LOGS_READ_ENDPOINT:-https://rustfs.nrp-nautilus.io}"
-NAMESPACE="${LOGS_SECRET_NAMESPACE:-biodiversity}"
 SECRET="${LOGS_READ_SECRET_NAME:-rustfs-logs-read}"
 
 mkdir -p "$DEST"
@@ -42,6 +49,9 @@ if [ -z "${LOGS_READ_KEY:-}" ] && command -v kubectl >/dev/null 2>&1; then
         ep=$(kubectl -n "$NAMESPACE" get secret "$SECRET" \
              -o jsonpath='{.data.AWS_S3_ENDPOINT}' 2>/dev/null | base64 -d 2>/dev/null || true)
         [ -n "$ep" ] && ENDPOINT="$ep"
+        b=$(kubectl -n "$NAMESPACE" get secret "$SECRET" \
+             -o jsonpath='{.data.BUCKET}' 2>/dev/null | base64 -d 2>/dev/null || true)
+        [ -n "$b" ] && [ -z "${LOGS_BUCKET:-}" ] && BUCKET="$b"
         echo "→ using read-only credential from secret/$SECRET in $NAMESPACE"
     fi
 fi
@@ -59,12 +69,9 @@ if [ -n "${LOGS_READ_KEY:-}" ]; then
       rclone sync "logs:$BUCKET" "$DEST" \
         --fast-list --transfers 16 --checkers 16 --progress
 else
-    echo "⚠️  No scoped credential found (set LOGS_READ_KEY/LOGS_READ_SECRET, or"
-    echo "    get access to secret/$SECRET in $NAMESPACE)."
-    echo "    Falling back to rclone's 'nrp:' remote — that is the general NRP"
-    echo "    credential: read/write/delete on EVERY NRP bucket. See #113."
-    rclone sync "nrp:$BUCKET" "$DEST" \
-      --fast-list --transfers 16 --checkers 16 --progress
+    echo "✗ No scoped credential found. Set LOGS_READ_KEY/LOGS_READ_SECRET, or get"
+    echo "  read access to secret/$SECRET in $NAMESPACE." >&2
+    exit 1
 fi
 
 echo
