@@ -61,7 +61,7 @@ falls back to NRP, which does not serve it.
 
 ### Model tiers and output caps
 
-The proxy keeps two curated model lists in `config.json`: one for public apps and one for private (signed-in) apps. Nothing is configured per app.
+The proxy keeps curated model lists in `config.json`: one for public apps, one for private (signed-in) apps, and one for the benchmark. Nothing is configured per app.
 
 ```json
 "tiers": {
@@ -77,13 +77,14 @@ The proxy keeps two curated model lists in `config.json`: one for public apps an
 - **The model list.** `GET /v1/models` returns the caller's tier list in order, flagging `default` on one entry and adding `default_model`. It doesn't fetch the upstream catalogs.
 - **Why public is NRP-only.** Public apps are open relays: anyone can POST to their `/api/llm/`. That's how the November 2026 prober reached the proxy. So the public list holds only NRP-hosted models.
 - **Adding a model.** To offer a new model to every private app, add one line to `tiers.private.models`.
+- **The benchmark tier (#175).** The `glen-benchmark` key (`benchmark/glen-benchmark:<key>`) gets the private list plus the models glen-benchmark scores or judges with that no app offers. Its registry is `suite/models.yaml` and `suite/judges.yaml` in that repo, which can't edit this one, so screening a new candidate is a one-line PR adding it to `tiers.benchmark.models`. That does not offer it to any app. The tier has no budget limits, because a 429 midway through a matrix loses cells and the key works only in-cluster.
 - **Other deployments.** With no `tiers` key, every routable model is allowed. cirrus mounts its own config and is unaffected.
 
 Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
 
 ### Token budgets and the deny-list
 
-**Budgets (#168).** The proxy counts output (completion) tokens over a rolling 4-hour window. Each counter is checked against its tier's limit in `config.json` `budgets`:
+**Budgets (#168).** The proxy counts output (completion) tokens over a rolling 4-hour window. Each counter is checked against its tier's limit in `config.json` `budgets`. A tier with no entry, such as `benchmark`, has no limit:
 
 | Counter | Identifies | Public | Private |
 |---|---|---|---|

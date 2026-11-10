@@ -2236,3 +2236,20 @@ if __name__ == "__main__":
             failed += 1
             print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
     sys.exit(1 if failed else 0)
+
+
+def test_shipped_benchmark_tier_covers_private_and_registry():
+    """The glen-benchmark key's tier (#175) holds every private model plus the
+    benchmark's own candidates and judges, which no app tier offers. It has no
+    budget limits, so a long matrix is not cut off with a 429 midway."""
+    p = _reload(PROXY_KEY="testkey")
+    bench = set(p.TIERS["benchmark"]["models"])
+    assert set(p.TIERS["private"]["models"]) <= bench
+    only_bench = ("z-ai/glm-5.3-flash", "deepseek/deepseek-v4.1-flash-1017",
+                  "nvidia/nemotron-3.5-super-vl", "reflection/beam-1.0-501b-a23b")
+    listed = {m["id"]: m["provider"] for m in p.tier_model_list("benchmark")}
+    for model in only_bench:
+        assert p.model_in_tier(model, "benchmark"), model
+        assert not p.model_in_tier(model, "private"), model
+        assert listed[model] == "openrouter", model
+    assert p.budget_counters("benchmark", "glen-benchmark", "10.0.0.1", None) == []
