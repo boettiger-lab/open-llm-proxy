@@ -85,7 +85,8 @@
         "gpt-oss",
         "minimax-m2",
         "gemma",
-        "gemma-small"
+        "gemma-small",
+        "qwen"
       ]
     },
     "private": {

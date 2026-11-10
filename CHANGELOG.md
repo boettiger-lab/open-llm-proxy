@@ -22,6 +22,9 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
+- **The public tier now includes `qwen`, the DSE nimbus model** (Qwen3.8-Flash-Next on
+  `vllm-nimbus`). The other DSE models stay out until their hosts are back: `gemma4`
+  (gemma4-nimbus) times out and `qwen3-8` (vllm-cirrus) fails TLS as of 2026-11-10.
 - **Docs say the cirrus deployment is parked** (#144), and that `schmidtdse` logs to its own bucket.
 - **LOGGING.md documents the consolidation CronJobs and their watchdog** (#122): schedules, and
   what a new job needs for glen-ops' `log-consolidation-watch` to see it. Stale notes about
