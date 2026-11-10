@@ -22,6 +22,12 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
+- **LOGGING.md documents the consolidation CronJobs and their watchdog** (#122): schedules, and
+  what a new job needs for glen-ops' `log-consolidation-watch` to see it. Stale notes about
+  history on NRP Ceph are corrected.
+- **`sync-logs.sh` reads the bucket name from the Secret and syncs `schmidtdse`** with
+  `LOGS_SECRET_NAMESPACE=schmidtdse`, to its own directory. It no longer falls back to the
+  general NRP key, which would read the frozen Ceph copy.
 - **Consolidation CronJobs read `LOG_BUCKET` and `LOG_S3_ENDPOINT`.** Unset, they behave as
   before (NRP Ceph `logs-open-llm-proxy`). They skip the rustfs mirror step when the logs
   already live on the mirror target.

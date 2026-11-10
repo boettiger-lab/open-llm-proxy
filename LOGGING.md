@@ -198,9 +198,10 @@ GROUP BY 1, 2 ORDER BY run_tag, sessions DESC;
 > rustfs bucket with `rustfs-logs-read`, a credential scoped to this one bucket, Get/List
 > only.
 >
-> ⚠️ **rustfs holds the only copy (#178).** rustfs runs on the same rook Ceph as NRP S3, so
-> it is not a separate failure domain. Before #178 the NRP Ceph bucket was the system of
-> record and rustfs a mirror; history before 2026-08-16 is still only on Ceph.
+> ⚠️ **rustfs holds the only maintained copy (#178).** rustfs runs on the same rook Ceph
+> as NRP S3, so it is not a separate failure domain, and nothing backs it up yet
+> (glen-ops#267). The full history, April 2026 on, is on rustfs. The old NRP Ceph bucket
+> still holds a frozen copy up to 2026-11-09 but is no longer written.
 
 ### Local sync (recommended for interactive analysis)
 
@@ -209,16 +210,16 @@ Sync once per session, then query the local files — no S3 secret at query time
 ```bash
 ./sync-logs.sh                   # syncs to /tmp/open-llm-proxy-logs
 ./sync-logs.sh ~/scratch/logs    # or pick your own path
+LOGS_SECRET_NAMESPACE=schmidtdse ./sync-logs.sh   # the schmidtdse deployment's logs,
+                                                  # to /tmp/open-llm-proxy-logs-schmidtdse
 ```
 
-It resolves a read-only credential in this order:
-
-1. `$LOGS_READ_KEY` / `$LOGS_READ_SECRET` from the environment;
-2. the **`rustfs-logs-read` Secret** in `biodiversity`, fetched via `kubectl` — so the
-   value never lands in a dotfile or your shell history. This is the usual path: if you
-   can reach the cluster, `./sync-logs.sh` just works;
-3. rclone's `nrp:` remote — the broad NRP credential. Legacy fallback only; it prints a
-   warning naming what that key can do.
+It takes a read-only credential from `$LOGS_READ_KEY` / `$LOGS_READ_SECRET` if set, and
+otherwise from the **`rustfs-logs-read` Secret** in the namespace (`biodiversity` by
+default), fetched via `kubectl` so the value never lands in a dotfile or your shell
+history. The Secret also names the bucket and endpoint. If you can reach the cluster,
+`./sync-logs.sh` just works. Without a scoped credential it stops; it no longer falls
+back to rclone's `nrp:` remote, which reads the frozen Ceph copy.
 
 Reference the Secret by **name**, never by value, so rotation touches nothing here.
 
@@ -226,8 +227,7 @@ Full sync is a few seconds (~63 MB). Re-syncs during the same session are near-i
 
 > **Freshness: about a minute.** The proxy writes today's raw JSONL straight to the
 > bucket at each flush, and the consolidation CronJob builds `consolidated/**`,
-> `sessions/**` and `session-rollup/**` at 03:00 UTC. The hourly `logs-mirror-raw-hourly`
-> job (#124) is retired: it existed only to copy raw JSONL from Ceph to rustfs.
+> `sessions/**` and `session-rollup/**` at 03:00 UTC.
 
 Then query the local path — no `CREATE SECRET` needed:
 
@@ -278,25 +278,11 @@ ORDER BY session_key, turn_idx LIMIT 20;
 "
 ```
 
-This key is **Get/List on `logs-open-llm-proxy` only** — it cannot write or delete anything, here or elsewhere. Agents should use the Bash tool so shell expansion keeps the values out of the conversation transcript.
+This key is **Get/List on `logs-open-llm-proxy` only** — it cannot write or delete anything, here or elsewhere. Agents should use the Bash tool so shell expansion keeps the values out of the conversation transcript. For the `schmidtdse` deployment, read `rustfs-logs-read` in `schmidtdse` and query `s3://logs-open-llm-proxy-schmidtdse/`.
 
-> ⚠️ **`LOG_S3_KEY` / `LOG_S3_SECRET` are a different thing — don't use them for reads.**
-> There is exactly **one** credential for NRP bucket access, so those variables hold it:
-> **read/write/delete across every NRP bucket**. Since #178 they are needed only for the
-> pre-2026-08-16 history that is still on NRP Ceph. (An older version of this note
-> called them "scoped keys for this bucket"; that was wrong, and wrong in the direction
-> that hides risk.)
-
-```bash
-duckdb -s "
-CREATE SECRET logs_s3 (TYPE S3, KEY_ID '$LOG_S3_KEY', SECRET '$LOG_S3_SECRET',
-  ENDPOINT 's3-west.nrp-nautilus.io', USE_SSL true, URL_STYLE 'path');
-
-SELECT ts, entry::JSON->>'user_question' AS q
-FROM read_parquet('s3://logs-open-llm-proxy/consolidated/**/*.parquet')
-WHERE ts > now() - INTERVAL 7 DAYS;
-"
-```
+> ⚠️ **Never use the general NRP credential (`LOG_S3_KEY` / `LOG_S3_SECRET`, the `aws`
+> Secret) for logs.** It reads, writes and deletes every NRP bucket, and since #178 the
+> logs are not on NRP Ceph anyway.
 
 **Narrow the raw JSONL glob to the current hour** (e.g. `2026-04-17/14-*.jsonl`) — do NOT scan the whole day. `union_by_name=true` handles schema drift across chunks (e.g. the `error` column appears only in some files). If the queried window has zero error responses, `error` is absent from all files — omit it from JOIN queries or use `TRY(resp.error)`.
 
@@ -308,7 +294,7 @@ Using `TIMESTAMP` causes a type mismatch binder error because `now()` returns `T
 
 **Log field truncation:** As of the training-grade logging change, the response `content`/`reasoning_content` are captured **in full** (use them, not the 200-char `*_preview` fields), and `tool_results_this_turn[N].content` is capped at 20000 chars (`LOG_TOOL_RESULT_MAX`). **Records written before that change** still have only a 200-char `content_preview` and 500-char tool results — for those, a tool result that appears to contain only column names likely has full descriptions below the truncation point; verify using the STAC MCP tools directly rather than inferring from old previews.
 
-**Transient "malformed JSON" errors on raw JSONL:** Occasionally a `read_ndjson_auto` over today's directory will fail with `unexpected control character in string` at some byte offset. This is almost always a spurious partial byte-range read between DuckDB's httpfs extension and the Ceph gateway under high-parallelism scans — not actual bad data. The proxy writes with `json.dumps` (which escapes every control char) and S3 PUTs are atomic, so malformed lines on disk are not possible from the normal write path. The local-sync workflow avoids this entirely (it's only observed against `s3://` reads). If you're on the direct-S3 path: retry the query, or pass `ignore_errors=true` to `read_ndjson_auto` if you want a tolerant scan:
+**Transient "malformed JSON" errors on raw JSONL:** Occasionally a `read_ndjson_auto` over today's directory will fail with `unexpected control character in string` at some byte offset. This is almost always a spurious partial byte-range read between DuckDB's httpfs extension and the S3 gateway under high-parallelism scans — not actual bad data. The proxy writes with `json.dumps` (which escapes every control char) and S3 PUTs are atomic, so malformed lines on disk are not possible from the normal write path. The local-sync workflow avoids this entirely (it's only observed against `s3://` reads). If you're on the direct-S3 path: retry the query, or pass `ignore_errors=true` to `read_ndjson_auto` if you want a tolerant scan:
 ```sql
 read_ndjson_auto('s3://.../YYYY-MM-DD/*.jsonl', union_by_name=true, ignore_errors=true)
 ```
@@ -385,6 +371,27 @@ Both are exposed on `/health`:
 > endpoint backs the liveness, readiness *and* startup probes, so degrading it on a
 > logging fault would restart or de-rotate a pod that is serving traffic perfectly well.
 > Alert on the `logging` fields, never on `status`.
+
+### Consolidation CronJobs and their watchdog
+
+Each deployment runs two CronJobs from the root manifests, in its own namespace
+(`biodiversity`, `schmidtdse`), against its own bucket:
+
+| CronJob | Schedule (UTC) | What it does |
+|---|---|---|
+| `logs-consolidate-daily` | 03:00 daily | Rolls each finished day's raw JSONL into `consolidated/daily/`, builds `sessions/daily/` and `session-rollup/daily/`, deletes the raw chunks, backfills missing session views and rollups |
+| `logs-consolidate-monthly` | 04:00 on the 2nd | Rolls last month's daily files into `consolidated/`, `sessions/` and `session-rollup/` `monthly/`, then deletes the dailies |
+
+glen-ops' `log-consolidation-watch` (glen-ops#273, hourly at :47) alerts the lab's
+Slack alerts channel when one of them has not succeeded within 26 hours (daily) or 33
+days (monthly). It finds them by label and reads only `.status.lastSuccessfulTime`, so
+any new consolidation job must:
+
+- carry the label `app=logs-consolidate`;
+- have a name ending in `-daily` or `-monthly`, which sets its limit;
+- exit non-zero whenever it fails. A run that swallows an error looks healthy.
+
+A job that has never succeeded is held rather than reported, until its first run (#122).
 
 ## Logging fidelity & credential scrubbing
 
