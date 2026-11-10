@@ -1199,6 +1199,78 @@ def test_stream_false_and_absent_are_unaffected():
         ]
 
 
+def test_model_alias_sends_upstream_id_and_keeps_proxy_id_everywhere_else():
+    """`deepseek-nimbus` reaches vllm-nimbus2 as `deepseek-v4-flash` (the name
+    NRP also uses), with its thinking switch; the client and logs see the proxy id."""
+    import asyncio
+
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+    assert p.get_provider_for_model("deepseek-nimbus")[0] == "nimbus2"
+    assert p.get_provider_for_model("deepseek-v4-flash")[0] == "nrp"
+    assert p.model_in_tier("deepseek-nimbus", "public")
+    assert p.model_in_tier("deepseek-v4-flash", "public")
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    captured = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"model": captured["payload"]["model"],
+                    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "usage": {"total_tokens": 3}}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, endpoint, json=None, headers=None):
+            captured["endpoint"], captured["payload"] = endpoint, json
+            return _FakeResponse()
+
+    p._log_buffer.clear()
+    req = p.ChatRequest(model="deepseek-nimbus", enable_thinking=False,
+                        messages=[{"role": "user", "content": "hi"}])
+    with patch.object(p.httpx, "AsyncClient", _FakeAsyncClient), \
+         patch.dict(p.PROVIDERS["nimbus2"], {"api_key": "k"}):
+        result = asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+    assert "vllm-nimbus2" in captured["endpoint"]
+    assert captured["payload"]["model"] == "deepseek-v4-flash"
+    assert captured["payload"]["chat_template_kwargs"] == {"thinking": False}
+    assert result["model"] == "deepseek-nimbus"
+    assert {e.get("model") for e in p._log_buffer} == {"deepseek-nimbus"}
+
+
+def test_model_alias_maps_upstream_listing_back_to_proxy_id():
+    import asyncio
+
+    from unittest.mock import patch
+
+    p = _reload(PROXY_KEY="testkey")
+
+    async def fake_fetch(cfg, client):
+        if "nimbus2" in cfg["endpoint"]:
+            return ["deepseek-v4-flash"], None
+        return [], None
+
+    p._models_cache.update({"data": [], "providers": {}, "fetched_at": 0})
+    with patch.object(p, "_fetch_provider_models", fake_fetch):
+        cache = asyncio.run(p.refresh_models(force=True))
+    assert cache["providers"]["nimbus2"]["ids"] == ["deepseek-nimbus"]
+
+
 # ---------------------------------------------------------------------------
 # Logging guardrails (#39) — surface a one-sided pipeline failure
 # ---------------------------------------------------------------------------

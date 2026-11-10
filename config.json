@@ -58,6 +58,9 @@
       "models": [
         "deepseek-nimbus"
       ],
+      "model_aliases": {
+        "deepseek-nimbus": "deepseek-v4-flash"
+      },
       "thinking_models": {
         "deepseek-nimbus": "thinking"
       },
