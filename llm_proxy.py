@@ -754,19 +754,22 @@ def tier_model_list(tier) -> list:
     return out
 
 
-# Daily token budgets and a deny-list (#168). Alerts (#165) say when to look;
+# Token budgets and a deny-list (#168). Alerts (#165) say when to look;
 # these stop the spend. Counted per client key, per end-user address (the app
 # nginx's X-Real-IP) and per signed-in user (X-Forwarded-Email), each against its
 # tier's limit over a rolling window:
 #
-#   "budgets": {"window_hours": 24,
-#               "per_key":    {"public": 10000000, "private": 50000000},
-#               "per_client": {"public": 3000000,  "private": 10000000},
-#               "per_user":   {"public": 3000000,  "private": 10000000}}
+#   "budgets": {"window_hours": 4, "count": "completion",
+#               "per_key":    {"public": 1000000, "private": 4000000},
+#               "per_client": {"public": 250000,  "private": 1000000},
+#               "per_user":   {"public": 250000,  "private": 1000000}}
 #
 # A tier missing from a scope has no limit there. Address and user are counted
 # separately, so a caller who rotates a forged X-Forwarded-Email still hits the
-# address budget. Tokens are prompt + completion as the provider reports them.
+# address budget. `count` picks the tokens charged: "completion" (output only)
+# or "total" (prompt + completion, the default). Output is what loads NRP, which
+# is decode-bound; prompt tokens mostly measure how long a conversation is,
+# since geo-agent resends the whole history on every call.
 #
 # The counters must be shared: the NRP deployment runs 3 pods x 4 workers, and
 # counters kept in each process would let a caller spend 12x the budget. So they
@@ -777,7 +780,11 @@ def resolve_budgets(cfg: dict):
     b = cfg.get("budgets")
     if not b:
         return None
+    count = b.get("count", "total")
+    if count not in ("total", "completion"):
+        raise ValueError(f"budgets.count must be 'total' or 'completion', not {count!r}")
     return {"window_hours": int(b.get("window_hours", 24)),
+            "count": count,
             "per_key": dict(b.get("per_key") or {}),
             "per_client": dict(b.get("per_client") or {}),
             "per_user": dict(b.get("per_user") or {})}
@@ -840,7 +847,10 @@ def budget_counters(tier, key_name, client_ip, user):
     for scope, ident in (("key", key_name), ("client", client_ip), ("user", user)):
         limit = BUDGETS[f"per_{scope}"].get(tier)
         if ident and limit:
-            out.append((f"{scope}:{ident}", int(limit), scope))
+            # Output-only counters get their own ids, so switching `count` never
+            # compares old prompt+completion totals against output-only limits.
+            cid = f"{scope}:{ident}" if BUDGETS["count"] == "total" else f"out/{scope}:{ident}"
+            out.append((cid, int(limit), scope))
     return out
 
 
@@ -995,7 +1005,7 @@ else:
         f"{t} ({len(v['models'])} models, default {v['default_model']})" for t, v in TIERS.items())
         + f". Unmarked keys: {DEFAULT_KEY_TIER}; shared PROXY_KEY: {PRIMARY_KEY_TIER}")
 if BUDGETS:
-    print(f"✓ Token budgets over {BUDGETS['window_hours']}h: key {BUDGETS['per_key']}, "
+    print(f"✓ Token budgets ({BUDGETS['count']} tokens) over {BUDGETS['window_hours']}h: key {BUDGETS['per_key']}, "
           f"client {BUDGETS['per_client']}, user {BUDGETS['per_user']}; store: "
           + ("redis" if BUDGET_REDIS_URL else "PROCESS MEMORY (limits are per worker, not shared)"))
 if CACHE_SALT:
@@ -1357,8 +1367,9 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     if over:
         label, used, limit, reset = over
         resets = datetime.utcfromtimestamp(reset).strftime("%Y-%m-%d %H:%M UTC")
-        error_msg = (f"Daily token budget exceeded for this {label} "
-                     f"({used:,} of {limit:,} tokens in {BUDGETS['window_hours']}h). "
+        unit = "output tokens" if BUDGETS["count"] == "completion" else "tokens"
+        error_msg = (f"Token budget exceeded for this {label} "
+                     f"({used:,} of {limit:,} {unit} in {BUDGETS['window_hours']}h). "
                      f"It starts freeing up at {resets}.")
         log_response("budget-exceeded", request.model, {}, 0, error=error_msg,
                      origin=origin, request_id=request_id, session_id=session_id, client=client,
@@ -1485,8 +1496,10 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             log_response(provider_name, request.model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, dialect_repaired=dialect_repaired)
 
             usage = result.get("usage") or {}
-            await charge_budget(counters, (usage.get("prompt_tokens") or 0)
-                                + (usage.get("completion_tokens") or 0))
+            charged = usage.get("completion_tokens") or 0
+            if BUDGETS and BUDGETS["count"] == "total":
+                charged += usage.get("prompt_tokens") or 0
+            await charge_budget(counters, charged)
             return result
 
         except asyncio.CancelledError:

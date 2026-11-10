@@ -1999,6 +1999,44 @@ def test_budget_enforced_end_to_end_with_429():
         _reload(PROXY_KEY="testkey")
 
 
+def test_budget_counts_output_tokens_only_when_configured():
+    from fastapi import HTTPException
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p.BUDGETS = p.resolve_budgets({"budgets": {"count": "completion", "window_hours": 4,
+                                                   "per_key": {"public": 100}}})
+        p._budget_store = p.MemoryBudgetStore()
+        # A huge prompt is free; only the 50 + 40 output tokens count.
+        _drive(p, usage={"prompt_tokens": 100000, "completion_tokens": 50})
+        _drive(p, usage={"prompt_tokens": 100000, "completion_tokens": 40})
+        _drive(p, usage={"prompt_tokens": 100000, "completion_tokens": 20})   # 110 >= 100
+        try:
+            _drive(p)
+        except HTTPException as e:
+            assert e.status_code == 429
+            assert "110 of 100 output tokens in 4h" in e.detail
+        else:
+            raise AssertionError("over-budget request must get 429")
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_output_only_counters_are_separate_from_total_counters():
+    p = _budget_proxy({"count": "completion", "per_client": {"public": 10}})
+    assert p.budget_counters("public", "tpl", "ip1", None) == [("out/client:ip1", 10, "client")]
+    import pytest
+    with pytest.raises(ValueError):
+        p.resolve_budgets({"budgets": {"count": "prompt"}})
+
+
+def test_shipped_budgets_count_output_over_four_hours():
+    p = _reload(PROXY_KEY="testkey")
+    assert p.BUDGETS["count"] == "completion" and p.BUDGETS["window_hours"] == 4
+    assert p.BUDGETS["per_client"]["public"] == 250000
+
+
 def test_denylist_blocks_key_client_and_user_live():
     import tempfile, time as _t
     from fastapi import HTTPException
