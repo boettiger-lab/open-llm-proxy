@@ -34,6 +34,15 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
+- **Token budgets count output tokens over 4 hours.** A new `budgets.count` setting picks
+  `"completion"` (output only) or `"total"` (the old behavior, and the default). The shipped
+  config counts output over a 4-hour window (was all tokens over 24 hours). Public limits:
+  1M per key, 250k per address, 250k per user; private limits are 4 times those. On
+  2026-11-10 one person hit the old 3M per-address limit in 48 minutes with only 71k output
+  tokens, because geo-agent resends the whole conversation on every call, and was then
+  locked out for about a day. Output-only counters use new Redis keys, so old totals are
+  never compared against the new limits.
+
 - **The public tier now includes the DSE nimbus models `qwen` and `deepseek-nimbus`.**
   `qwen` is Qwen3.8-Flash-Next on `vllm-nimbus`. `deepseek-nimbus` is DeepSeek-V4-Flash-0731
   on `vllm-nimbus2` (new `nimbus2` provider). NRP is rate-limited, so clients can fall

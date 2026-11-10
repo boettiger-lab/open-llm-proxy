@@ -139,18 +139,19 @@
   "default_key_tier": "public",
   "primary_key_tier": "public",
   "budgets": {
-    "window_hours": 24,
+    "window_hours": 4,
+    "count": "completion",
     "per_key": {
-      "public": 10000000,
-      "private": 50000000
+      "public": 1000000,
+      "private": 4000000
     },
     "per_client": {
-      "public": 3000000,
-      "private": 10000000
+      "public": 250000,
+      "private": 1000000
     },
     "per_user": {
-      "public": 3000000,
-      "private": 10000000
+      "public": 250000,
+      "private": 1000000
     }
   }
 }
