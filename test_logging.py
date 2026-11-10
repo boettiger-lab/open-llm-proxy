@@ -1727,14 +1727,15 @@ def test_tier_lists_exact_prefix_and_unknown():
 def test_shipped_tiers_close_what_the_november_prober_reached():
     """The 2026-11-07 prober reached openai/gpt-5.6-sol and claude-opus-4-8
     through a public app's relay. Neither tier may reach them now, and the
-    public tier holds only NRP models."""
+    public tier holds only lab-hosted models (NRP and DSE nimbus), never
+    paid third-party ones."""
     p = importlib.reload(llm_proxy)
     for tier in ("public", "private"):
         for model in ("openai/gpt-5.6-sol", "claude-opus-4-8", "openrouter/zzz-no-such-model"):
             assert not p.model_in_tier(model, tier), (tier, model)
     assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"
     for m in p.tier_model_list("public"):
-        assert m["provider"] == "nrp", m
+        assert m["provider"] in ("nrp", "nimbus"), m
     assert p.model_in_tier("z-ai/glm-5.2", "private")
     assert not p.model_in_tier("z-ai/glm-5.2", "public")
 
