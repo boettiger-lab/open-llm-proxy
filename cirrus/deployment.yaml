@@ -29,10 +29,10 @@ spec:
   # favicon.ico and robots.txt -- no API calls), while still holding a public
   # hostname and needing upkeep. The NRP-facing deployment is the real one.
   #
-  # To bring it back: set replicas to 2 and re-apply. The rest of the manifest
-  # is unchanged and still correct -- two replicas on a one-worker cluster is
-  # enough for a zero-downtime rollout (maxUnavailable: 0 + surge) without
-  # pretending to be multi-node HA.
+  # To bring it back: set replicas to 2 and re-apply. Two replicas on a
+  # one-worker cluster is enough for a zero-downtime rollout (maxUnavailable: 0
+  # + surge) without pretending to be multi-node HA. The public Ingress was
+  # removed on 2026-09-25, so a public endpoint also needs a new one.
   replicas: 0
   strategy:
     type: RollingUpdate

@@ -22,6 +22,7 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
+- **Docs say the cirrus deployment is parked** (#144), and that `schmidtdse` logs to its own bucket.
 - **LOGGING.md documents the consolidation CronJobs and their watchdog** (#122): schedules, and
   what a new job needs for glen-ops' `log-consolidation-watch` to see it. Stale notes about
   history on NRP Ceph are corrected.
