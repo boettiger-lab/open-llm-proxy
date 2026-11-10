@@ -14,8 +14,8 @@ See [Releases](README.md#releases) for how a release is cut.
   member of the default judge panel), `deepseek/deepseek-v4.1-flash-1017`,
   `nvidia/nemotron-3.5-super-vl` and `reflection/beam-1.0-501b-a23b`. A new candidate is a
   one-line addition here and is not offered to any app. The tier has no budget limits. The
-  key moves from `private/glen-benchmark` to `benchmark/glen-benchmark` in
-  `open-llm-proxy-app-keys` once this is deployed.
+  key moved from `private/glen-benchmark` to `benchmark/glen-benchmark` in the keys file of
+  the `open-llm-proxy-client-keys` Secret on 2026-11-10.
 
 - **Automatic fallback from NRP's DeepSeek to the DSE copy.** A new `fallbacks` map names a
   substitute model for each primary. When NRP refuses `deepseek-v4-flash` with a 429 or 5xx,
