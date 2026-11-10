@@ -22,8 +22,11 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
-- **The public tier now includes `qwen`, the DSE nimbus model** (Qwen3.8-Flash-Next on
-  `vllm-nimbus`). The other DSE models stay out until their hosts are back: `gemma4`
+- **The public tier now includes the DSE nimbus models `qwen` and `deepseek-nimbus`.**
+  `qwen` is Qwen3.8-Flash-Next on `vllm-nimbus`. `deepseek-nimbus` is DeepSeek-V4-Flash-0731
+  on `vllm-nimbus2` (new `nimbus2` provider); it gets its own id because the server's
+  default `deepseek-v4-flash` is already NRP's, so it needs a matching
+  `--served-model-name` on the server. The other DSE models stay out until their hosts are back: `gemma4`
   (gemma4-nimbus) times out and `qwen3-8` (vllm-cirrus) fails TLS as of 2026-11-10.
 - **Docs say the cirrus deployment is parked** (#144), and that `schmidtdse` logs to its own bucket.
 - **LOGGING.md documents the consolidation CronJobs and their watchdog** (#122): schedules, and

@@ -1735,7 +1735,7 @@ def test_shipped_tiers_close_what_the_november_prober_reached():
             assert not p.model_in_tier(model, tier), (tier, model)
     assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"
     for m in p.tier_model_list("public"):
-        assert m["provider"] in ("nrp", "nimbus"), m
+        assert m["provider"] in ("nrp", "nimbus", "nimbus2"), m
     assert p.model_in_tier("z-ai/glm-5.2", "private")
     assert not p.model_in_tier("z-ai/glm-5.2", "public")
 
