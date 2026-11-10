@@ -9,6 +9,14 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **A `benchmark` model tier for the glen-benchmark key (#175).** It holds the private list
+  plus the benchmark's candidates and judges that no app offers: `z-ai/glm-5.3-flash` (a
+  member of the default judge panel), `deepseek/deepseek-v4.1-flash-1017`,
+  `nvidia/nemotron-3.5-super-vl` and `reflection/beam-1.0-501b-a23b`. A new candidate is a
+  one-line addition here and is not offered to any app. The tier has no budget limits. The
+  key moves from `private/glen-benchmark` to `benchmark/glen-benchmark` in
+  `open-llm-proxy-app-keys` once this is deployed.
+
 - **Automatic fallback from NRP's DeepSeek to the DSE copy.** A new `fallbacks` map names a
   substitute model for each primary. When NRP refuses `deepseek-v4-flash` with a 429 or 5xx,
   or cannot be reached, the proxy retries the call once as `deepseek-nimbus` on vllm-nimbus2.

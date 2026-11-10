@@ -131,6 +131,38 @@
         "~deepseek/deepseek-v4-flash-latest",
         "~google/gemini-flash-latest"
       ]
+    },
+    "benchmark": {
+      "default_model": "deepseek-v4-flash",
+      "models": [
+        "deepseek-v4-flash",
+        "glm-5",
+        "kimi",
+        "qwen3",
+        "qwen3-small",
+        "gpt-oss",
+        "minimax-m2",
+        "gemma",
+        "gemma-small",
+        "qwen",
+        "deepseek-nimbus",
+        "anthropic/claude-sonnet-5",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-v4.1-flash",
+        "moonshotai/kimi-k3",
+        "xiaomi/mimo-v2.6-flash",
+        "xiaomi/mimo-v2.6-pro",
+        "z-ai/glm-5.2",
+        "z-ai/glm-5.3",
+        "~deepseek/deepseek-v4-flash-latest",
+        "~google/gemini-flash-latest",
+        "z-ai/glm-5.3-flash",
+        "deepseek/deepseek-v4.1-flash-1017",
+        "nvidia/nemotron-3.5-super-vl",
+        "reflection/beam-1.0-501b-a23b"
+      ]
     }
   },
   "fallbacks": {
