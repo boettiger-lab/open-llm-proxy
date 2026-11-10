@@ -35,6 +35,8 @@ See [Releases](README.md#releases) for how a release is cut.
   `rustfs-logs-write`, following the proxy logs (#178). Earlier archives stay on Ceph.
 
 ### Removed
+- **`headless/`: the benchmark runner, matrix Jobs, question banks and `matrix-archiver`.**
+  They moved to boettiger-lab/glen-benchmark on 2026-11-07, which now owns benchmarking.
 - **`logs-mirror-raw-hourly` and the consolidation jobs' rustfs mirror step** (#178). They
   copied Ceph to rustfs; the logs now start on rustfs.
 - **The direct Anthropic provider.** Unused since September; Claude stays reachable through

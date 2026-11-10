@@ -96,54 +96,11 @@ See [LOGGING.md](LOGGING.md) for full field reference, SQL patterns, kubectl acc
 
 When analyzing geo-agent app behavior (tool-call counts, query failures, session reconstructions), invoke the `geo-agent-training` skill — it provides the full step-by-step diagnostic workflow.
 
-## Reproducing geo-agent sessions from the CLI
+## Benchmarks live elsewhere
 
-`headless/run.js` replays a full geo-agent session (catalog load, MCP connect, prompt assembly, tool-use loop) through the proxy for scripted model comparisons and failure repros. It imports `Agent`, `DatasetCatalog`, `ToolRegistry`, and `createMapTools` directly from a sibling `boettiger-lab/geo-agent` checkout, so prompt catalog injection, `get_schema`, `<tool_call>` XML parsing, and context/result trimming match the browser by construction. Three pieces are local: `stub-map-manager.js` (stubs MapLibre), a `fetch` wrapper in `run.js` (adds the `Origin` header), and `mcp-client.js` (vendored byte-for-byte from `geo-agent/app/mcp-client.js` so the `@modelcontextprotocol/sdk` bare specifier resolves against this package's `node_modules`).
-
-The vendored MCP client is the one thing prone to silent drift. Whenever geo-agent ships an MCP transport change (e.g. a `callTool` timeout bump, a new reconnect hook), re-vendor:
-
-```bash
-cd headless
-npm run check-drift   # fails non-zero if mcp-client.js has drifted from upstream;
-                      # error message prints the exact re-vendor command
-```
-
-```bash
-cd headless && npm install          # one-time
-
-PROXY_KEY=... node run.js "QUESTION" \
-    --config        ../../tpl/layers-input.json \
-    --system-prompt ../../tpl/system-prompt.md \
-    --model qwen3 \
-    --origin https://tpl.nrp-nautilus.io/agent_runner \
-    --transcript runs/tpl-q1-qwen3.json
-```
-
-Tag experimental runs with a distinctive `--origin` suffix (e.g. `…/agent_runner`) so they're filterable apart from real user traffic when you later query the logs. See `headless/README.md` for all flags.
-
-### Matrix runs (model × question grids) — run on the cluster
-
-**Always run matrix sweeps as a Kubernetes Job, not locally.** `PROXY_KEY` lives in the `open-llm-proxy-secrets` Secret in the `biodiversity` namespace; on-cluster runs mount it directly, avoiding the local credential dance (stale `/tmp/proxy_key`, 401 sprees, laptop sleep killing a 20-minute matrix mid-run).
-
-`headless/run-matrix-k8s.sh APP_REPO` templates `headless/k8s/matrix-job.yaml` and `kubectl create`s a one-shot Job. The Job clones `open-llm-proxy` + `geo-agent` + the app repo in the sibling layout the runner expects, `npm ci`s, runs `run_matrix.sh` at the cluster's default priority (`PRIORITY_CLASS` overrides), prints each cell's transcript to pod stdout as the cell finishes, and `summary.tsv` at the end. A Job that stops early keeps every finished cell; `SKIP_CELLS` reruns only the rest. Proxy logs (filtered by `ORIGIN`) carry the full request/response pairs.
-
-```bash
-# 1. Write questions to a file (one per line, blank/#-comment lines ignored).
-cat > headless/runs/log-qs.txt <<'EOF'
-How much has the Land and Water Conservation Fund invested in Senate District 2?
-how many miles of river have been protected by TPL projects within Tahoe National Forest
-EOF
-
-# 2. Launch. APP_REPO is org/repo; QUESTIONS_FILE is local; TAG must be [a-z0-9-]+.
-TAG=logqs \
-QUESTIONS_FILE=headless/runs/log-qs.txt \
-MODELS="qwen3 qwen3-small glm-5 nemotron gemma" \
-TRIALS=1 \
-  ./headless/run-matrix-k8s.sh boettiger-lab/tpl-ca
-
-# 3. Follow + analyze (commands printed by step 2).
-kubectl -n biodiversity logs -f job/<JOB_NAME>
-./sync-logs.sh && duckdb -s "... WHERE origin='<ORIGIN>' ..."
-```
-
-When asked to "test these questions across these models," reach for this — **do not** fall back to running `run_matrix.sh` locally and **do not** write a bespoke driver script per request. The local `run_matrix.sh` still exists, called by the Job; it is no longer a recommended user-facing entrypoint for matrix work.
+Benchmarking is not this repo's job. The headless runner, matrix Jobs, question banks,
+gold answers and the `matrix-archiver` CronJob moved to
+[boettiger-lab/glen-benchmark](https://github.com/boettiger-lab/glen-benchmark) on
+2026-11-07, and that repo looks after them. Benchmark runs reach the proxy like any other
+client, with their own key (`key_name`) and origin, so they can be filtered out of, or
+into, a log query.

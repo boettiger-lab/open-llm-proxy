@@ -143,8 +143,8 @@ warning over-reports rather than misses. Raise it per deployment to match that
 deployment's own chain. It is only a reporting threshold: it caps nothing, and because
 `latency_ms` is measured proxy-side, a flagged 200 means the client *may* have stopped
 listening, not that it did — the warning narrows where to look, it does not confirm a
-user-visible failure. The headless runner has the same
-exposure and documents its own ceiling stack in [headless/README.md](headless/README.md).
+user-visible failure. The benchmark runner in
+[glen-benchmark](https://github.com/boettiger-lab/glen-benchmark) has the same exposure.
 
 The proxy's own budget for the upstream call is **`UPSTREAM_TIMEOUT_SECONDS`, default
 1200** (20 minutes, #135). It was a hardcoded 600s, and that was the hop that actually
@@ -381,26 +381,6 @@ gh release create "v$VERSION" --title "v$VERSION" --notes "<changelog section>"
 ```
 
 Tags are descriptive only — deployment still tracks `main` (see [Update](#update)).
-
-## Headless agent runner
-
-`headless/run.js` replays a geo-agent session from the command line: it loads the app's STAC catalog, connects to the MCP server, assembles the exact system prompt the browser sees, and drives the tool-use loop through the proxy. Unlike calling MCP tools directly, this exercises the full proxy pipeline and writes real log entries — useful for scripted model comparisons or reproducing failures.
-
-The runner imports the live framework modules (`Agent`, `DatasetCatalog`, `ToolRegistry`, `createMapTools`) directly from a sibling `boettiger-lab/geo-agent` checkout rather than reimplementing them, so it stays in sync with production behavior by construction. Map tools are stubbed (no live map); everything else — prompt catalog injection, `get_schema`, `<tool_call>` XML parsing, context trimming, tool-result truncation — matches the browser.
-
-```bash
-cd headless
-npm install
-
-PROXY_KEY='your-proxy-key' node run.js "Which New Jersey municipalities have passed conservation ballot measures?" \
-    --config        ../../tpl/layers-input.json \
-    --system-prompt ../../tpl/system-prompt.md \
-    --model         qwen3 \
-    --origin        https://tpl.nrp-nautilus.io/agent_runner \
-    --transcript    runs/tpl-q3-qwen3.json
-```
-
-Use `--origin` with a distinctive suffix (e.g. `.../agent_runner`) so experimental runs are filterable apart from production user traffic. See `headless/README.md` for all flags and the list of fidelity caveats.
 
 ## Health check
 
