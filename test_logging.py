@@ -2224,18 +2224,6 @@ def test_glen_app_header_logged_as_sanitised_label():
     assert [e["app"] for e in p._log_buffer[-2:]] == ["tpl-ca", "tpl-ca"]
 
 
-if __name__ == "__main__":
-    import sys
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception as e:
-            failed += 1
-            print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
-    sys.exit(1 if failed else 0)
 
 
 def test_shipped_benchmark_tier_covers_private_and_registry():
@@ -2253,3 +2241,86 @@ def test_shipped_benchmark_tier_covers_private_and_registry():
         assert not p.model_in_tier(model, "private"), model
         assert listed[model] == "openrouter", model
     assert p.budget_counters("benchmark", "glen-benchmark", "10.0.0.1", None) == []
+
+
+def test_tier_extends_inherits_models_and_default():
+    """`extends` puts the parent's models first, in order, then the tier's own;
+    the default is inherited unless the tier sets one. Chains resolve."""
+    p = importlib.reload(llm_proxy)
+    tiers = p.resolve_tiers({"tiers": {
+        "bench": {"extends": "private", "models": ["z-ai/glm-5.3-flash", "qwen3"]},
+        "public": {"default_model": "qwen3", "models": ["deepseek-v4-flash", "qwen3"]},
+        "private": {"extends": "public", "models": ["xiaomi/*", "deepseek-v4-flash"]},
+        "both": {"extends": ["public", "other"], "default_model": "kimi", "models": ["kimi"]},
+        "other": {"models": ["glm-5"]}}})
+    assert tiers["private"]["models"] == ("deepseek-v4-flash", "qwen3", "xiaomi/*")
+    assert tiers["private"]["default_model"] == "qwen3"
+    assert tiers["bench"]["models"] == ("deepseek-v4-flash", "qwen3", "xiaomi/*", "z-ai/glm-5.3-flash")
+    assert tiers["bench"]["default_model"] == "qwen3"
+    assert tiers["both"]["models"] == ("deepseek-v4-flash", "qwen3", "glm-5", "kimi")
+    assert tiers["both"]["default_model"] == "kimi"
+    assert list(tiers) == ["bench", "public", "private", "both", "other"]   # config order
+
+
+def test_tier_extends_rejects_cycles_and_unknown_parents():
+    p = importlib.reload(llm_proxy)
+    for tiers, msg in (({"a": {"extends": "b"}, "b": {"extends": "a"}}, "cycle"),
+                       ({"a": {"extends": "nope", "models": ["qwen3"]}}, "unknown tier")):
+        try:
+            p.resolve_tiers({"tiers": tiers})
+        except ValueError as e:
+            assert msg in str(e), e
+        else:
+            raise AssertionError(f"must refuse: {tiers}")
+
+
+def test_shipped_tiers_extend_without_changing_their_lists():
+    """private extends public and benchmark extends private. The resolved lists
+    are the ones written out in full before `extends` existed."""
+    p = importlib.reload(llm_proxy)
+    pub, prv, bench = (p.TIERS[t]["models"] for t in ("public", "private", "benchmark"))
+    assert prv[:len(pub)] == pub and bench[:len(prv)] == prv
+    assert len(pub) == 11 and len(prv) == 23 and len(bench) == 27
+    assert {p.TIERS[t]["default_model"] for t in p.TIERS} == {"deepseek-v4-flash"}
+
+
+def test_model_settings_in_models_list():
+    """The top-level `models` map reaches GET /v1/models as `settings` on each
+    entry; models without settings carry none; unknown keys pass through."""
+    p = importlib.reload(llm_proxy)
+    p.TIERS = p.resolve_tiers({"tiers": {"public": {"models": ["deepseek-v4-flash", "qwen3"]}}})
+    p.MODEL_SETTINGS = p.resolve_model_settings({"models": {
+        "deepseek-v4-flash": {"label": "DeepSeek", "max_tokens": 16384, "reasoning_toggle": True},
+        "qwen3": {"label": "Qwen3", "future_knob": 1},
+        "kimi": "not an object"}})
+    assert "kimi" not in p.MODEL_SETTINGS
+    listed = {m["id"]: m for m in p.tier_model_list("public")}
+    assert listed["deepseek-v4-flash"]["settings"] == {
+        "label": "DeepSeek", "max_tokens": 16384, "reasoning_toggle": True}
+    assert listed["qwen3"]["settings"]["future_knob"] == 1
+    p.MODEL_SETTINGS = {}
+    assert "settings" not in p.tier_model_list("public")[0]
+
+
+def test_shipped_model_settings_cover_listed_models():
+    """Every model with shipped settings is listed by some tier, and every
+    public model has a label for the picker."""
+    p = importlib.reload(llm_proxy)
+    listed = {m for t in p.TIERS.values() for m in t["models"]}
+    assert set(p.MODEL_SETTINGS) <= listed
+    for m in p.tier_model_list("public"):
+        assert m.get("settings", {}).get("label"), m["id"]
+
+
+if __name__ == "__main__":
+    import sys
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print(f"PASS {fn.__name__}")
+        except Exception as e:
+            failed += 1
+            print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
+    sys.exit(1 if failed else 0)
