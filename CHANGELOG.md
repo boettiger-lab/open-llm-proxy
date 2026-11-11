@@ -9,6 +9,19 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Settings for each model in `config.json`, returned by `GET /v1/models`.** A new top-level
+  `models` map holds settings by model id, named as in glen's `llm_models`: `label`,
+  `temperature`, `top_p`, `seed`, `max_tokens`, `llm_timeout_seconds`, `reasoning_toggle`,
+  `reasoning_default` and `prompt_cache`. Each `/v1/models` entry carries its model's
+  settings as `settings`. They are defaults for the client, which an app's own config
+  overrides, and the proxy enforces none of them. The shipped map holds the picker labels
+  the apps already used. Unknown keys pass through with a startup warning.
+
+- **`extends` on a tier.** A tier lists only what it adds to another: its parent's models
+  come first, and it inherits the parent's `default_model` unless it sets one. The shipped
+  `private` extends `public` and `benchmark` extends `private`; the resolved lists are
+  unchanged. An unknown parent or a cycle stops the proxy at startup.
+
 - **A `benchmark` model tier for the glen-benchmark key (#175).** It holds the private list
   plus the benchmark's candidates and judges that no app offers: `z-ai/glm-5.3-flash` (a
   member of the default judge panel), `deepseek/deepseek-v4.1-flash-1017`,

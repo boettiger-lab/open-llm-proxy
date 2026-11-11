@@ -105,19 +105,8 @@
       ]
     },
     "private": {
-      "default_model": "deepseek-v4-flash",
+      "extends": "public",
       "models": [
-        "deepseek-v4-flash",
-        "glm-5",
-        "kimi",
-        "qwen3",
-        "qwen3-small",
-        "gpt-oss",
-        "minimax-m2",
-        "gemma",
-        "gemma-small",
-        "qwen",
-        "deepseek-nimbus",
         "anthropic/claude-sonnet-5",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
@@ -133,37 +122,33 @@
       ]
     },
     "benchmark": {
-      "default_model": "deepseek-v4-flash",
+      "extends": "private",
       "models": [
-        "deepseek-v4-flash",
-        "glm-5",
-        "kimi",
-        "qwen3",
-        "qwen3-small",
-        "gpt-oss",
-        "minimax-m2",
-        "gemma",
-        "gemma-small",
-        "qwen",
-        "deepseek-nimbus",
-        "anthropic/claude-sonnet-5",
-        "deepseek/deepseek-v4-flash",
-        "deepseek/deepseek-v4-flash-0731",
-        "deepseek/deepseek-v4-flash-vision-exp",
-        "deepseek/deepseek-v4.1-flash",
-        "moonshotai/kimi-k3",
-        "xiaomi/mimo-v2.6-flash",
-        "xiaomi/mimo-v2.6-pro",
-        "z-ai/glm-5.2",
-        "z-ai/glm-5.3",
-        "~deepseek/deepseek-v4-flash-latest",
-        "~google/gemini-flash-latest",
         "z-ai/glm-5.3-flash",
         "deepseek/deepseek-v4.1-flash-1017",
         "nvidia/nemotron-3.5-super-vl",
         "reflection/beam-1.0-501b-a23b"
       ]
     }
+  },
+  "models": {
+    "deepseek-v4-flash": { "label": "NRP DeepSeek V4 Flash" },
+    "glm-5": { "label": "NRP GLM-5.2" },
+    "kimi": { "label": "NRP Kimi" },
+    "qwen3": { "label": "NRP Qwen3" },
+    "qwen3-small": { "label": "NRP Qwen3 Small" },
+    "gpt-oss": { "label": "NRP GPT-OSS 120B" },
+    "minimax-m2": { "label": "NRP MiniMax M2" },
+    "gemma": { "label": "NRP Gemma" },
+    "gemma-small": { "label": "NRP Gemma Small" },
+    "qwen": { "label": "DSE Qwen3.8 Flash" },
+    "deepseek-nimbus": { "label": "DSE DeepSeek V4 Flash" },
+    "z-ai/glm-5.2": { "label": "GLM-5.2" },
+    "z-ai/glm-5.3": { "label": "GLM-5.3" },
+    "deepseek/deepseek-v4-flash-0731": { "label": "DeepSeek V4 Flash (0731)" },
+    "xiaomi/mimo-v2.6-pro": { "label": "MiMo V2.6 Pro" },
+    "xiaomi/mimo-v2.6-flash": { "label": "MiMo V2.6 Flash" },
+    "moonshotai/kimi-k3": { "label": "Kimi K3" }
   },
   "fallbacks": {
     "deepseek-v4-flash": "deepseek-nimbus"

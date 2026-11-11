@@ -59,14 +59,19 @@ content parts with `cache_control: {"type":"ephemeral"}`, and add `"usage": {"in
 to see `cached_tokens` / `cache_write_tokens` in the response and logs. A bare `claude-*` id
 falls back to NRP, which does not serve it.
 
-### Model tiers and output caps
+### Model tiers and model settings
 
-The proxy keeps curated model lists in `config.json`: one for public apps, one for private (signed-in) apps, and one for the benchmark. Nothing is configured per app.
+The proxy keeps curated model lists in `config.json`, one per tier: public apps, private (signed-in) apps, and the benchmark. Nothing is configured per app.
 
 ```json
 "tiers": {
-  "public":  {"default_model": "deepseek-v4-flash", "models": ["deepseek-v4-flash", "qwen3", ...]},
-  "private": {"default_model": "deepseek-v4-flash", "models": ["deepseek-v4-flash", ..., "z-ai/glm-5.2"]}
+  "public":    {"default_model": "deepseek-v4-flash", "models": ["deepseek-v4-flash", "qwen3", ...]},
+  "private":   {"extends": "public",  "models": ["z-ai/glm-5.2", ...]},
+  "benchmark": {"extends": "private", "models": ["z-ai/glm-5.3-flash", ...]}
+},
+"models": {
+  "deepseek-v4-flash": {"label": "NRP DeepSeek V4 Flash"},
+  "z-ai/glm-5.2":      {"label": "GLM-5.2"}
 }
 ```
 
@@ -74,13 +79,16 @@ The proxy keeps curated model lists in `config.json`: one for public apps, one f
   - A key with no prefix is `public` (`default_key_tier`).
   - The legacy shared `PROXY_KEY` is `private` (`primary_key_tier`) only while the apps move to their own keys. Set it to `public`, or revoke it, once they have.
 - **Requests.** A model outside the caller's tier gets a **403** that lists what the tier offers, and is logged with `provider: "disallowed"` and `tier`.
-- **The model list.** `GET /v1/models` returns the caller's tier list in order, flagging `default` on one entry and adding `default_model`. It doesn't fetch the upstream catalogs.
-- **Why public is NRP-only.** Public apps are open relays: anyone can POST to their `/api/llm/`. That's how the November 2026 prober reached the proxy. So the public list holds only NRP-hosted models.
-- **Adding a model.** To offer a new model to every private app, add one line to `tiers.private.models`.
+- **The model list.** `GET /v1/models` returns the caller's tier list in order, flagging `default` on one entry and adding `default_model`. Entries carry `settings` from the `models` map. It doesn't fetch the upstream catalogs.
+- **Why public is lab-hosted only.** Public apps are open relays: anyone can POST to their `/api/llm/`. That's how the November 2026 prober reached the proxy. So the public list holds only NRP- and DSE-hosted models, never paid ones.
+- **`extends`.** A tier that extends another (or a list of others) gets the parent's models first, in order, then its own. It inherits the parent's `default_model` unless it sets one. Unknown parents and cycles stop the proxy at startup.
+- **Adding a model.** To offer a new model to every private app, add one line to `tiers.private.models`. A public model reaches private and benchmark too, through `extends`.
+- **Adding a tier.** Add a block to `tiers`, usually extending an existing one, and give a key the prefix `<tier>/` in the keys file. Add budget limits for it under `budgets` if it needs any; a tier with none has no limit.
+- **Model settings.** The top-level `models` map holds settings for each model id that a client applies: `label`, `temperature`, `top_p`, `seed`, `max_tokens`, `llm_timeout_seconds`, `reasoning_toggle`, `reasoning_default` and `prompt_cache`, with the meanings of glen's `llm_models` fields. `GET /v1/models` returns them as `settings` on each entry. They are defaults for the client, not limits: an app's own `llm_models` entry overrides them, and the proxy enforces nothing from them. Other keys pass through with a startup warning. Limits the proxy does enforce stay on the provider, as below.
 - **The benchmark tier (#175).** The `glen-benchmark` key (`benchmark/glen-benchmark:<key>`) gets the private list plus the models glen-benchmark scores or judges with that no app offers. Its registry is `suite/models.yaml` and `suite/judges.yaml` in that repo, which can't edit this one, so screening a new candidate is a one-line PR adding it to `tiers.benchmark.models`. That does not offer it to any app. The tier has no budget limits, because a 429 midway through a matrix loses cells and the key works only in-cluster.
 - **Other deployments.** With no `tiers` key, every routable model is allowed. cirrus mounts its own config and is unaffected.
 
-Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
+**Output caps.** Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
 
 ### Token budgets and the deny-list
 

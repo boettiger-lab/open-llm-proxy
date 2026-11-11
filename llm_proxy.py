@@ -688,33 +688,56 @@ def resolve_namespaced_default_provider(cfg: dict, providers: dict):
 NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVIDERS)
 
 
-# Model tiers (#163). The proxy keeps two curated model lists, one for public
-# apps and one for private (signed-in) apps, and nothing per app. Every client
-# key belongs to a tier, so the list an app offers and the models it may call
-# are set here, once, for every app of that kind. Public apps are open relays
-# by construction — anyone on the internet can POST to their /api/llm/ — so the
-# public list holds only lab- and NRP-hosted models.
+# Model tiers (#163). The proxy keeps curated model lists by tier (public,
+# private, benchmark, ...), and nothing per app. Every client key belongs to a
+# tier, so the list an app offers and the models it may call are set here, once,
+# for every app of that kind. Public apps are open relays by construction —
+# anyone on the internet can POST to their /api/llm/ — so the public list holds
+# only lab- and NRP-hosted models.
 #
 #   "tiers": {"public":  {"default_model": "deepseek-v4-flash", "models": [...]},
-#             "private": {"default_model": "deepseek-v4-flash", "models": [...]}}
+#             "private": {"extends": "public", "models": [...]}}
 #
-# `models` entries are exact ids, or a prefix ending in `*`. A model outside the
-# caller's tier gets a 403; `GET /v1/models` returns the tier's list, in order,
-# with the default flagged. No `tiers` key -> every routable model is allowed
-# (cirrus and other deployments keep their behavior).
+# `models` entries are exact ids, or a prefix ending in `*`. `extends` names
+# another tier (or a list of them) whose models come first, in their order; the
+# tier's own `models` follow and its `default_model` is inherited when unset.
+# A model outside the caller's tier gets a 403; `GET /v1/models` returns the
+# tier's list, in order, with the default flagged. No `tiers` key -> every
+# routable model is allowed (cirrus and other deployments keep their behavior).
 def resolve_tiers(cfg: dict):
     """Map of tier -> {"default_model", "models"}, or None when unconfigured."""
     tiers = cfg.get("tiers")
     if not tiers:
         return None
     out = {}
-    for name, spec in tiers.items():
-        models = tuple(spec.get("models") or [])
-        default = spec.get("default_model") or next((m for m in models if not m.endswith("*")), None)
+
+    def resolve(name, stack=()):
+        if name in out:
+            return out[name]
+        if name in stack:
+            raise ValueError(f"tiers: `extends` cycle {' -> '.join(stack + (name,))}")
+        spec = tiers.get(name)
+        if spec is None:
+            raise ValueError(f"tiers.{stack[-1]} extends unknown tier {name!r}")
+        parents = spec.get("extends") or []
+        if isinstance(parents, str):
+            parents = [parents]
+        models, default = [], None
+        for parent in parents:
+            inherited = resolve(parent, stack + (name,))
+            models += [m for m in inherited["models"] if m not in models]
+            default = default or inherited["default_model"]
+        models += [m for m in (spec.get("models") or []) if m not in models]
+        default = (spec.get("default_model") or default
+                   or next((m for m in models if not m.endswith("*")), None))
         if default and default not in models:
             print(f"⚠️  tiers.{name}.default_model {default!r} is not in its models list")
-        out[name] = {"default_model": default, "models": models}
-    return out
+        out[name] = {"default_model": default, "models": tuple(models)}
+        return out[name]
+
+    for name in tiers:
+        resolve(name)
+    return {name: out[name] for name in tiers}
 
 
 TIERS = resolve_tiers(config)
@@ -723,6 +746,40 @@ DEFAULT_KEY_TIER = config.get("default_key_tier", "public")
 # its own key (#162). It stays "private" for that migration only, so private
 # apps keep working; set it to "public" (or revoke the key) once they have moved.
 PRIMARY_KEY_TIER = config.get("primary_key_tier", "private")
+
+
+# Per-model client settings. The top-level `models` map holds, per model id, the
+# settings a client such as glen applies to a model: its picker label, sampling,
+# output cap, timeout, reasoning toggle and prompt caching. They are defaults for
+# the client, not limits: `GET /v1/models` returns them as `settings` on each
+# entry, and an app's own per-model config overrides them. Limits the proxy
+# enforces stay on the provider (`max_tokens_ceiling`, `thinking_models`, ...).
+#
+#   "models": {"deepseek-v4-flash": {"label": "DeepSeek V4 Flash", "max_tokens": 16384}}
+#
+# The names match glen's `llm_models` fields. Other keys pass through with a
+# warning, so a client can adopt a new setting before the proxy knows it.
+MODEL_SETTING_KEYS = {
+    "label", "temperature", "top_p", "seed", "max_tokens", "llm_timeout_seconds",
+    "reasoning_toggle", "reasoning_default", "prompt_cache",
+}
+
+
+def resolve_model_settings(cfg: dict) -> dict:
+    """Map of model id -> settings dict, from the top-level `models` map."""
+    out = {}
+    for mid, settings in (cfg.get("models") or {}).items():
+        if not isinstance(settings, dict):
+            print(f"⚠️  models.{mid} is not an object; ignored")
+            continue
+        unknown = sorted(set(settings) - MODEL_SETTING_KEYS)
+        if unknown:
+            print(f"⚠️  models.{mid}: unrecognized settings {unknown} (passed through)")
+        out[mid] = dict(settings)
+    return out
+
+
+MODEL_SETTINGS = resolve_model_settings(config)
 
 
 def model_in_tier(model: str, tier) -> bool:
@@ -739,7 +796,8 @@ def model_in_tier(model: str, tier) -> bool:
 
 
 def tier_model_list(tier) -> list:
-    """The tier's listable models (exact ids that route), in configured order."""
+    """The tier's listable models (exact ids that route), in configured order,
+    each with its client `settings` when the `models` map has any."""
     spec = (TIERS or {}).get(tier) or {"models": (), "default_model": None}
     out = []
     for mid in spec["models"]:
@@ -749,8 +807,11 @@ def tier_model_list(tier) -> list:
             provider = get_provider_for_model(mid)[0]
         except UnknownModelError:
             continue
-        out.append({"id": mid, "object": "model", "owned_by": provider,
-                    "provider": provider, "default": mid == spec["default_model"]})
+        entry = {"id": mid, "object": "model", "owned_by": provider,
+                 "provider": provider, "default": mid == spec["default_model"]}
+        if mid in MODEL_SETTINGS:
+            entry["settings"] = dict(MODEL_SETTINGS[mid])
+        out.append(entry)
     return out
 
 
@@ -1045,6 +1106,12 @@ else:
     print("✓ Model tiers: " + "; ".join(
         f"{t} ({len(v['models'])} models, default {v['default_model']})" for t, v in TIERS.items())
         + f". Unmarked keys: {DEFAULT_KEY_TIER}; shared PROXY_KEY: {PRIMARY_KEY_TIER}")
+    _listed = {m for v in TIERS.values() for m in v["models"]}
+    _stray = sorted(set(MODEL_SETTINGS) - _listed)
+    if _stray:
+        print(f"⚠️  models has settings for ids no tier lists: {', '.join(_stray)}")
+if MODEL_SETTINGS:
+    print(f"✓ Model settings for {len(MODEL_SETTINGS)} models")
 if BUDGETS:
     print(f"✓ Token budgets ({BUDGETS['count']} tokens) over {BUDGETS['window_hours']}h: key {BUDGETS['per_key']}, "
           f"client {BUDGETS['per_client']}, user {BUDGETS['per_user']}; store: "
