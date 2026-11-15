@@ -627,6 +627,10 @@ def build_provider_entry(provider_config: dict) -> dict:
         # costs money.
         "default_max_tokens": provider_config.get("default_max_tokens"),
         "max_tokens_ceiling": provider_config.get("max_tokens_ceiling"),
+        # Statuses from this provider that send a call on to the model's
+        # `fallbacks` (see FALLBACK_STATUSES). Unset: 429 and 5xx.
+        "fallback_statuses": frozenset(provider_config["fallback_statuses"])
+        if provider_config.get("fallback_statuses") else None,
     }
 
 
@@ -855,44 +859,67 @@ BUDGETS = resolve_budgets(config)
 
 
 # Fallback models. When the backend for a model refuses a call because it is
-# rate-limited or down, retry it once on a named substitute:
+# rate-limited, out of budget or down, retry it on named substitutes, in order:
 #
-#   "fallbacks": {"deepseek-v4-flash": "deepseek-nimbus"}
+#   "fallbacks": {"deepseek-v4-flash": "deepseek-nimbus",
+#                 "deepseek-or": ["deepseek-v4-flash", "deepseek-nimbus"]}
 #
 # NRP rate-limits deepseek-v4-flash; vllm-nimbus2 serves DeepSeek V4 Flash too.
-# Only these failures fall back: a 429, a 5xx, or no connection at all. A 4xx is
-# the request's own fault and would fail the same way anywhere; a read timeout
-# has already spent the caller's patience. The substitute must be in the
-# caller's tier. The response row names the substitute in `model`/`provider`
-# and the refused attempt in `fallback_from`.
-FALLBACK_STATUSES = {429, 500, 502, 503, 504}
+# A value is one model or a list tried in order. The list is the whole chain:
+# a substitute's own `fallbacks` entry is not followed.
+#
+# Only these failures move on: a status in the refusing provider's
+# `fallback_statuses` (default 429 and 5xx), or no connection at all. Any other
+# 4xx is the request's own fault and would fail the same way anywhere; a read
+# timeout has already spent the caller's patience. A provider whose key has a
+# spending cap can add the status it answers with once the cap is spent (402
+# or 403 on OpenRouter), so callers move on to a free backend instead of
+# seeing the error. Each substitute must be in the caller's tier and have an
+# API key, or it is skipped. The response row names the backend that answered
+# in `model`/`provider`, the first refused attempt in `fallback_from`, and,
+# when more than one was refused, all of them in `fallback_attempts`.
+FALLBACK_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 def resolve_fallbacks(cfg: dict) -> dict:
-    return {k: v for k, v in (cfg.get("fallbacks") or {}).items() if k and v and k != v}
+    """Map of model -> tuple of substitutes, in the order to try them."""
+    out = {}
+    for model, alts in (cfg.get("fallbacks") or {}).items():
+        if isinstance(alts, str):
+            alts = [alts]
+        chain = []
+        for alt in alts or ():
+            if alt and alt != model and alt not in chain:
+                chain.append(alt)
+        if model and chain:
+            out[model] = tuple(chain)
+    return out
 
 
 FALLBACKS = resolve_fallbacks(config)
 
 
-def should_fall_back(exc: Exception) -> bool:
+def should_fall_back(exc: Exception, provider_config: dict = None) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in FALLBACK_STATUSES
+        statuses = (provider_config or {}).get("fallback_statuses") or FALLBACK_STATUSES
+        return exc.response.status_code in statuses
     return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
 
 
-def fallback_route(model: str, tier: str):
-    """(provider_name, provider_config, model) to retry `model` on, or None."""
-    alt = FALLBACKS.get(model)
-    if not alt or not model_in_tier(alt, tier):
-        return None
-    try:
-        name, cfg = get_provider_for_model(alt)
-    except UnknownModelError:
-        return None
-    if not cfg.get("api_key"):
-        return None
-    return name, cfg, alt
+def fallback_routes(model: str, tier: str) -> list:
+    """[(provider_name, provider_config, model), ...] to retry `model` on, in
+    order, leaving out substitutes outside `tier`, unroutable or without a key."""
+    routes = []
+    for alt in FALLBACKS.get(model, ()):
+        if not model_in_tier(alt, tier):
+            continue
+        try:
+            name, cfg = get_provider_for_model(alt)
+        except UnknownModelError:
+            continue
+        if cfg.get("api_key"):
+            routes.append((name, cfg, alt))
+    return routes
 BUDGET_REDIS_URL = os.getenv("BUDGET_REDIS_URL")
 
 
@@ -1110,6 +1137,8 @@ else:
     _stray = sorted(set(MODEL_SETTINGS) - _listed)
     if _stray:
         print(f"⚠️  models has settings for ids no tier lists: {', '.join(_stray)}")
+if FALLBACKS:
+    print("✓ Fallbacks: " + "; ".join(f"{m} -> {' -> '.join(c)}" for m, c in FALLBACKS.items()))
 if MODEL_SETTINGS:
     print(f"✓ Model settings for {len(MODEL_SETTINGS)} models")
 if BUDGETS:
@@ -1247,7 +1276,7 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
     _log("📥 REQUEST", log_entry)
 
 @_never_raises
-def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, fallback_from: dict = None):
+def log_response(provider: str, model: str, response_data: dict, latency_ms: int, error: str = None, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, upstream_headers: dict = None, dialect_repaired: int = 0, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, fallback_from: dict = None, fallback_attempts: list = None):
     """Log response in structured JSON format"""
     log_entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -1267,6 +1296,8 @@ def log_response(provider: str, model: str, response_data: dict, latency_ms: int
     }
     if fallback_from:
         log_entry["fallback_from"] = fallback_from
+    if fallback_attempts and len(fallback_attempts) > 1:
+        log_entry["fallback_attempts"] = fallback_attempts
 
     if error:
         log_entry["error"] = error
@@ -1574,31 +1605,36 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     # `as client` here shadowed it with the AsyncClient object, so json.dumps in
     # log_response raised and every response was silently dropped from S3 (#37).
     async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT) as http_client:
-        served_model, fallback_from = request.model, None
+        served_model, fallback_from, refused = request.model, None, []
         try:
             endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
-            try:
-                response = await http_client.post(endpoint, json=payload, headers=headers)
-                response.raise_for_status()
-            except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ConnectTimeout) as e:
-                alt = fallback_route(request.model, tier) if should_fall_back(e) else None
-                if not alt:
-                    raise
-                fallback_from = {
-                    "provider": provider_name, "model": request.model,
-                    "status": e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None,
-                    "error": (e.response.text[:300] if isinstance(e, httpx.HTTPStatusError)
-                              else f"{type(e).__name__}: {e}"[:300]),
-                    "latency_ms": int((time.time() - start_time) * 1000),
-                }
-                provider_name, provider_config, served_model = alt
-                print(f"↪️  {fallback_from['provider']} refused {request.model} "
-                      f"({fallback_from['status'] or fallback_from['error'][:60]}); "
-                      f"retrying on {provider_name} as {served_model} (request_id={request_id})",
-                      flush=True)
-                endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
-                response = await http_client.post(endpoint, json=payload, headers=headers)
-                response.raise_for_status()
+            routes = None   # the fallback chain, looked up on the first refusal
+            while True:
+                try:
+                    response = await http_client.post(endpoint, json=payload, headers=headers)
+                    response.raise_for_status()
+                    break
+                except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ConnectTimeout) as e:
+                    if not should_fall_back(e, provider_config):
+                        raise
+                    if routes is None:
+                        routes = fallback_routes(request.model, tier)
+                    if not routes:
+                        raise
+                    refused.append({
+                        "provider": provider_name, "model": served_model,
+                        "status": e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None,
+                        "error": (e.response.text[:300] if isinstance(e, httpx.HTTPStatusError)
+                                  else f"{type(e).__name__}: {e}"[:300]),
+                        "latency_ms": int((time.time() - start_time) * 1000),
+                    })
+                    fallback_from = refused[0]
+                    provider_name, provider_config, served_model = routes.pop(0)
+                    print(f"↪️  {refused[-1]['provider']} refused {refused[-1]['model']} "
+                          f"({refused[-1]['status'] or refused[-1]['error'][:60]}); "
+                          f"retrying on {provider_name} as {served_model} (request_id={request_id})",
+                          flush=True)
+                    endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
             result = response.json()
             # Answer under the proxy's id for the model that served it, not the
             # upstream alias (`deepseek-nimbus`, not nimbus2's `deepseek-v4-flash`).
@@ -1629,7 +1665,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                       f"(model={request.model}, request_id={request_id}) — the caller may "
                       f"already have given up on this turn and seen a gateway 502/504",
                       flush=True)
-            log_response(provider_name, served_model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, dialect_repaired=dialect_repaired, fallback_from=fallback_from)
+            log_response(provider_name, served_model, result, latency_ms, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, dialect_repaired=dialect_repaired, fallback_from=fallback_from, fallback_attempts=refused)
 
             usage = result.get("usage") or {}
             charged = usage.get("completion_tokens") or 0
@@ -1648,13 +1684,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # then re-raise so the cancellation still propagates correctly.
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Client disconnected/cancelled after {latency_ms}ms (upstream still pending)"
-            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from, fallback_attempts=refused)
             raise
 
         except httpx.TimeoutException as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"Request timed out after {latency_ms}ms"
-            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from, fallback_attempts=refused)
             raise HTTPException(status_code=504, detail=error_detail)
 
         except httpx.HTTPStatusError as e:
@@ -1664,7 +1700,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # retry-after/x-ratelimit-*) vs dead-backend (naked 500, no
             # server/x-request-id) distinction is queryable from logs (#44).
             upstream_headers = _capture_upstream_headers(e.response.headers)
-            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, upstream_headers=upstream_headers, fallback_from=fallback_from)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, upstream_headers=upstream_headers, fallback_from=fallback_from, fallback_attempts=refused)
 
             # Pass through certain status codes to client
             if e.response.status_code in [400, 401, 402, 403, 429]:
@@ -1677,7 +1713,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             error_detail = f"{type(e).__name__}: {str(e)}"
-            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from)
+            log_response(provider_name, served_model, {}, latency_ms, error=error_detail, origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, fallback_from=fallback_from, fallback_attempts=refused)
             
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors

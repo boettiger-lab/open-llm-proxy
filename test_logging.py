@@ -1253,9 +1253,10 @@ def test_model_alias_sends_upstream_id_and_keeps_proxy_id_everywhere_else():
     assert {e.get("model") for e in p._log_buffer} == {"deepseek-nimbus"}
 
 
-def _fallback_harness(p, primary_status=None, primary_exc=None, fallback_status=None):
+def _fallback_harness(p, primary_status=None, primary_exc=None, fallback_status=None, statuses=None):
     """Fake upstream: NRP answers with `primary_status`/`primary_exc`, nimbus2 with
-    `fallback_status` (or 200). Returns (captured posts, run(request) -> result)."""
+    `fallback_status` (or 200), and an endpoint containing a key of `statuses`
+    with that status (checked first). Returns (captured posts, run(request) -> result)."""
     import asyncio
     from unittest.mock import patch
 
@@ -1288,6 +1289,9 @@ def _fallback_harness(p, primary_status=None, primary_exc=None, fallback_status=
 
         async def post(self, endpoint, json=None, headers=None):
             posts.append((endpoint, json))
+            for needle, status in (statuses or {}).items():
+                if needle in endpoint:
+                    return _Resp(endpoint, status, json["model"])
             if "nimbus2" in endpoint:
                 return _Resp(endpoint, fallback_status or 200, json["model"])
             if primary_exc:
@@ -1300,7 +1304,8 @@ def _fallback_harness(p, primary_status=None, primary_exc=None, fallback_status=
     def run(req):
         with patch.object(p.httpx, "AsyncClient", _Client), \
              patch.dict(p.PROVIDERS["nimbus2"], {"api_key": "k"}), \
-             patch.dict(p.PROVIDERS["nrp"], {"api_key": "k"}):
+             patch.dict(p.PROVIDERS["nrp"], {"api_key": "k"}), \
+             patch.dict(p.PROVIDERS["openrouter"], {"api_key": "k"}):
             return asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
     return posts, run
 
@@ -1311,7 +1316,7 @@ def _ds_request(p, **kw):
 
 def test_nrp_429_falls_back_to_deepseek_nimbus():
     p = _reload(PROXY_KEY="testkey")
-    assert p.FALLBACKS == {"deepseek-v4-flash": "deepseek-nimbus"}
+    assert p.FALLBACKS == {"deepseek-v4-flash": ("deepseek-nimbus",)}
     p._log_buffer.clear()
     posts, run = _fallback_harness(p, primary_status=429)
     result = run(_ds_request(p, enable_thinking=True))
@@ -1373,6 +1378,102 @@ def test_fallback_must_be_in_the_callers_tier():
     with patch.object(p, "TIERS", narrowed), pytest.raises(p.HTTPException) as ei:
         run(_ds_request(p))
     assert ei.value.status_code == 429 and len(posts) == 1
+
+
+def test_fallbacks_accept_one_model_or_a_list():
+    p = _reload(PROXY_KEY="testkey")
+    assert p.resolve_fallbacks({"fallbacks": {
+        "a": "b", "c": ["d", "e", "d", "c", ""], "f": [], "g": None, "h": "h"}}) == {
+        "a": ("b",), "c": ("d", "e")}
+
+
+def _chain(p, chain, tier_models=None, provider_statuses=None):
+    """Patch FALLBACKS (and optionally the tiers and openrouter's
+    fallback_statuses) for one test; returns the patchers to enter."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+    stack = ExitStack()
+    stack.enter_context(patch.object(p, "FALLBACKS", chain))
+    if tier_models is not None:
+        stack.enter_context(patch.object(p, "TIERS", {
+            t: {**spec, "models": tuple(tier_models)} for t, spec in p.TIERS.items()}))
+    if provider_statuses is not None:
+        stack.enter_context(patch.dict(p.PROVIDERS["openrouter"],
+                                       {"fallback_statuses": frozenset(provider_statuses)}))
+    return stack
+
+
+_OR_DS = "deepseek/deepseek-v4-flash"
+
+
+def _or_request(p):
+    return p.ChatRequest(model=_OR_DS, messages=[{"role": "user", "content": "hi"}])
+
+
+def test_chain_tries_each_substitute_in_order():
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    posts, run = _fallback_harness(p, primary_status=503, statuses={"openrouter": 429})
+    chain = {_OR_DS: ("deepseek-v4-flash", "deepseek-nimbus")}
+    with _chain(p, chain):
+        result = run(_or_request(p))
+    assert [("openrouter" in e, "nimbus2" in e) for e, _ in posts] == [
+        (True, False), (False, False), (False, True)]
+    assert result["model"] == "deepseek-nimbus"
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert len(resp) == 1 and resp[0]["provider"] == "nimbus2"
+    assert resp[0]["fallback_from"]["provider"] == "openrouter"
+    assert resp[0]["fallback_from"]["model"] == _OR_DS
+    assert [(a["provider"], a["model"], a["status"]) for a in resp[0]["fallback_attempts"]] == [
+        ("openrouter", _OR_DS, 429), ("nrp", "deepseek-v4-flash", 503)]
+
+
+def test_chain_stops_at_the_first_success_and_logs_one_hop_without_attempts():
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    posts, run = _fallback_harness(p, statuses={"openrouter": 503})
+    with _chain(p, {_OR_DS: ("deepseek-v4-flash", "deepseek-nimbus")}):
+        assert run(_or_request(p))["model"] == "deepseek-v4-flash"
+    assert len(posts) == 2
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert resp[0]["provider"] == "nrp" and "fallback_attempts" not in resp[0]
+
+
+def test_substitute_outside_the_tier_is_skipped_not_fatal():
+    p = _reload(PROXY_KEY="testkey")
+    posts, run = _fallback_harness(p, statuses={"openrouter": 503})
+    with _chain(p, {_OR_DS: ("deepseek-v4-flash", "deepseek-nimbus")},
+                tier_models=(_OR_DS, "deepseek-nimbus")):
+        assert run(_or_request(p))["model"] == "deepseek-nimbus"
+    assert [("nimbus2" in e) for e, _ in posts] == [False, True]
+
+
+def test_spent_cap_status_falls_back_only_where_configured():
+    """A capped OpenRouter key answers 402/403. Those move on only from a
+    provider that lists them in `fallback_statuses`; elsewhere they pass through."""
+    import pytest
+    p = _reload(PROXY_KEY="testkey")
+    chain = {_OR_DS: ("deepseek-nimbus",)}
+    posts, run = _fallback_harness(p, statuses={"openrouter": 402})
+    with _chain(p, chain), pytest.raises(p.HTTPException) as ei:
+        run(_or_request(p))
+    assert ei.value.status_code == 402 and len(posts) == 1
+    posts, run = _fallback_harness(p, statuses={"openrouter": 402})
+    with _chain(p, chain, provider_statuses={402, 403, 429, 500, 502, 503, 504}):
+        assert run(_or_request(p))["model"] == "deepseek-nimbus"
+    # The substitute's own statuses decide whether it moves on, not the primary's.
+    posts, run = _fallback_harness(p, primary_status=403, statuses={"openrouter": 402})
+    with _chain(p, {_OR_DS: ("deepseek-v4-flash", "deepseek-nimbus")},
+                provider_statuses={402}), pytest.raises(p.HTTPException) as ei:
+        run(_or_request(p))
+    assert ei.value.status_code == 403 and len(posts) == 2
+
+
+def test_provider_config_carries_fallback_statuses():
+    p = _reload(PROXY_KEY="testkey")
+    e = p.build_provider_entry({"endpoint": "x", "fallback_statuses": [402, 429]})
+    assert e["fallback_statuses"] == {402, 429}
+    assert p.build_provider_entry({"endpoint": "x"})["fallback_statuses"] is None
 
 
 def test_model_alias_maps_upstream_listing_back_to_proxy_id():

@@ -9,6 +9,15 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Fallback chains, and fallback on a spent spending cap.** A `fallbacks` value can now be a
+  list of substitutes, tried in order until one answers; a single model still works. A
+  provider can set `fallback_statuses` to choose which of its error statuses move a call on
+  (default 429 and 5xx). This lets a public-tier model run on its own OpenRouter key with a
+  daily credit limit: list 402 and 403 there, and once the limit is spent, calls go on to NRP
+  and then DSE instead of failing. Substitutes outside the caller's tier or without a key are
+  skipped. When more than one backend refused, the response row lists them all in
+  `fallback_attempts`; `fallback_from` still holds the first.
+
 - **Settings for each model in `config.json`, returned by `GET /v1/models`.** A new top-level
   `models` map holds settings by model id, named as in glen's `llm_models`: `label`,
   `temperature`, `top_p`, `seed`, `max_tokens`, `llm_timeout_seconds`, `reasoning_toggle`,
