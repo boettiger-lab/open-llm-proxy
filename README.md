@@ -127,6 +127,37 @@ kubectl -n biodiversity create configmap open-llm-proxy-denylist \
 - **What a blocked caller sees:** a bare 403, logged with `provider: "blocked"`.
 - **Finding an entry:** use the hashes as they appear in the logs. The same salt hashes the address and the user, so the raw values are never needed.
 
+### Fallback models
+
+When the backend for a model refuses a call, the proxy retries it on substitutes named in `config.json` `fallbacks`, in order. A value is one model or a list:
+
+```json
+"fallbacks": {
+  "deepseek-v4-flash": "deepseek-nimbus",
+  "deepseek-or": ["deepseek-v4-flash", "deepseek-nimbus"]
+}
+```
+
+- **What moves on:** a status in the refusing provider's `fallback_statuses` (default 429, 500, 502, 503 and 504), or no connection at all. Any other 4xx is the request's own fault and is returned. A read timeout is returned too, because the caller has already waited.
+- **The list is the whole chain.** A substitute's own `fallbacks` entry is not followed.
+- **Skipped substitutes:** one outside the caller's tier, one that routes nowhere, or one whose provider has no API key.
+- **Spending caps.** An OpenRouter key with a credit limit refuses calls once the limit is spent, with a 402 or 403. Give that key its own provider and add those statuses to its `fallback_statuses`, and callers move on to NRP or DSE instead of seeing the error. For example, a public-tier DeepSeek on its own capped key:
+
+  ```json
+  "openrouter-public": {
+    "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+    "api_key_env": "OPENROUTER_PUBLIC_KEY",
+    "models": ["deepseek-or"],
+    "model_aliases": {"deepseek-or": "deepseek/deepseek-v4-flash"},
+    "model_prefixes": [],
+    "fallback_statuses": [402, 403, 429, 500, 502, 503, 504],
+    "max_tokens_ceiling": 32768
+  }
+  ```
+
+  The alias keeps this key apart from the private tier's `deepseek/deepseek-v4-flash`, which stays on `OPENROUTER_KEY`. The cap is set on the key at OpenRouter; the proxy's token budgets still apply per tier, whichever backend answers.
+- **Logs:** the response row names the backend that answered. `fallback_from` holds the first refused attempt, and `fallback_attempts` lists every refused attempt when there was more than one.
+
 ### Thinking mode
 
 Set `"enable_thinking": true` in the request body to activate extended reasoning on supported models (`kimi`, `qwen3`, `glm-5`). The proxy injects the correct provider-specific parameter based on `config.json`.
