@@ -825,9 +825,9 @@ def tier_model_list(tier) -> list:
 # tier's limit over a rolling window:
 #
 #   "budgets": {"window_hours": 4, "count": "completion",
-#               "per_key":    {"public": 1000000, "private": 4000000},
-#               "per_client": {"public": 250000,  "private": 1000000},
-#               "per_user":   {"public": 250000,  "private": 1000000}}
+#               "per_key":    {"public": 4000000, "private": 4000000},
+#               "per_client": {"public": 1000000, "private": 1000000},
+#               "per_user":   {"public": 1000000, "private": 1000000}}
 #
 # A tier missing from a scope has no limit there. Address and user are counted
 # separately, so a caller who rotates a forged X-Forwarded-Email still hits the

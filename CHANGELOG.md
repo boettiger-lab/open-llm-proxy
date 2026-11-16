@@ -64,6 +64,13 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
+- **Public token budgets raised 4-fold, to match private.** Per 4 hours of output: 4M per
+  key, 1M per address, 1M per user (were 1M, 250k, 250k). On 2026-11-16 testing glen v4
+  from one JupyterHub pod hit the 250k address limit (267k output tokens on NRP's
+  deepseek-v4-flash) on both landscape-frontiers and wetlands-v2, which share that
+  address. Every public-tier model is free (NRP or nimbus), so these limits only guard
+  NRP's capacity against a runaway client.
+
 - **Token budgets count output tokens over 4 hours.** A new `budgets.count` setting picks
   `"completion"` (output only) or `"total"` (the old behavior, and the default). The shipped
   config counts output over a 4-hour window (was all tokens over 24 hours). Public limits:

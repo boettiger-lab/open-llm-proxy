@@ -96,15 +96,15 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
 
 | Counter | Identifies | Public | Private |
 |---|---|---|---|
-| `per_key` | an app or job (a named client key, #169) | 1M | 4M |
-| `per_client` | a visitor's address (`X-Real-IP`) | 250k | 1M |
-| `per_user` | a signed-in user (`X-Forwarded-Email`) | 250k | 1M |
+| `per_key` | an app or job (a named client key, #169) | 4M | 4M |
+| `per_client` | a visitor's address (`X-Real-IP`) | 1M | 1M |
+| `per_user` | a signed-in user (`X-Forwarded-Email`) | 1M | 1M |
 
 - **Output tokens only** (`"count": "completion"`). Prompt tokens mostly measure how long a conversation has run, because geo-agent resends the whole history on every call, while output is what loads NRP. Set `"count": "total"` to charge prompt + completion, which is the default when `count` is absent.
 - **The window** is 4 hours (`window_hours`), counted in hourly buckets.
 - **Over budget:** the request gets a **429** with `Retry-After`, saying which budget was hit and when it starts freeing up. It is logged with `provider: "budget-exceeded"`.
 - **Address and user are counted separately,** so a forged email header can't escape the address limit.
-- **The numbers** come from 2026-11-10, when one person on tpl and tpl-ca hit the old 3M total-token limit in 48 minutes: 2.94M prompt tokens but only 71k output tokens over 5 sessions. The new limits are about 3 times that person's output. Revisit them with more data.
+- **The numbers** come from 2026-11-10, when one person on tpl and tpl-ca hit the old 3M total-token limit in 48 minutes: 2.94M prompt tokens but only 71k output tokens over 5 sessions. The public limits were first set at about 3 times that person's output. On 2026-11-16 they were raised 4-fold, to the private limits, after testing glen v4 from one JupyterHub pod spent 267k output tokens in 4 hours on NRP's deepseek-v4-flash. Every public-tier model runs on NRP or nimbus at no cost, so the public budgets guard NRP's capacity against a runaway client, not spending. Revisit them with more data.
 
 **The counter store.** Counters live in Redis (`redis.yaml`, password `redis-password` in `open-llm-proxy-secrets`), because 3 pods × 4 workers must count against one total.
 - **Without `BUDGET_REDIS_URL`,** each process keeps its own counters, which would allow 12 times the budget. A warning is printed at startup.
