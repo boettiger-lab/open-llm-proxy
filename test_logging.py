@@ -2257,7 +2257,7 @@ def test_output_only_counters_are_separate_from_total_counters():
 def test_shipped_budgets_count_output_over_four_hours():
     p = _reload(PROXY_KEY="testkey")
     assert p.BUDGETS["count"] == "completion" and p.BUDGETS["window_hours"] == 4
-    assert p.BUDGETS["per_client"]["public"] == 250000
+    assert p.BUDGETS["per_client"]["public"] == 1000000
 
 
 def test_denylist_blocks_key_client_and_user_live():

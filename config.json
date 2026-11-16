@@ -159,15 +159,15 @@
     "window_hours": 4,
     "count": "completion",
     "per_key": {
-      "public": 1000000,
+      "public": 4000000,
       "private": 4000000
     },
     "per_client": {
-      "public": 250000,
+      "public": 1000000,
       "private": 1000000
     },
     "per_user": {
-      "public": 250000,
+      "public": 1000000,
       "private": 1000000
     }
   }
