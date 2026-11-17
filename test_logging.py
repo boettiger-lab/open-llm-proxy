@@ -2030,7 +2030,7 @@ def test_shipped_tiers_close_what_the_november_prober_reached():
             assert not p.model_in_tier(model, tier), (tier, model)
     assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"
     for m in p.tier_model_list("public"):
-        assert m["provider"] in ("nrp", "nimbus", "nimbus2"), m
+        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus"), m
     assert p.model_in_tier("z-ai/glm-5.2", "private")
     assert not p.model_in_tier("z-ai/glm-5.2", "public")
 
@@ -2381,7 +2381,7 @@ def test_shipped_tiers_extend_without_changing_their_lists():
     p = importlib.reload(llm_proxy)
     pub, prv, bench = (p.TIERS[t]["models"] for t in ("public", "private", "benchmark"))
     assert prv[:len(pub)] == pub and bench[:len(prv)] == prv
-    assert len(pub) == 12 and len(prv) == 24 and len(bench) == 28
+    assert len(pub) == 10 and len(prv) == 22 and len(bench) == 26
     assert {p.TIERS[t]["default_model"] for t in p.TIERS} == {"deepseek-v4-flash"}
 
 
@@ -2408,6 +2408,8 @@ def test_shipped_model_settings_cover_listed_models():
     public model has a label for the picker."""
     p = importlib.reload(llm_proxy)
     listed = {m for t in p.TIERS.values() for m in t["models"]}
+    # plus what an automatic provider declares it may serve (#194)
+    listed |= {m for t in p.TIERS.values() for a in t["auto"] for m in p.PROVIDERS[a]["models"]}
     assert set(p.MODEL_SETTINGS) <= listed
     for m in p.tier_model_list("public"):
         assert m.get("settings", {}).get("label"), m["id"]
@@ -2425,3 +2427,151 @@ if __name__ == "__main__":
             failed += 1
             print(f"FAIL {fn.__name__}: {type(e).__name__}: {e}")
     sys.exit(1 if failed else 0)
+
+
+# --- Served-model discovery and automatic tiers (#194) ------------------------
+
+def _served(p, **by_provider):
+    """Pretend discovery has run: SERVED[provider] = the given ids."""
+    p.SERVED.clear()
+    for name, ids in by_provider.items():
+        p.SERVED[name.replace("_", "-")] = {"ids": frozenset(ids), "fetched_iso": "t", "error": None}
+
+
+def test_auto_is_only_for_discovering_providers():
+    import pytest
+    p = importlib.reload(llm_proxy)
+    providers = {"nimbus": {"discover_models": True}, "openrouter": {}}
+    with pytest.raises(ValueError, match="openrouter"):
+        p.resolve_tiers({"providers": providers,
+                         "tiers": {"public": {"models": ["a"], "auto": ["openrouter"]}}})
+    with pytest.raises(ValueError, match="nope"):
+        p.resolve_tiers({"providers": providers,
+                         "tiers": {"public": {"models": ["a"], "auto": ["nope"]}}})
+    tiers = p.resolve_tiers({"providers": providers, "tiers": {
+        "public": {"models": ["a"], "auto": ["nimbus"]},
+        "private": {"extends": "public", "models": ["b"]}}})
+    assert tiers["private"]["auto"] == ("nimbus",) and tiers["private"]["models"] == ("a", "b")
+
+
+def test_shipped_config_discovers_only_self_hosted_providers():
+    p = importlib.reload(llm_proxy)
+    assert not p.PROVIDERS["openrouter"]["discover_models"]
+    assert p.PROVIDERS["nrp"]["discover_models"] and p.PROVIDERS["nimbus"]["discover_models"]
+    assert "nrp" not in p.TIERS["public"]["auto"]          # NRP is a curated subset
+    assert set(p.TIERS["public"]["auto"]) <= {"nimbus", "nimbus2", "gemma4-nimbus"}
+    assert p.TIERS["benchmark"]["auto"] == p.TIERS["public"]["auto"]
+
+
+def test_discovered_ids_route_before_prefixes():
+    p = importlib.reload(llm_proxy)
+    assert p.get_provider_for_model("nvidia/nemotron-x")[0] == "openrouter"
+    _served(p, nimbus={"nvidia/nemotron-x", "nemotron-3.5-lightning"})
+    assert p.get_provider_for_model("nvidia/nemotron-x")[0] == "nimbus"
+    assert p.get_provider_for_model("deepseek-nimbus")[0] == "nimbus2"   # declared ids still win
+    p.SERVED.clear()
+
+
+def test_automatic_tier_follows_what_the_server_serves():
+    p = importlib.reload(llm_proxy)
+    _served(p, nimbus={"nemotron-3.5-lightning"}, nimbus2={"deepseek-nimbus"},
+            nrp={"deepseek-v4-flash", "glm-5", "kimi", "qwen3", "qwen3-small", "gpt-oss",
+                 "minimax-m2", "gemma", "gemma-small", "cuda", "kubernetes"})
+    assert p.model_in_tier("nemotron-3.5-lightning", "public")
+    assert p.model_in_tier("nemotron-3.5-lightning", "benchmark")     # through extends
+    assert not p.model_in_tier("qwen", "public")                      # rotated out
+    assert not p.model_in_tier("cuda", "public")                      # NRP is manual
+    ids = [m["id"] for m in p.tier_model_list("public")]
+    assert ids[0] == "deepseek-v4-flash" and ids[-1] == "nemotron-3.5-lightning"
+    assert "qwen" not in ids and "cuda" not in ids
+    # The server rotates: the tier follows with no config change.
+    _served(p, nimbus={"qwen"}, nimbus2={"deepseek-nimbus"})
+    assert p.model_in_tier("qwen", "public") and not p.model_in_tier("nemotron-3.5-lightning", "public")
+    p.SERVED.clear()
+
+
+def test_unknown_served_list_keeps_declared_behavior():
+    """Before a provider has ever answered, nothing is hidden or refused."""
+    p = importlib.reload(llm_proxy)
+    p.SERVED.clear()
+    assert p.model_available("qwen", "nimbus") and p.model_available("typo-model", "nrp")
+    assert "deepseek-nimbus" in [m["id"] for m in p.tier_model_list("public")]
+
+
+def test_manual_model_not_served_is_hidden_unless_a_fallback_answers():
+    p = importlib.reload(llm_proxy)
+    _served(p, nrp={"glm-5"}, nimbus2={"deepseek-nimbus"})
+    with_patch = {"nrp": dict(p.PROVIDERS["nrp"], api_key="k"),
+                  "nimbus2": dict(p.PROVIDERS["nimbus2"], api_key="k")}
+    from unittest.mock import patch
+    with patch.dict(p.PROVIDERS, with_patch):
+        ids = [m["id"] for m in p.tier_model_list("public")]
+        assert "deepseek-v4-flash" in ids        # unserved, but its fallback is served
+        assert "kimi" not in ids                 # unserved, no fallback
+        _served(p, nrp={"glm-5"}, nimbus2=set())
+        assert "deepseek-v4-flash" not in [m["id"] for m in p.tier_model_list("public")]
+    p.SERVED.clear()
+
+
+def test_unserved_model_is_a_logged_404():
+    import pytest
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    _served(p, nrp={"glm-5"})
+    posts, run = _fallback_harness(p)
+    with pytest.raises(p.HTTPException) as ei:      # listed manually, no fallback
+        run(p.ChatRequest(model="kimi", messages=[{"role": "user", "content": "hi"}]))
+    assert ei.value.status_code == 404 and "serves: glm-5" in ei.value.detail
+    assert posts == []
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert resp[0]["provider"] == "unavailable" and "not currently served" in resp[0]["error"]
+    # Rotated off an automatic provider: the same 404, not a tier 403.
+    _served(p, nimbus={"nemotron-3.5-lightning"})
+    with pytest.raises(p.HTTPException) as ei:
+        run(p.ChatRequest(model="qwen", messages=[{"role": "user", "content": "hi"}]))
+    assert ei.value.status_code == 404 and "serves: nemotron-3.5-lightning" in ei.value.detail
+    p.SERVED.clear()
+
+
+def test_unserved_model_goes_straight_to_a_served_fallback():
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    _served(p, nrp={"glm-5"}, nimbus2={"deepseek-nimbus"})
+    posts, run = _fallback_harness(p)
+    result = run(_ds_request(p))
+    assert len(posts) == 1 and "nimbus2" in posts[0][0]
+    assert result["model"] == "deepseek-nimbus"
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert resp[0]["provider"] == "nimbus2"
+    assert resp[0]["fallback_from"] == {"provider": "nrp", "model": "deepseek-v4-flash",
+                                        "status": None, "error": "not currently served",
+                                        "latency_ms": 0}
+    p.SERVED.clear()
+
+
+def test_refresh_served_aliases_keeps_last_answer_and_skips_keyless():
+    import asyncio
+    from unittest.mock import patch
+    p = importlib.reload(llm_proxy)
+    p.SERVED.clear()
+    answers = {"vllm-nimbus2": (["deepseek-v4-flash"], None),
+               "vllm-nimbus.": (["nemotron-3.5-lightning"], None)}
+
+    async def fake_fetch(cfg, client):
+        for needle, ans in answers.items():
+            if needle in cfg["endpoint"]:
+                return ans
+        return None, "ConnectError: down"
+
+    keyed = {n: dict(p.PROVIDERS[n], api_key="k") for n in ("nimbus", "nimbus2", "gemma4-nimbus")}
+    with patch.object(p, "_fetch_provider_models", fake_fetch), patch.dict(p.PROVIDERS, keyed):
+        asyncio.run(p.refresh_served())
+        assert p.served_ids("nimbus2") == {"deepseek-nimbus"}        # upstream alias reversed
+        assert p.served_ids("nimbus") == {"nemotron-3.5-lightning"}
+        assert p.served_ids("gemma4-nimbus") is None                 # never answered: unknown
+        assert p.served_ids("openrouter") is None and p.served_ids("nrp") is None  # off / no key
+        answers["vllm-nimbus."] = (None, "ReadTimeout")
+        asyncio.run(p.refresh_served())
+        assert p.served_ids("nimbus") == {"nemotron-3.5-lightning"}  # last good answer kept
+        assert p.SERVED["nimbus"]["error"] == "ReadTimeout"
+    p.SERVED.clear()

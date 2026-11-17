@@ -9,6 +9,16 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Served-model discovery and automatic tiers (#194).** A provider with
+  `discover_models` is asked what it serves every minute. Its served ids route to it, and
+  a model it is known not to serve is left out of `GET /v1/models`; a call for one goes to
+  a served fallback or gets a 404 logged as `unavailable`. A tier's new `auto` list names
+  providers whose served models it takes whole; other providers stay manual, so a tier
+  can take a subset of NRP. Discovery is on for NRP and the DSE servers, never OpenRouter.
+  The public tier now takes nimbus, nimbus2 and gemma4-nimbus automatically, and `qwen`
+  and `nemotron-3.5-lightning` leave its manual list. gemma4-nimbus is newly offered to
+  public apps whenever it is up.
+
 - **DSE Nemotron 3.5 Lightning (`nemotron-3.5-lightning`).** Served on vllm-nimbus
   (NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) and listed in the public tier beside the
   other DSE models, so private and benchmark keys get it too. Thinking is on by default and

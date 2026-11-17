@@ -375,7 +375,12 @@ async def _flush_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task = asyncio.create_task(_flush_loop())
+    # Learn what the discovering providers serve before taking traffic, so a
+    # tier's automatic models are there from the first request (#194).
+    await refresh_served()
+    discovery = asyncio.create_task(_discovery_loop())
     yield
+    discovery.cancel()
     task.cancel()
     await _flush_to_s3()  # final flush on shutdown
 
@@ -631,12 +636,38 @@ def build_provider_entry(provider_config: dict) -> dict:
         # `fallbacks` (see FALLBACK_STATUSES). Unset: 429 and 5xx.
         "fallback_statuses": frozenset(provider_config["fallback_statuses"])
         if provider_config.get("fallback_statuses") else None,
+        # Ask this provider what it serves, and route and list by the answer
+        # (#194). Only for providers that serve a short list of their own, like
+        # NRP and our vLLMs; never for an aggregator such as OpenRouter.
+        "discover_models": bool(provider_config.get("discover_models")),
     }
 
 
 PROVIDERS = {
     name: build_provider_entry(cfg) for name, cfg in config["providers"].items()
 }
+
+
+# Served models (#194). Our own vLLM servers change which model they serve, so
+# for a provider with `discover_models` the proxy polls its /models in the
+# background and keeps the answer here: provider -> {"ids": frozenset of proxy
+# ids, "fetched_iso", "error"}. A provider missing from SERVED has never
+# answered, and then nothing is known about it: its declared models route and
+# are treated as available, as before discovery existed.
+SERVED: dict = {}
+_DISCOVERY_INTERVAL = float(os.getenv("DISCOVERY_INTERVAL_SECONDS", "60"))
+
+
+def served_ids(provider_name: str):
+    """What the provider serves, as proxy ids, or None if that isn't known."""
+    entry = SERVED.get(provider_name)
+    return None if entry is None else entry["ids"]
+
+
+def model_available(model: str, provider_name: str) -> bool:
+    """False only when the provider is known to serve something else."""
+    ids = served_ids(provider_name)
+    return ids is None or model in ids
 
 # Provider that serves a model id matching no explicit entry.
 #
@@ -705,6 +736,10 @@ NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVID
 # `models` entries are exact ids, or a prefix ending in `*`. `extends` names
 # another tier (or a list of them) whose models come first, in their order; the
 # tier's own `models` follow and its `default_model` is inherited when unset.
+# `auto` names providers with `discover_models` on (#194): the tier also gets
+# whatever they currently serve, so a rotating server needs no config edit. A
+# provider not in `auto` is manual, which is how a tier takes a subset of one
+# (e.g. some of NRP's models). `auto` is inherited through `extends` too.
 # A model outside the caller's tier gets a 403; `GET /v1/models` returns the
 # tier's list, in order, with the default flagged. No `tiers` key -> every
 # routable model is allowed (cirrus and other deployments keep their behavior).
@@ -726,17 +761,24 @@ def resolve_tiers(cfg: dict):
         parents = spec.get("extends") or []
         if isinstance(parents, str):
             parents = [parents]
-        models, default = [], None
+        models, auto, default = [], [], None
         for parent in parents:
             inherited = resolve(parent, stack + (name,))
             models += [m for m in inherited["models"] if m not in models]
+            auto += [a for a in inherited["auto"] if a not in auto]
             default = default or inherited["default_model"]
         models += [m for m in (spec.get("models") or []) if m not in models]
+        for a in spec.get("auto") or []:
+            if not (cfg.get("providers") or {}).get(a, {}).get("discover_models"):
+                raise ValueError(f"tiers.{name}.auto names {a!r}, which is not a provider "
+                                 "with `discover_models` on")
+            if a not in auto:
+                auto.append(a)
         default = (spec.get("default_model") or default
                    or next((m for m in models if not m.endswith("*")), None))
         if default and default not in models:
             print(f"⚠️  tiers.{name}.default_model {default!r} is not in its models list")
-        out[name] = {"default_model": default, "models": tuple(models)}
+        out[name] = {"default_model": default, "models": tuple(models), "auto": tuple(auto)}
         return out[name]
 
     for name in tiers:
@@ -796,6 +838,12 @@ def model_in_tier(model: str, tier) -> bool:
     for pat in spec["models"]:
         if model == pat or (pat.endswith("*") and model.startswith(pat[:-1])):
             return True
+    if spec.get("auto"):
+        try:
+            provider = get_provider_for_model(model)[0]
+        except UnknownModelError:
+            return False
+        return provider in spec["auto"] and model in (served_ids(provider) or ())
     return False
 
 
@@ -803,19 +851,33 @@ def tier_model_list(tier) -> list:
     """The tier's listable models (exact ids that route), in configured order,
     each with its client `settings` when the `models` map has any."""
     spec = (TIERS or {}).get(tier) or {"models": (), "default_model": None}
-    out = []
-    for mid in spec["models"]:
-        if mid.endswith("*"):
-            continue
-        try:
-            provider = get_provider_for_model(mid)[0]
-        except UnknownModelError:
-            continue
+    out, seen = [], set()
+
+    def add(mid, provider):
         entry = {"id": mid, "object": "model", "owned_by": provider,
                  "provider": provider, "default": mid == spec["default_model"]}
         if mid in MODEL_SETTINGS:
             entry["settings"] = dict(MODEL_SETTINGS[mid])
         out.append(entry)
+        seen.add(mid)
+
+    for mid in spec["models"]:
+        if mid.endswith("*") or mid in seen:
+            continue
+        try:
+            provider = get_provider_for_model(mid)[0]
+        except UnknownModelError:
+            continue
+        # A model its server isn't serving now is left out (#194), unless a call
+        # for it would still be answered by one of its fallbacks.
+        if not model_available(mid, provider) and not fallback_routes(mid, tier):
+            continue
+        add(mid, provider)
+    # Then what the tier's automatic providers serve, grouped by provider.
+    for provider in spec.get("auto", ()):
+        for mid in sorted(served_ids(provider) or ()):
+            if mid not in seen and get_provider_for_model(mid)[0] == provider:
+                add(mid, provider)
     return out
 
 
@@ -917,7 +979,7 @@ def fallback_routes(model: str, tier: str) -> list:
             name, cfg = get_provider_for_model(alt)
         except UnknownModelError:
             continue
-        if cfg.get("api_key"):
+        if cfg.get("api_key") and model_available(alt, name):
             routes.append((name, cfg, alt))
     return routes
 BUDGET_REDIS_URL = os.getenv("BUDGET_REDIS_URL")
@@ -1131,12 +1193,18 @@ if TIERS is None:
     print("ℹ️  No model tiers configured: every routable model is allowed")
 else:
     print("✓ Model tiers: " + "; ".join(
-        f"{t} ({len(v['models'])} models, default {v['default_model']})" for t, v in TIERS.items())
+        f"{t} ({len(v['models'])} models"
+        + (f" + all of {', '.join(v['auto'])}" if v["auto"] else "")
+        + f", default {v['default_model']})" for t, v in TIERS.items())
         + f". Unmarked keys: {DEFAULT_KEY_TIER}; shared PROXY_KEY: {PRIMARY_KEY_TIER}")
     _listed = {m for v in TIERS.values() for m in v["models"]}
+    _listed |= {m for v in TIERS.values() for a in v["auto"] for m in PROVIDERS[a]["models"]}
     _stray = sorted(set(MODEL_SETTINGS) - _listed)
     if _stray:
         print(f"⚠️  models has settings for ids no tier lists: {', '.join(_stray)}")
+_discovering = [n for n, c in PROVIDERS.items() if c["discover_models"]]
+if _discovering:
+    print(f"✓ Model discovery every {_DISCOVERY_INTERVAL:g}s: {', '.join(_discovering)}")
 if FALLBACKS:
     print("✓ Fallbacks: " + "; ".join(f"{m} -> {' -> '.join(c)}" for m, c in FALLBACKS.items()))
 if MODEL_SETTINGS:
@@ -1160,6 +1228,14 @@ def get_provider_for_model(model: str) -> tuple[str, dict]:
     # vendor prefix declared elsewhere.
     for provider_name, config in PROVIDERS.items():
         if model in config["models"]:
+            return provider_name, config
+
+    # Then ids a discovering provider currently serves (#194), before prefixes,
+    # so a vLLM serving a `vendor/model` id isn't sent to OpenRouter. When two
+    # serve the same id, the first in config order wins (logged at refresh).
+    for provider_name, config in PROVIDERS.items():
+        ids = served_ids(provider_name)
+        if ids and model in ids:
             return provider_name, config
 
     # Then declared prefixes — vendor families like `anthropic/`, `z-ai/`, `~`
@@ -1567,13 +1643,34 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                      origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=400, detail=str(e))
 
-    if not model_in_tier(request.model, tier):
+    # A model rotated off one of the tier's automatic providers is not a tier
+    # violation; it falls through to the "not currently served" answer below.
+    rotated_out = (TIERS is not None and provider_name in (TIERS.get(tier) or {}).get("auto", ())
+                   and not model_available(request.model, provider_name))
+    if not rotated_out and not model_in_tier(request.model, tier):
         listed = ", ".join(m["id"] for m in tier_model_list(tier)) or "none"
         error_msg = (f"Model '{request.model}' is not available to {tier} apps. "
                      f"Available: {listed}.")
         log_response("disallowed", request.model, {}, 0, error=error_msg,
                      origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=403, detail=error_msg)
+
+    # A model its server isn't serving right now (#194): rotated out of a vLLM,
+    # or an id NRP doesn't have. Go straight to a fallback that is served, as if
+    # the server had refused the call, or tell the caller plainly.
+    served_model, refused, pending_routes = request.model, [], None
+    if not model_available(request.model, provider_name):
+        pending_routes = fallback_routes(request.model, tier)
+        if not pending_routes:
+            serving = ", ".join(sorted(served_ids(provider_name))) or "nothing"
+            error_msg = (f"Model '{request.model}' is not currently served by "
+                         f"{provider_name}, which serves: {serving}.")
+            log_response("unavailable", request.model, {}, 0, error=error_msg,
+                         origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+            raise HTTPException(status_code=404, detail=error_msg)
+        refused.append({"provider": provider_name, "model": request.model, "status": None,
+                        "error": "not currently served", "latency_ms": 0})
+        provider_name, provider_config, served_model = pending_routes.pop(0)
 
     counters = budget_counters(tier, key_name, client_ip, user)
     over = await check_budget(counters)
@@ -1605,10 +1702,10 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     # `as client` here shadowed it with the AsyncClient object, so json.dumps in
     # log_response raised and every response was silently dropped from S3 (#37).
     async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT) as http_client:
-        served_model, fallback_from, refused = request.model, None, []
+        fallback_from = refused[0] if refused else None
         try:
             endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
-            routes = None   # the fallback chain, looked up on the first refusal
+            routes = pending_routes   # the fallback chain, looked up on the first refusal
             while True:
                 try:
                     response = await http_client.post(endpoint, json=payload, headers=headers)
@@ -1781,6 +1878,57 @@ async def _fetch_provider_models(cfg: dict, client) -> tuple:
         return None, f"{type(e).__name__}: {e}"[:200]
 
 
+async def refresh_served() -> None:
+    """Poll every provider with `discover_models` (and a key) for what it serves
+    now (#194). Never raises; a provider that doesn't answer keeps its last
+    answer, or stays unknown."""
+    names = [n for n, c in PROVIDERS.items() if c.get("discover_models") and c.get("api_key")]
+    if not names:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            results = await asyncio.gather(
+                *(_fetch_provider_models(PROVIDERS[n], client) for n in names))
+    except Exception as e:
+        print(f"⚠️  Model discovery failed: {type(e).__name__}: {e}", flush=True)
+        return
+    now = datetime.utcnow().isoformat() + "Z"
+    for name, (ids, error) in zip(names, results):
+        previous = SERVED.get(name)
+        if ids is None:
+            if previous is not None and previous.get("error") != error:
+                print(f"⚠️  {name}: model list unavailable ({error}); keeping the last one",
+                      flush=True)
+            if previous is not None:
+                previous["error"] = error
+            continue
+        reverse = {up: mine for mine, up in PROVIDERS[name].get("model_aliases", {}).items()}
+        ids = frozenset(reverse.get(mid, mid) for mid in ids)
+        if previous is None or previous["ids"] != ids:
+            print(f"🔎 {name} serves: {', '.join(sorted(ids)) or 'nothing'}", flush=True)
+        SERVED[name] = {"ids": ids, "fetched_iso": now, "error": None}
+    owners = {}
+    for name in PROVIDERS:
+        for mid in served_ids(name) or ():
+            owners.setdefault(mid, []).append(name)
+    clashes = {m: o for m, o in owners.items() if len(o) > 1}
+    if clashes != _discovery_clashes:
+        for m, o in sorted(clashes.items()):
+            print(f"⚠️  {m!r} is served by {', '.join(o)}; routing it to {o[0]}. "
+                  "Use `model_aliases` to keep them apart.", flush=True)
+        _discovery_clashes.clear()
+        _discovery_clashes.update(clashes)
+
+
+_discovery_clashes: dict = {}
+
+
+async def _discovery_loop():
+    while True:
+        await asyncio.sleep(_DISCOVERY_INTERVAL)
+        await refresh_served()
+
+
 async def refresh_models(force: bool = False) -> dict:
     """Refresh the model cache if stale. Returns the cache."""
     now = time.monotonic()
@@ -1887,6 +2035,11 @@ async def health_check():
         name: {"configured": bool(config["api_key"]), "endpoint": config["endpoint"]}
         for name, config in PROVIDERS.items()
     }
+    for name, entry in SERVED.items():
+        providers_status[name]["serving"] = sorted(entry["ids"])
+        providers_status[name]["serving_as_of"] = entry["fetched_iso"]
+        if entry.get("error"):
+            providers_status[name]["discovery_error"] = entry["error"]
     return {
         # `status` is deliberately untouched by logging health: this endpoint
         # backs the liveness, readiness AND startup probes, and a logging fault
