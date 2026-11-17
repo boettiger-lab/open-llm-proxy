@@ -2381,7 +2381,7 @@ def test_shipped_tiers_extend_without_changing_their_lists():
     p = importlib.reload(llm_proxy)
     pub, prv, bench = (p.TIERS[t]["models"] for t in ("public", "private", "benchmark"))
     assert prv[:len(pub)] == pub and bench[:len(prv)] == prv
-    assert len(pub) == 11 and len(prv) == 23 and len(bench) == 27
+    assert len(pub) == 12 and len(prv) == 24 and len(bench) == 28
     assert {p.TIERS[t]["default_model"] for t in p.TIERS} == {"deepseek-v4-flash"}
 
 

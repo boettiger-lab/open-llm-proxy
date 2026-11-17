@@ -9,6 +9,11 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **DSE Nemotron 3.5 Lightning (`nemotron-3.5-lightning`).** Served on vllm-nimbus
+  (NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) and listed in the public tier beside the
+  other DSE models, so private and benchmark keys get it too. Thinking is on by default and
+  is switched with `enable_thinking`.
+
 - **Fallback chains, and fallback on a spent spending cap.** A `fallbacks` value can now be a
   list of substitutes, tried in order until one answers; a single model still works. A
   provider can set `fallback_statuses` to choose which of its error statuses move a call on
