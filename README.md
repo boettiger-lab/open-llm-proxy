@@ -88,6 +88,23 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
 - **The benchmark tier (#175).** The `glen-benchmark` key (`benchmark/glen-benchmark:<key>`) gets the private list plus the models glen-benchmark scores or judges with that no app offers. Its registry is `suite/models.yaml` and `suite/judges.yaml` in that repo, which can't edit this one, so screening a new candidate is a one-line PR adding it to `tiers.benchmark.models`. That does not offer it to any app. The tier has no budget limits, because a 429 midway through a matrix loses cells and the key works only in-cluster.
 - **Other deployments.** With no `tiers` key, every routable model is allowed. cirrus mounts its own config and is unaffected.
 
+**Served-model discovery and automatic tiers (#194).** Our own vLLM servers change which model they serve. A provider with `"discover_models": true` is asked what it serves every `DISCOVERY_INTERVAL_SECONDS` (default 60), and once before the proxy takes traffic. It is on for NRP and the DSE servers, and must never be on for OpenRouter or another paid aggregator.
+
+```json
+"tiers": {
+  "public": {
+    "models": ["deepseek-v4-flash", "glm-5", "kimi", "deepseek-nimbus"],
+    "auto": ["nimbus", "nimbus2", "gemma4-nimbus"]
+  }
+}
+```
+
+- **Automatic or manual, per provider.** A tier's `auto` providers contribute whatever they serve right now; when vllm-nimbus switches models, the tier follows with no config edit. Any other provider is manual: the tier gets only the ids in `models`, which is how public takes a subset of NRP. `auto` may name only providers with `discover_models` on, or the proxy stops at startup. It is inherited through `extends`.
+- **Routing.** An id a discovering provider serves routes to it, after the exact ids in `config.json` and before prefixes. If two serve the same id, the first in config order gets it and the startup log says so; keep them apart with `model_aliases`.
+- **Models not being served.** A listed model that its provider is known not to serve right now is left out of `GET /v1/models`, unless one of its `fallbacks` is served. A call for it goes straight to that fallback (logged with `fallback_from` and `"error": "not currently served"`), or gets a **404** that names what the provider does serve, logged with `provider: "unavailable"`.
+- **Never answered.** Until a provider's list has been fetched once, nothing about it is hidden or refused; if it stops answering, its last list is kept. `GET /health` shows each provider's current list as `serving`.
+- **Settings.** A discovered model has no `thinking_models` entry or `models` settings until one is added, so add those when a new model arrives that needs a thinking switch or a label.
+
 **Output caps.** Paid providers also cap output tokens (#150). `default_max_tokens` is sent when the client sends no `max_tokens`, and `max_tokens_ceiling` clamps a larger client value. Both are set per provider (32,768 on `openrouter` and `anthropic`). They are not set on NRP or nimbus, because vLLM rejects a request whose prompt plus `max_tokens` exceeds the model's context.
 
 ### Token budgets and the deny-list
