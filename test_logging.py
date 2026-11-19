@@ -16,14 +16,16 @@ import llm_proxy
 def _reload(**env):
     """Reload llm_proxy with the given env so module-level config is recomputed.
 
-    The test PROXY_KEY stands in for a benchmark caller, the widest shipped
-    tier: the shipped config puts the shared key on the public tier (see
-    test_shipped_shared_key_is_public), but most handler tests exercise
-    paid-provider paths with models private apps are no longer offered."""
+    The test PROXY_KEY stands in for a caller on a test-only tier that may
+    call any model: the shipped config puts the shared key on the public tier
+    (see test_shipped_shared_key_is_public), and most handler tests exercise
+    paid-provider paths with models no shipped tier offers."""
     for k, v in env.items():
         os.environ[k] = v
     p = importlib.reload(llm_proxy)
-    p.PRIMARY_KEY_TIER = "benchmark"
+    p.TIERS["test-any"] = {"default_model": None, "models": ("*",), "auto": (),
+                           "provider_overrides": {}}
+    p.PRIMARY_KEY_TIER = "test-any"
     return p
 
 
@@ -1834,6 +1836,7 @@ def test_disallowed_model_is_403_and_logged():
     import asyncio
     from fastapi import HTTPException
     p = _reload(PROXY_KEY="testkey")
+    p.PRIMARY_KEY_TIER = "private"
     p._log_buffer.clear()
 
     class _FakeRequest:
@@ -1844,7 +1847,7 @@ def test_disallowed_model_is_403_and_logged():
         asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
     except HTTPException as e:
         assert e.status_code == 403
-        assert "not available to benchmark apps" in e.detail
+        assert "not available to private apps" in e.detail
     else:
         raise AssertionError("disallowed model must be refused")
     rows = [e for e in p._log_buffer if e.get("type") == "response"]
@@ -2332,22 +2335,26 @@ def test_glen_app_header_logged_as_sanitised_label():
 
 
 
-def test_shipped_benchmark_tier_covers_private_and_registry():
-    """The glen-benchmark key's tier (#175) holds every public and private model
-    plus the benchmark's own candidates and judges, which no app tier offers. It
-    has no budget limits, so a long matrix is not cut off with a 429 midway."""
+def test_shipped_benchmark_tiers_split_free_from_paid():
+    """glen-benchmark's free runs (#175) use only NRP and DSE models, on the
+    `benchmark-free` tier; `benchmark` is a name for it until the key's line is
+    renamed. Paid OpenRouter models are on `benchmark-paid`, a separate key, so a
+    free run can never reach one. Neither tier has budget limits, so a long
+    matrix is not cut off with a 429 midway."""
     p = _reload(PROXY_KEY="testkey")
-    bench = set(p.TIERS["benchmark"]["models"])
-    assert set(p.TIERS["public"]["models"]) | set(p.TIERS["private"]["models"]) <= bench
-    only_bench = ("z-ai/glm-5.3-flash", "z-ai/glm-5.2", "xiaomi/mimo-v2.6-flash",
-                  "nvidia/nemotron-3.5-super-vl", "reflection/beam-1.0-501b-a23b")
-    listed = {m["id"]: m["provider"] for m in p.tier_model_list("benchmark")}
-    for model in only_bench:
-        assert p.model_in_tier(model, "benchmark"), model
-        assert not p.model_in_tier(model, "private"), model
-        assert listed[model] == "openrouter", model
-    assert p.budget_counters("benchmark", "glen-benchmark", "10.0.0.1", None) == []
-
+    free, paid = p.TIERS["benchmark-free"], p.TIERS["benchmark-paid"]
+    assert p.TIERS["benchmark"]["models"] == free["models"]
+    assert p.TIERS["benchmark"]["auto"] == free["auto"]
+    for m in p.tier_model_list("benchmark-free"):
+        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus"), m
+    for judge in ("deepseek-v4-flash", "glm-5", "qwen3"):   # glen's NRP judge panels
+        assert p.model_in_tier(judge, "benchmark-free"), judge
+    assert len(paid["models"]) == 9 and paid["auto"] == ()
+    assert not set(paid["models"]) & set(free["models"])
+    listed = {m["id"]: m["provider"] for m in p.tier_model_list("benchmark-paid")}
+    assert set(listed.values()) == {"openrouter-benchmark"}, listed
+    for tier in ("benchmark-free", "benchmark-paid", "benchmark"):
+        assert p.budget_counters(tier, "glen-benchmark", "10.0.0.1", None) == []
 
 def test_tier_extends_inherits_models_and_default():
     """`extends` puts the parent's models first, in order, then the tier's own;
@@ -2381,18 +2388,69 @@ def test_tier_extends_rejects_cycles_and_unknown_parents():
 
 
 def test_shipped_tiers_extend_without_changing_their_lists():
-    """private is a short list of its own; benchmark extends public and private
-    and keeps every model it had when private extended public."""
+    """private is a short list of its own and does not extend public."""
     p = importlib.reload(llm_proxy)
-    pub, prv, bench = (p.TIERS[t]["models"] for t in ("public", "private", "benchmark"))
+    pub, prv = (p.TIERS[t]["models"] for t in ("public", "private"))
     assert prv == ("deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash-1017:nitro",
                    "deepseek-v4-flash", "gemma", "deepseek-nimbus")
-    assert bench[:len(pub)] == pub and set(prv) <= set(bench)
-    assert len(pub) == 11 and len(bench) == 28
-    assert p.TIERS["private"]["auto"] == ()
-    assert p.TIERS["public"]["default_model"] == p.TIERS["benchmark"]["default_model"] == "deepseek-v4-flash"
+    assert len(pub) == 11 and p.TIERS["private"]["auto"] == ()
+    assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"
     assert p.TIERS["private"]["default_model"] == "deepseek/deepseek-v4.1-flash-1017"
 
+
+def test_provider_override_bills_one_tier_to_its_own_key():
+    """The same OpenRouter id goes to the benchmark's capped key for a
+    benchmark-paid caller and to the main key for a private one. With the
+    benchmark key unset, the call fails; it never falls back to the main key."""
+    import asyncio
+    from unittest.mock import patch
+    import pytest
+    p = _reload(PROXY_KEY="testkey")
+    model = "deepseek/deepseek-v4.1-flash-1017"
+    assert p.route_for_tier(model, "private")[0] == "openrouter"
+    assert p.route_for_tier(model, "benchmark-paid")[0] == "openrouter-benchmark"
+    assert p.route_for_tier("deepseek-v4-flash", "benchmark-paid")[0] == "nrp"
+    seen = []
+
+    class _Resp:
+        status_code, text, headers = 200, "", {}
+        def raise_for_status(self): pass
+        def json(self):
+            return {"model": model, "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    "choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    class _Client:
+        def __init__(self, *a, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, endpoint, json=None, headers=None):
+            seen.append(headers["Authorization"])
+            return _Resp()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    req = p.ChatRequest(model=model, messages=[{"role": "user", "content": "hi"}])
+    with patch.object(p.httpx, "AsyncClient", _Client), \
+         patch.dict(p.PROVIDERS["openrouter"], {"api_key": "main"}):
+        for tier, key in (("private", "main"), ("benchmark-paid", "capped")):
+            p.PRIMARY_KEY_TIER = tier
+            with patch.dict(p.PROVIDERS["openrouter-benchmark"], {"api_key": key if tier != "private" else None}):
+                asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+        assert seen == ["Bearer main", "Bearer capped"]
+        with patch.dict(p.PROVIDERS["openrouter-benchmark"], {"api_key": None}):
+            with pytest.raises(p.HTTPException) as ei:
+                asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+        assert ei.value.status_code == 500 and "OPENROUTER-BENCHMARK" in ei.value.detail
+        assert seen == ["Bearer main", "Bearer capped"]
+
+
+def test_provider_overrides_must_name_providers():
+    import pytest
+    p = importlib.reload(llm_proxy)
+    with pytest.raises(ValueError, match="not a provider"):
+        p.resolve_tiers({"providers": {"openrouter": {}}, "tiers": {
+            "t": {"models": ["x"], "provider_overrides": {"openrouter": "nope"}}}})
 
 def test_model_settings_in_models_list():
     """The top-level `models` map reaches GET /v1/models as `settings` on each

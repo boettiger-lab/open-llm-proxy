@@ -9,6 +9,18 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Free and paid benchmark tiers, the paid one on its own capped key.** `benchmark-free`
+  holds only NRP and DSE models (the set of glen-benchmark's free runs and NRP judges);
+  `benchmark` extends it until the `glen-benchmark` key's line is renamed. `benchmark-paid`
+  holds nine paid OpenRouter models for a separate `glen-benchmark-paid` key, and its calls go
+  to `openrouter-benchmark`, a second OpenRouter key with its own credit limit
+  (`OPENROUTER_BENCHMARK_KEY`, optional Secret `openrouter-benchmark-key`). The OpenRouter ids
+  the old `benchmark` tier held and neither new tier lists (GLM-5.2, GLM-5.3, Kimi K3, Claude
+  Sonnet 5, MiMo V2.6 Pro, the older DeepSeek V4 Flash ids, the `~` aliases) are dropped.
+
+- **`provider_overrides` on a tier** maps a provider to another for that tier's calls, so one
+  tier can reach the same model ids on its own key.
+
 - **OpenRouter's DeepSeek V4 Flash 1017 for public apps, on a capped key.** The public tier
   gains `deepseek-or`, an alias for `deepseek/deepseek-v4.1-flash-1017` served by a new
   `openrouter-public` provider on its own OpenRouter key (`OPENROUTER_PUBLIC_KEY`, optional
@@ -91,8 +103,7 @@ See [Releases](README.md#releases) for how a release is cut.
   OpenRouter's default price-weighted routing), the same model with `:nitro` (fastest
   providers first), NRP's `deepseek-v4-flash` and `gemma`, and DSE's `deepseek-nimbus`. The
   other OpenRouter models, the other NRP models and the automatic nimbus models leave the
-  private list. The benchmark tier now extends public and private and lists the models
-  private dropped, so it loses nothing (it gains `deepseek-or` and the `:nitro` id).
+  private list.
 
 - **A model whose provider has no API key goes to its fallbacks** instead of a 500, as an
   unserved model does (#194). The response row's `fallback_from.error` is `"no API key"`.
