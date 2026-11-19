@@ -2349,7 +2349,7 @@ def test_shipped_benchmark_tiers_split_free_from_paid():
         assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus"), m
     for judge in ("deepseek-v4-flash", "glm-5", "qwen3"):   # glen's NRP judge panels
         assert p.model_in_tier(judge, "benchmark-free"), judge
-    assert len(paid["models"]) == 9 and paid["auto"] == ()
+    assert len(paid["models"]) == 8 and paid["auto"] == ()
     assert not set(paid["models"]) & set(free["models"])
     listed = {m["id"]: m["provider"] for m in p.tier_model_list("benchmark-paid")}
     assert set(listed.values()) == {"openrouter-benchmark"}, listed
