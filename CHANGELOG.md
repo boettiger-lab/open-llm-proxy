@@ -12,11 +12,13 @@ See [Releases](README.md#releases) for how a release is cut.
 - **Free and paid benchmark tiers, the paid one on its own capped key.** `benchmark-free`
   holds only NRP and DSE models (the set of glen-benchmark's free runs and NRP judges);
   `benchmark` extends it until the `glen-benchmark` key's line is renamed. `benchmark-paid`
-  holds nine paid OpenRouter models for a separate `glen-benchmark-paid` key, and its calls go
+  holds eight paid OpenRouter models for a separate `glen-benchmark-paid` key, and its calls go
   to `openrouter-benchmark`, a second OpenRouter key with its own credit limit
   (`OPENROUTER_BENCHMARK_KEY`, optional Secret `openrouter-benchmark-key`). The OpenRouter ids
   the old `benchmark` tier held and neither new tier lists (GLM-5.2, GLM-5.3, Kimi K3, Claude
   Sonnet 5, MiMo V2.6 Pro, the older DeepSeek V4 Flash ids, the `~` aliases) are dropped.
+  `qwen/qwen3.8-flash` was proposed but left out: its only providers are not zero-data-retention,
+  and the benchmark key allows ZDR endpoints only.
 
 - **`provider_overrides` on a tier** maps a provider to another for that tier's calls, so one
   tier can reach the same model ids on its own key.

@@ -194,7 +194,6 @@
         "z-ai/glm-5.3-flash",
         "tencent/hy4-flash",
         "minimax/minimax-m3.1-flash",
-        "qwen/qwen3.8-flash",
         "openai/gpt-6-luna"
       ],
       "provider_overrides": {
