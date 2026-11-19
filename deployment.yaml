@@ -147,6 +147,23 @@ spec:
             secretKeyRef:
               name: openrouter-key
               key: OPENROUTER_KEY
+        # Capped OpenRouter key for the public tier's `deepseek-or`. Optional:
+        # without it, `deepseek-or` calls go to NRP and then DSE (its fallbacks).
+        - name: OPENROUTER_PUBLIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openrouter-public-key
+              key: OPENROUTER_PUBLIC_KEY
+              optional: true
+        # Capped OpenRouter key for the benchmark-paid tier, which routes its
+        # OpenRouter calls here (provider_overrides). Optional: without it, those
+        # calls fail with a missing-key 500 rather than reach the main key.
+        - name: OPENROUTER_BENCHMARK_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openrouter-benchmark-key
+              key: OPENROUTER_BENCHMARK_KEY
+              optional: true
         - name: NIMBUS_API_KEY
           valueFrom:
             secretKeyRef:

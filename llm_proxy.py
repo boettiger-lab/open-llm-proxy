@@ -669,6 +669,17 @@ def model_available(model: str, provider_name: str) -> bool:
     ids = served_ids(provider_name)
     return ids is None or model in ids
 
+
+def model_usable(model: str, provider_name: str) -> bool:
+    """True if a call for `model` can go to its own provider: the provider has an
+    API key and is not known to serve something else. A provider whose key isn't
+    set on this deployment (e.g. the capped public OpenRouter key before its
+    Secret exists) sends its calls straight to a fallback, as an unserved model
+    does. Listing is unchanged: a keyless model with no fallback still gets the
+    missing-key 500, which is the signal that a Secret is missing."""
+    cfg = PROVIDERS.get(provider_name) or {}
+    return bool(cfg.get("api_key")) and model_available(model, provider_name)
+
 # Provider that serves a model id matching no explicit entry.
 #
 # This was a hard-coded "nrp" for the life of the proxy, which is load-bearing on
@@ -740,6 +751,10 @@ NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVID
 # whatever they currently serve, so a rotating server needs no config edit. A
 # provider not in `auto` is manual, which is how a tier takes a subset of one
 # (e.g. some of NRP's models). `auto` is inherited through `extends` too.
+# `provider_overrides` maps a provider to another for this tier's calls, e.g.
+# {"openrouter": "openrouter-benchmark"}: the same OpenRouter ids, billed to the
+# benchmark's own capped key, while other tiers calling the same ids stay on the
+# main key. Routing is otherwise by model id alone. It is not inherited.
 # A model outside the caller's tier gets a 403; `GET /v1/models` returns the
 # tier's list, in order, with the default flagged. No `tiers` key -> every
 # routable model is allowed (cirrus and other deployments keep their behavior).
@@ -778,7 +793,14 @@ def resolve_tiers(cfg: dict):
                    or next((m for m in models if not m.endswith("*")), None))
         if default and default not in models:
             print(f"⚠️  tiers.{name}.default_model {default!r} is not in its models list")
-        out[name] = {"default_model": default, "models": tuple(models), "auto": tuple(auto)}
+        overrides = dict(spec.get("provider_overrides") or {})
+        for src, dst in overrides.items():
+            for prov in (src, dst):
+                if prov not in (cfg.get("providers") or {}):
+                    raise ValueError(f"tiers.{name}.provider_overrides names {prov!r}, "
+                                     "which is not a provider")
+        out[name] = {"default_model": default, "models": tuple(models), "auto": tuple(auto),
+                     "provider_overrides": overrides}
         return out[name]
 
     for name in tiers:
@@ -865,7 +887,7 @@ def tier_model_list(tier) -> list:
         if mid.endswith("*") or mid in seen:
             continue
         try:
-            provider = get_provider_for_model(mid)[0]
+            provider = route_for_tier(mid, tier)[0]
         except UnknownModelError:
             continue
         # A model its server isn't serving now is left out (#194), unless a call
@@ -976,7 +998,7 @@ def fallback_routes(model: str, tier: str) -> list:
         if not model_in_tier(alt, tier):
             continue
         try:
-            name, cfg = get_provider_for_model(alt)
+            name, cfg = route_for_tier(alt, tier)
         except UnknownModelError:
             continue
         if cfg.get("api_key") and model_available(alt, name):
@@ -1218,6 +1240,16 @@ if CACHE_SALT:
 else:
     print("ℹ️  CACHE_SALT not set - cached responses may be shared with other NRP users")
 print("=" * 60)
+
+def route_for_tier(model: str, tier) -> tuple[str, dict]:
+    """get_provider_for_model, then the tier's `provider_overrides`, so one tier
+    can reach a provider's models on its own key. Raises UnknownModelError."""
+    name, cfg = get_provider_for_model(model)
+    alt = ((TIERS or {}).get(tier) or {}).get("provider_overrides", {}).get(name)
+    if alt and alt in PROVIDERS:
+        return alt, PROVIDERS[alt]
+    return name, cfg
+
 
 def get_provider_for_model(model: str) -> tuple[str, dict]:
     """Route a model id to a provider: exact ids first, then declared prefixes,
@@ -1634,7 +1666,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
 
     # Determine provider based on model
     try:
-        provider_name, provider_config = get_provider_for_model(request.model)
+        provider_name, provider_config = route_for_tier(request.model, tier)
     except UnknownModelError as e:
         # Client asked for something this deployment doesn't serve. Log it against a
         # synthetic provider so the miss is visible in the logs (the request never
@@ -1656,21 +1688,25 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=403, detail=error_msg)
 
     # A model its server isn't serving right now (#194): rotated out of a vLLM,
-    # or an id NRP doesn't have. Go straight to a fallback that is served, as if
-    # the server had refused the call, or tell the caller plainly.
+    # or an id NRP doesn't have, or a provider whose API key isn't set here. Go
+    # straight to a fallback that is served, as if the server had refused the
+    # call, or tell the caller plainly (a 404 here, or the missing-key 500 below).
     served_model, refused, pending_routes = request.model, [], None
-    if not model_available(request.model, provider_name):
+    unserved = not model_available(request.model, provider_name)
+    if unserved or not model_usable(request.model, provider_name):
         pending_routes = fallback_routes(request.model, tier)
-        if not pending_routes:
-            serving = ", ".join(sorted(served_ids(provider_name))) or "nothing"
-            error_msg = (f"Model '{request.model}' is not currently served by "
-                         f"{provider_name}, which serves: {serving}.")
-            log_response("unavailable", request.model, {}, 0, error=error_msg,
-                         origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
-            raise HTTPException(status_code=404, detail=error_msg)
+    if pending_routes:
         refused.append({"provider": provider_name, "model": request.model, "status": None,
-                        "error": "not currently served", "latency_ms": 0})
+                        "error": "not currently served" if unserved else "no API key",
+                        "latency_ms": 0})
         provider_name, provider_config, served_model = pending_routes.pop(0)
+    elif unserved:
+        serving = ", ".join(sorted(served_ids(provider_name))) or "nothing"
+        error_msg = (f"Model '{request.model}' is not currently served by "
+                     f"{provider_name}, which serves: {serving}.")
+        log_response("unavailable", request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+        raise HTTPException(status_code=404, detail=error_msg)
 
     counters = budget_counters(tier, key_name, client_ip, user)
     over = await check_budget(counters)
