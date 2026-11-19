@@ -9,6 +9,13 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **OpenRouter's DeepSeek V4 Flash 1017 for public apps, on a capped key.** The public tier
+  gains `deepseek-or`, an alias for `deepseek/deepseek-v4.1-flash-1017` served by a new
+  `openrouter-public` provider on its own OpenRouter key (`OPENROUTER_PUBLIC_KEY`, optional
+  Secret `openrouter-public-key`) with a daily credit limit. When the limit is spent (402/403)
+  or the key isn't set, calls go to NRP's `deepseek-v4-flash` and then `deepseek-nimbus`.
+  NRP's `deepseek-v4-flash` stays the public default.
+
 - **Served-model discovery and automatic tiers (#194).** A provider with
   `discover_models` is asked what it serves every minute. Its served ids route to it, and
   a model it is known not to serve is left out of `GET /v1/models`; a call for one goes to
@@ -79,6 +86,17 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
+- **The private tier is trimmed to five models and no longer extends public.** Private apps
+  get OpenRouter's `deepseek/deepseek-v4.1-flash-1017` (now the private default, on
+  OpenRouter's default price-weighted routing), the same model with `:nitro` (fastest
+  providers first), NRP's `deepseek-v4-flash` and `gemma`, and DSE's `deepseek-nimbus`. The
+  other OpenRouter models, the other NRP models and the automatic nimbus models leave the
+  private list. The benchmark tier now extends public and private and lists the models
+  private dropped, so it loses nothing (it gains `deepseek-or` and the `:nitro` id).
+
+- **A model whose provider has no API key goes to its fallbacks** instead of a 500, as an
+  unserved model does (#194). The response row's `fallback_from.error` is `"no API key"`.
+
 - **Public token budgets raised 4-fold, to match private.** Per 4 hours of output: 4M per
   key, 1M per address, 1M per user (were 1M, 250k, 250k). On 2026-11-16 testing glen v4
   from one JupyterHub pod hit the 250k address limit (267k output tokens on NRP's

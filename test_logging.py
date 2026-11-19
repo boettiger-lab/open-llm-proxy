@@ -16,13 +16,14 @@ import llm_proxy
 def _reload(**env):
     """Reload llm_proxy with the given env so module-level config is recomputed.
 
-    The test PROXY_KEY stands in for a private caller: the shipped config puts
-    the shared key on the public tier (see test_shipped_shared_key_is_public),
-    but most handler tests exercise paid-provider paths."""
+    The test PROXY_KEY stands in for a benchmark caller, the widest shipped
+    tier: the shipped config puts the shared key on the public tier (see
+    test_shipped_shared_key_is_public), but most handler tests exercise
+    paid-provider paths with models private apps are no longer offered."""
     for k, v in env.items():
         os.environ[k] = v
     p = importlib.reload(llm_proxy)
-    p.PRIMARY_KEY_TIER = "private"
+    p.PRIMARY_KEY_TIER = "benchmark"
     return p
 
 
@@ -1316,7 +1317,7 @@ def _ds_request(p, **kw):
 
 def test_nrp_429_falls_back_to_deepseek_nimbus():
     p = _reload(PROXY_KEY="testkey")
-    assert p.FALLBACKS == {"deepseek-v4-flash": ("deepseek-nimbus",)}
+    assert p.FALLBACKS["deepseek-v4-flash"] == ("deepseek-nimbus",)
     p._log_buffer.clear()
     posts, run = _fallback_harness(p, primary_status=429)
     result = run(_ds_request(p, enable_thinking=True))
@@ -1843,7 +1844,7 @@ def test_disallowed_model_is_403_and_logged():
         asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
     except HTTPException as e:
         assert e.status_code == 403
-        assert "not available to private apps" in e.detail
+        assert "not available to benchmark apps" in e.detail
     else:
         raise AssertionError("disallowed model must be refused")
     rows = [e for e in p._log_buffer if e.get("type") == "response"]
@@ -2022,17 +2023,20 @@ def test_tier_lists_exact_prefix_and_unknown():
 def test_shipped_tiers_close_what_the_november_prober_reached():
     """The 2026-11-07 prober reached openai/gpt-5.6-sol and claude-opus-4-8
     through a public app's relay. Neither tier may reach them now, and the
-    public tier holds only lab-hosted models (NRP and DSE nimbus), never
-    paid third-party ones."""
+    public tier's only paid model is `deepseek-or`, on its own capped
+    OpenRouter key (openrouter-public), never the main one."""
     p = importlib.reload(llm_proxy)
     for tier in ("public", "private"):
         for model in ("openai/gpt-5.6-sol", "claude-opus-4-8", "openrouter/zzz-no-such-model"):
             assert not p.model_in_tier(model, tier), (tier, model)
     assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"
     for m in p.tier_model_list("public"):
-        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus"), m
-    assert p.model_in_tier("z-ai/glm-5.2", "private")
-    assert not p.model_in_tier("z-ai/glm-5.2", "public")
+        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus",
+                                 "openrouter-public"), m
+    shipped = json.load(open(os.path.join(os.path.dirname(__file__), "config.json")))
+    assert shipped["providers"]["openrouter-public"]["api_key_env"] == "OPENROUTER_PUBLIC_KEY"
+    assert not p.model_in_tier("deepseek/deepseek-v4.1-flash-1017", "public")
+    assert p.model_in_tier("deepseek/deepseek-v4.1-flash-1017", "private")
 
 
 def test_key_tier_from_prefix_and_defaults():
@@ -2090,8 +2094,9 @@ def test_models_endpoint_returns_the_callers_tier_list():
         assert pub["default_model"] == "deepseek-v4-flash"
         assert [m["id"] for m in pub["data"]][0] == "deepseek-v4-flash"
         assert sum(m["default"] for m in pub["data"]) == 1
-        assert "z-ai/glm-5.2" not in {m["id"] for m in pub["data"]}
-        assert "z-ai/glm-5.2" in {m["id"] for m in prv["data"]}
+        assert prv["default_model"] == "deepseek/deepseek-v4.1-flash-1017"
+        assert "deepseek/deepseek-v4.1-flash-1017" not in {m["id"] for m in pub["data"]}
+        assert "deepseek/deepseek-v4.1-flash-1017" in {m["id"] for m in prv["data"]}
     finally:
         del os.environ["PROXY_KEYS_EXTRA"]
         _reload(PROXY_KEY="testkey")
@@ -2328,13 +2333,13 @@ def test_glen_app_header_logged_as_sanitised_label():
 
 
 def test_shipped_benchmark_tier_covers_private_and_registry():
-    """The glen-benchmark key's tier (#175) holds every private model plus the
-    benchmark's own candidates and judges, which no app tier offers. It has no
-    budget limits, so a long matrix is not cut off with a 429 midway."""
+    """The glen-benchmark key's tier (#175) holds every public and private model
+    plus the benchmark's own candidates and judges, which no app tier offers. It
+    has no budget limits, so a long matrix is not cut off with a 429 midway."""
     p = _reload(PROXY_KEY="testkey")
     bench = set(p.TIERS["benchmark"]["models"])
-    assert set(p.TIERS["private"]["models"]) <= bench
-    only_bench = ("z-ai/glm-5.3-flash", "deepseek/deepseek-v4.1-flash-1017",
+    assert set(p.TIERS["public"]["models"]) | set(p.TIERS["private"]["models"]) <= bench
+    only_bench = ("z-ai/glm-5.3-flash", "z-ai/glm-5.2", "xiaomi/mimo-v2.6-flash",
                   "nvidia/nemotron-3.5-super-vl", "reflection/beam-1.0-501b-a23b")
     listed = {m["id"]: m["provider"] for m in p.tier_model_list("benchmark")}
     for model in only_bench:
@@ -2376,13 +2381,17 @@ def test_tier_extends_rejects_cycles_and_unknown_parents():
 
 
 def test_shipped_tiers_extend_without_changing_their_lists():
-    """private extends public and benchmark extends private. The resolved lists
-    are the ones written out in full before `extends` existed."""
+    """private is a short list of its own; benchmark extends public and private
+    and keeps every model it had when private extended public."""
     p = importlib.reload(llm_proxy)
     pub, prv, bench = (p.TIERS[t]["models"] for t in ("public", "private", "benchmark"))
-    assert prv[:len(pub)] == pub and bench[:len(prv)] == prv
-    assert len(pub) == 10 and len(prv) == 22 and len(bench) == 26
-    assert {p.TIERS[t]["default_model"] for t in p.TIERS} == {"deepseek-v4-flash"}
+    assert prv == ("deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash-1017:nitro",
+                   "deepseek-v4-flash", "gemma", "deepseek-nimbus")
+    assert bench[:len(pub)] == pub and set(prv) <= set(bench)
+    assert len(pub) == 11 and len(bench) == 28
+    assert p.TIERS["private"]["auto"] == ()
+    assert p.TIERS["public"]["default_model"] == p.TIERS["benchmark"]["default_model"] == "deepseek-v4-flash"
+    assert p.TIERS["private"]["default_model"] == "deepseek/deepseek-v4.1-flash-1017"
 
 
 def test_model_settings_in_models_list():
@@ -2547,6 +2556,50 @@ def test_unserved_model_goes_straight_to_a_served_fallback():
                                         "status": None, "error": "not currently served",
                                         "latency_ms": 0}
     p.SERVED.clear()
+
+
+def test_keyless_provider_goes_straight_to_its_fallback():
+    """`deepseek-or` runs on the capped public OpenRouter key. On a deployment
+    without that Secret, its calls go to NRP's deepseek, as an unserved model's
+    would, instead of a missing-key 500."""
+    from unittest.mock import patch
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    posts, run = _fallback_harness(p)
+    with patch.dict(p.PROVIDERS["openrouter-public"], {"api_key": None}):
+        result = run(p.ChatRequest(model="deepseek-or", messages=[{"role": "user", "content": "hi"}]))
+    assert len(posts) == 1 and "ellm.nrp" in posts[0][0]
+    assert posts[0][1]["model"] == "deepseek-v4-flash"
+    assert result["model"] == "deepseek-v4-flash"
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert resp[0]["provider"] == "nrp"
+    assert resp[0]["fallback_from"] == {"provider": "openrouter-public", "model": "deepseek-or",
+                                        "status": None, "error": "no API key", "latency_ms": 0}
+
+
+def test_capped_public_key_serves_the_1017_checkpoint_and_falls_back_on_a_spent_cap():
+    from unittest.mock import patch
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    posts, run = _fallback_harness(p, statuses={"openrouter.ai": 402})
+    with patch.dict(p.PROVIDERS["openrouter-public"], {"api_key": "capped"}):
+        run(p.ChatRequest(model="deepseek-or", messages=[{"role": "user", "content": "hi"}]))
+    assert posts[0][1]["model"] == "deepseek/deepseek-v4.1-flash-1017"   # upstream alias
+    assert "ellm.nrp" in posts[1][0]                                       # cap spent -> NRP
+    resp = [e for e in p._log_buffer if e["type"] == "response"]
+    assert resp[0]["provider"] == "nrp" and resp[0]["fallback_from"]["status"] == 402
+
+
+def test_private_nitro_variant_routes_to_openrouter_unchanged():
+    """OpenRouter's `:nitro` suffix (sort providers by throughput) is just part
+    of the model id: it routes by the `deepseek/` prefix and is sent as is."""
+    p = _reload(PROXY_KEY="testkey")
+    nitro = "deepseek/deepseek-v4.1-flash-1017:nitro"
+    assert p.model_in_tier(nitro, "private") and not p.model_in_tier(nitro, "public")
+    assert p.get_provider_for_model(nitro)[0] == "openrouter"
+    posts, run = _fallback_harness(p)
+    run(p.ChatRequest(model=nitro, messages=[{"role": "user", "content": "hi"}]))
+    assert "openrouter.ai" in posts[0][0] and posts[0][1]["model"] == nitro
 
 
 def test_refresh_served_aliases_keeps_last_answer_and_skips_keyless():

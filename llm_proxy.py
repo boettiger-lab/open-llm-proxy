@@ -669,6 +669,17 @@ def model_available(model: str, provider_name: str) -> bool:
     ids = served_ids(provider_name)
     return ids is None or model in ids
 
+
+def model_usable(model: str, provider_name: str) -> bool:
+    """True if a call for `model` can go to its own provider: the provider has an
+    API key and is not known to serve something else. A provider whose key isn't
+    set on this deployment (e.g. the capped public OpenRouter key before its
+    Secret exists) sends its calls straight to a fallback, as an unserved model
+    does. Listing is unchanged: a keyless model with no fallback still gets the
+    missing-key 500, which is the signal that a Secret is missing."""
+    cfg = PROVIDERS.get(provider_name) or {}
+    return bool(cfg.get("api_key")) and model_available(model, provider_name)
+
 # Provider that serves a model id matching no explicit entry.
 #
 # This was a hard-coded "nrp" for the life of the proxy, which is load-bearing on
@@ -1656,21 +1667,25 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=403, detail=error_msg)
 
     # A model its server isn't serving right now (#194): rotated out of a vLLM,
-    # or an id NRP doesn't have. Go straight to a fallback that is served, as if
-    # the server had refused the call, or tell the caller plainly.
+    # or an id NRP doesn't have, or a provider whose API key isn't set here. Go
+    # straight to a fallback that is served, as if the server had refused the
+    # call, or tell the caller plainly (a 404 here, or the missing-key 500 below).
     served_model, refused, pending_routes = request.model, [], None
-    if not model_available(request.model, provider_name):
+    unserved = not model_available(request.model, provider_name)
+    if unserved or not model_usable(request.model, provider_name):
         pending_routes = fallback_routes(request.model, tier)
-        if not pending_routes:
-            serving = ", ".join(sorted(served_ids(provider_name))) or "nothing"
-            error_msg = (f"Model '{request.model}' is not currently served by "
-                         f"{provider_name}, which serves: {serving}.")
-            log_response("unavailable", request.model, {}, 0, error=error_msg,
-                         origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
-            raise HTTPException(status_code=404, detail=error_msg)
+    if pending_routes:
         refused.append({"provider": provider_name, "model": request.model, "status": None,
-                        "error": "not currently served", "latency_ms": 0})
+                        "error": "not currently served" if unserved else "no API key",
+                        "latency_ms": 0})
         provider_name, provider_config, served_model = pending_routes.pop(0)
+    elif unserved:
+        serving = ", ".join(sorted(served_ids(provider_name))) or "nothing"
+        error_msg = (f"Model '{request.model}' is not currently served by "
+                     f"{provider_name}, which serves: {serving}.")
+        log_response("unavailable", request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+        raise HTTPException(status_code=404, detail=error_msg)
 
     counters = budget_counters(tier, key_name, client_ip, user)
     over = await check_budget(counters)

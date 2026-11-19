@@ -66,8 +66,9 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
 ```json
 "tiers": {
   "public":    {"default_model": "deepseek-v4-flash", "models": ["deepseek-v4-flash", "qwen3", ...]},
-  "private":   {"extends": "public",  "models": ["z-ai/glm-5.2", ...]},
-  "benchmark": {"extends": "private", "models": ["z-ai/glm-5.3-flash", ...]}
+  "private":   {"default_model": "deepseek/deepseek-v4.1-flash-1017",
+                "models": ["deepseek/deepseek-v4.1-flash-1017", "deepseek-v4-flash", ...]},
+  "benchmark": {"extends": ["public", "private"], "models": ["z-ai/glm-5.3-flash", ...]}
 },
 "models": {
   "deepseek-v4-flash": {"label": "NRP DeepSeek V4 Flash"},
@@ -80,9 +81,10 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
   - The legacy shared `PROXY_KEY` is `private` (`primary_key_tier`) only while the apps move to their own keys. Set it to `public`, or revoke it, once they have.
 - **Requests.** A model outside the caller's tier gets a **403** that lists what the tier offers, and is logged with `provider: "disallowed"` and `tier`.
 - **The model list.** `GET /v1/models` returns the caller's tier list in order, flagging `default` on one entry and adding `default_model`. Entries carry `settings` from the `models` map. It doesn't fetch the upstream catalogs.
-- **Why public is lab-hosted only.** Public apps are open relays: anyone can POST to their `/api/llm/`. That's how the November 2026 prober reached the proxy. So the public list holds only NRP- and DSE-hosted models, never paid ones.
+- **Why public is mostly lab-hosted.** Public apps are open relays: anyone can POST to their `/api/llm/`. That's how the November 2026 prober reached the proxy. So the public list holds NRP- and DSE-hosted models, plus one paid model, `deepseek-or` (OpenRouter's DeepSeek V4 Flash 1017 checkpoint), which runs on its own OpenRouter key with a daily credit limit (`openrouter-public`, see [Fallback models](#fallback-models)). Once the limit is spent, or on a deployment without that key, its calls go to NRP's `deepseek-v4-flash` and then DSE's. Never put a model on the main `OPENROUTER_KEY` in the public tier.
+- **The private list is short on purpose.** Private apps get OpenRouter's DeepSeek V4 Flash 1017 checkpoint (the default, with OpenRouter's default price-weighted provider routing), the same model with `:nitro` (OpenRouter sorts its providers by throughput, at a higher price), and NRP's `deepseek-v4-flash` and `gemma` and DSE's `deepseek-nimbus`. It does not extend public.
 - **`extends`.** A tier that extends another (or a list of others) gets the parent's models first, in order, then its own. It inherits the parent's `default_model` unless it sets one. Unknown parents and cycles stop the proxy at startup.
-- **Adding a model.** To offer a new model to every private app, add one line to `tiers.private.models`. A public model reaches private and benchmark too, through `extends`.
+- **Adding a model.** To offer a new model to every private app, add one line to `tiers.private.models`. A public or private model reaches the benchmark tier too, through `extends`; private does not inherit public.
 - **Adding a tier.** Add a block to `tiers`, usually extending an existing one, and give a key the prefix `<tier>/` in the keys file. Add budget limits for it under `budgets` if it needs any; a tier with none has no limit.
 - **Model settings.** The top-level `models` map holds settings for each model id that a client applies: `label`, `temperature`, `top_p`, `seed`, `max_tokens`, `llm_timeout_seconds`, `reasoning_toggle`, `reasoning_default` and `prompt_cache`, with the meanings of glen's `llm_models` fields. `GET /v1/models` returns them as `settings` on each entry. They are defaults for the client, not limits: an app's own `llm_models` entry overrides them, and the proxy enforces nothing from them. Other keys pass through with a startup warning. Limits the proxy does enforce stay on the provider, as below.
 - **The benchmark tier (#175).** The `glen-benchmark` key (`benchmark/glen-benchmark:<key>`) gets the private list plus the models glen-benchmark scores or judges with that no app offers. Its registry is `suite/models.yaml` and `suite/judges.yaml` in that repo, which can't edit this one, so screening a new candidate is a one-line PR adding it to `tiers.benchmark.models`. That does not offer it to any app. The tier has no budget limits, because a 429 midway through a matrix loses cells and the key works only in-cluster.
@@ -158,21 +160,21 @@ When the backend for a model refuses a call, the proxy retries it on substitutes
 - **What moves on:** a status in the refusing provider's `fallback_statuses` (default 429, 500, 502, 503 and 504), or no connection at all. Any other 4xx is the request's own fault and is returned. A read timeout is returned too, because the caller has already waited.
 - **The list is the whole chain.** A substitute's own `fallbacks` entry is not followed.
 - **Skipped substitutes:** one outside the caller's tier, one that routes nowhere, or one whose provider has no API key.
-- **Spending caps.** An OpenRouter key with a credit limit refuses calls once the limit is spent, with a 402 or 403. Give that key its own provider and add those statuses to its `fallback_statuses`, and callers move on to NRP or DSE instead of seeing the error. For example, a public-tier DeepSeek on its own capped key:
+- **Spending caps.** An OpenRouter key with a credit limit refuses calls once the limit is spent, with a 402 or 403. Give that key its own provider and add those statuses to its `fallback_statuses`, and callers move on to NRP or DSE instead of seeing the error. The shipped config does this for the public tier's DeepSeek:
 
   ```json
   "openrouter-public": {
     "endpoint": "https://openrouter.ai/api/v1/chat/completions",
     "api_key_env": "OPENROUTER_PUBLIC_KEY",
     "models": ["deepseek-or"],
-    "model_aliases": {"deepseek-or": "deepseek/deepseek-v4-flash"},
+    "model_aliases": {"deepseek-or": "deepseek/deepseek-v4.1-flash-1017"},
     "model_prefixes": [],
     "fallback_statuses": [402, 403, 429, 500, 502, 503, 504],
     "max_tokens_ceiling": 32768
   }
   ```
 
-  The alias keeps this key apart from the private tier's `deepseek/deepseek-v4-flash`, which stays on `OPENROUTER_KEY`. The cap is set on the key at OpenRouter; the proxy's token budgets still apply per tier, whichever backend answers.
+  The alias keeps this key apart from the private tier's `deepseek/deepseek-v4.1-flash-1017`, which stays on `OPENROUTER_KEY`. The cap is set on the key at OpenRouter (a $5 limit that resets daily); the proxy's token budgets still apply per tier, whichever backend answers. The key lives in the optional Secret `openrouter-public-key` (field `OPENROUTER_PUBLIC_KEY`). Without it, a model whose provider has no key goes straight to its fallbacks, logged with `fallback_from.error: "no API key"`; a keyless model with no fallback still gets a 500 that names the missing key.
 - **Logs:** the response row names the backend that answered. `fallback_from` holds the first refused attempt, and `fallback_attempts` lists every refused attempt when there was more than one.
 
 ### Thinking mode
