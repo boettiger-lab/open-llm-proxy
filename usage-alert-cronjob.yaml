@@ -1,0 +1,69 @@
+# Usage alert (#165): every 10 minutes, compare each key's, address's and
+# user's output tokens over the budget window with the levels in config.json
+# `alerts`, and post to Slack when one jumps and again when it settles. Reads
+# the budget counters in this namespace's open-llm-proxy-redis; see
+# usage_alert.py and README "Usage alerts".
+#
+# Needs the `slack-alert-webhook` Secret in this namespace (key
+# SLACK_WEBHOOK_URL), the same incoming webhook the glen-ops watchdogs use.
+# Without it the Job fails to start, which is visible in `kubectl get jobs`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: usage-alert
+  labels:
+    app: usage-alert
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          priorityClassName: opportunistic
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: feature.node.kubernetes.io/pci-10de.present
+                        operator: NotIn
+                        values: ["true"]
+          initContainers:
+            - name: git-sync
+              image: alpine/git:latest
+              command: ["sh", "-c", "git clone --depth 1 https://github.com/boettiger-lab/open-llm-proxy.git /app"]
+              volumeMounts:
+                - { name: app-code, mountPath: /app }
+              resources:
+                requests: { cpu: "50m", memory: "64Mi" }
+                limits:   { cpu: "500m", memory: "256Mi" }
+          containers:
+            - name: usage-alert
+              image: python:3.12-slim
+              workingDir: /app
+              command: ["sh", "-c", "pip install --quiet --no-cache-dir redis==5.2.1 && exec python usage_alert.py"]
+              env:
+                - name: POD_NAMESPACE
+                  valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+                - name: REDIS_PASSWORD
+                  valueFrom: { secretKeyRef: { name: open-llm-proxy-secrets, key: redis-password } }
+                - name: BUDGET_REDIS_URL
+                  value: "redis://:$(REDIS_PASSWORD)@open-llm-proxy-redis.$(POD_NAMESPACE).svc.cluster.local:6379/0"
+                - name: SLACK_WEBHOOK_URL
+                  valueFrom: { secretKeyRef: { name: slack-alert-webhook, key: SLACK_WEBHOOK_URL } }
+              volumeMounts:
+                - { name: app-code, mountPath: /app }
+              resources:
+                requests: { cpu: "50m", memory: "128Mi" }
+                limits:   { cpu: "500m", memory: "256Mi" }
+          volumes:
+            - name: app-code
+              emptyDir: {}

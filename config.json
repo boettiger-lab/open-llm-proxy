@@ -245,5 +245,11 @@
       "public": 1000000,
       "private": 1000000
     }
+  },
+  "alerts": {
+    "per_key": 1000000,
+    "per_client": 250000,
+    "per_user": 250000,
+    "repeat_hours": 24
   }
 }

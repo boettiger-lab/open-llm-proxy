@@ -9,6 +9,11 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Slack alert when one key's, address's or user's usage jumps (#165).** The `usage-alert`
+  CronJob reads the budget counters every 10 minutes and posts when output tokens over the
+  4-hour window pass `config.json` `alerts` (1M per key, 250k per address or user, a quarter
+  of each budget), again if usage doubles or a day passes, and when it settles. Needs the
+  `slack-alert-webhook` Secret in the namespace.
 - **Request size on each request log row (#164).** `request_bytes` (from `Content-Length`),
   `input_chars` (text in `messages`, including tool-call arguments) and `tools_chars` (the
   serialized `tools` schemas), so limits on oversized requests can be set from measured

@@ -20,5 +20,7 @@ jobs:
         run: pip install -r requirements.txt pytest
       - name: Run logging/scrubbing tests
         run: python test_logging.py
+      - name: Run usage alert tests
+        run: python test_usage_alert.py
       - name: Syntax-check the historical scrub job
         run: python -m py_compile scrub.py scrub-historical-logs.py

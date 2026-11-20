@@ -153,6 +153,21 @@ kubectl -n biodiversity create configmap open-llm-proxy-denylist \
 - **What a blocked caller sees:** a bare 403, logged with `provider: "blocked"`.
 - **Finding an entry:** use the hashes as they appear in the logs. The same salt hashes the address and the user, so the raw values are never needed.
 
+### Usage alerts
+
+**The alert (#165).** The `usage-alert` CronJob (`usage-alert-cronjob.yaml`, every 10 minutes) reads the budget counters in Redis and posts to the lab's Slack alert channel when one key, address or user goes over its level in `config.json` `alerts`. It posts again only when that usage doubles or a day passes, and once more when it falls back under. Budgets cut a caller off; an alert says to go and look while there is still room.
+
+| Level | Counts | Alert at | Budget |
+|---|---|---|---|
+| `per_key` | an app or job | 1M | 4M |
+| `per_client` | a visitor's address | 250k | 1M |
+| `per_user` | a signed-in user | 250k | 1M |
+
+- **Output tokens over the budget window** (4 hours), the same counters the budgets use, so tiers without budgets (the benchmark tiers) are never counted or alerted on.
+- **The levels** come from the 30 days to 2026-11-18: the busiest 4 hours of any app key was 198k output tokens (global-30x30), and a heavy single user about 71k. So each level is 3 to 5 times the highest normal use and a quarter of its budget. Change them in `config.json` as traffic grows.
+- **Reading an alert.** A key alert alone, with no address alert, is likely many people on one app: real growth, so raise `budgets.per_key` before they reach it. An address or user alert is one caller: look at their sessions in the logs (`client_ip` or `user` hash), and if it is abuse, add the line the alert names to the [deny-list](#token-budgets-and-the-deny-list). A key that has leaked or is being misused: [revoke it](#client-keys) and issue the app a new one.
+- **Setup.** The Job needs the `slack-alert-webhook` Secret (key `SLACK_WEBHOOK_URL`) in its namespace. Run `DRY_RUN=1 python usage_alert.py` with `BUDGET_REDIS_URL` set to see what it would post. Redis keeps no state on disk, so a Redis restart forgets open alerts and re-posts any still over their level.
+
 ### Fallback models
 
 When the backend for a model refuses a call, the proxy retries it on substitutes named in `config.json` `fallbacks`, in order. A value is one model or a list:
