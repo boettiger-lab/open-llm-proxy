@@ -166,6 +166,7 @@
     },
     "benchmark-free": {
       "default_model": "deepseek-v4-flash",
+      "upstream_timeout_seconds": 14400,
       "models": [
         "deepseek-v4-flash",
         "glm-5",
@@ -186,6 +187,7 @@
     },
     "benchmark-paid": {
       "default_model": "deepseek/deepseek-v4.1-flash-1017",
+      "upstream_timeout_seconds": 14400,
       "models": [
         "deepseek/deepseek-v4.1-flash-1017",
         "nvidia/nemotron-3.5-super-vl",

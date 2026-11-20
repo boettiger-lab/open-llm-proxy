@@ -88,6 +88,7 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
 - **`extends`.** A tier that extends another (or a list of others) gets the parent's models first, in order, then its own. It inherits the parent's `default_model` unless it sets one. Unknown parents and cycles stop the proxy at startup.
 - **Adding a model.** To offer a new model to every private app, add one line to `tiers.private.models`. Private does not inherit public, and the benchmark tiers inherit neither.
 - **`provider_overrides`.** A tier can map a provider to another for its own calls, e.g. `{"openrouter": "openrouter-benchmark"}`: the same model ids, billed to a different key. Routing is otherwise by model id alone, so this is the only way for two tiers to reach one id on different keys. It is not inherited through `extends`.
+- **`upstream_timeout_seconds`.** A tier can set its own budget for each upstream call, in place of the deployment's `UPSTREAM_TIMEOUT_SECONDS` (see [No streaming](#no-streaming-by-design)). Both benchmark tiers set 14400 (4 hours, #190) to match glen-benchmark's per-call budget; apps cap their own calls far lower, so they keep the 20-minute default. It is inherited through `extends`, and only `read` changes.
 - **Adding a tier.** Add a block to `tiers`, usually extending an existing one, and give a key the prefix `<tier>/` in the keys file. Add budget limits for it under `budgets` if it needs any; a tier with none has no limit.
 - **Model settings.** The top-level `models` map holds settings for each model id that a client applies: `label`, `temperature`, `top_p`, `seed`, `max_tokens`, `llm_timeout_seconds`, `reasoning_toggle`, `reasoning_default` and `prompt_cache`, with the meanings of glen's `llm_models` fields. `GET /v1/models` returns them as `settings` on each entry. They are defaults for the client, not limits: an app's own `llm_models` entry overrides them, and the proxy enforces nothing from them. Other keys pass through with a startup warning. Limits the proxy does enforce stay on the provider, as below.
 - **The benchmark tiers (#175).** glen-benchmark runs free and paid models on separate keys, so a run's spend is always deliberate and attributable.
@@ -226,6 +227,11 @@ which is why only OpenRouter has logged successes past 1700s.
 Raising it does not lift every ceiling — the lowest hop wins. For nimbus- and
 cirrus-backed models, Traefik's `responseHeaderTimeout: 600s` in `boettiger-lab/k8s` is
 still the binding cap (boettiger-lab/k8s#42).
+
+A tier can replace the budget for its own calls with `upstream_timeout_seconds`. The two
+benchmark tiers set 4 hours (#190), since glen-benchmark's runner gives each call that long
+and calls the Service directly, with no app sidecar in between. The provider-side hops
+above still apply to those calls.
 
 ## Logging
 

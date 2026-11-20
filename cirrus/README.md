@@ -38,7 +38,7 @@ not to point these manifests at a branch.
 | Namespace | `biodiversity` | `llm-proxy` |
 | Providers | nrp ELLM, OpenRouter, Anthropic, nimbus, gemma4-nimbus, vllm-cirrus | **OpenRouter + DSE-nimbus only** |
 | Ingress / CORS | none (old HAProxy manifest in `../archive/ingress.yaml`) | Traefik `Middleware` CRD (`middleware.yaml`) |
-| Log store | NRP Ceph `s3://logs-open-llm-proxy` | in-cluster MinIO `s3://logs-open-llm-proxy` |
+| Log store | NRP rustfs `s3://logs-open-llm-proxy` | lab RustFS (`s3.carlboettiger.info`) `s3://logs-open-llm-proxy` |
 | Log tiers | raw JSONL → daily Parquet → monthly Parquet + `sessions/**` | **raw JSONL only** (see below) |
 | Replicas | 3, spread across nodes | 2, pinned to `cirrus` |
 
@@ -108,7 +108,7 @@ kubectl -n llm-proxy create secret generic openrouter-key \
 kubectl -n llm-proxy create secret generic nimbus-api-key \
   --from-literal=NIMBUS_API_KEY='...'
 
-# MinIO service account for the log bucket (see next section)
+# Service account for the log bucket (see next section)
 kubectl -n llm-proxy create secret generic logs-s3 \
   --from-literal=AWS_ACCESS_KEY_ID='llm-proxy-logs' \
   --from-literal=AWS_SECRET_ACCESS_KEY='...'
@@ -121,11 +121,13 @@ kubectl -n llm-proxy get secret open-llm-proxy-secrets \
   -o jsonpath='{.data.proxy-key}' | base64 -d; echo
 ```
 
-## Log bucket + MinIO service account (one time)
+## Log bucket and service account (one time)
 
-Logs go to the in-cluster MinIO mirror, in a **private** bucket, written by a
-service account scoped to that bucket alone — not the MinIO root user. Created
-via `mc` inside the MinIO pod:
+Logs go to the lab's object store, in a **private** bucket, written by a
+service account scoped to that bucket alone, not the root user. The bucket, user
+and policy were created on the old in-cluster MinIO with `mc`, as below, and
+carried over unchanged when RustFS replaced it on 2026-11-18 (boettiger-lab/k8s#177).
+To recreate them on RustFS, use its own admin tools with the same policy:
 
 ```bash
 POD=$(kubectl -n minio get pod -l k8s-app=minio-app -o name | head -1)
@@ -160,7 +162,7 @@ logs-open-llm-proxy/
     └── ...
 ```
 
-MinIO is reachable at `https://minio.carlboettiger.info` from outside the
+The store is reachable at `https://s3.carlboettiger.info` from outside the
 cluster:
 
 ```bash
@@ -168,9 +170,9 @@ export AWS_ACCESS_KEY_ID=llm-proxy-logs
 export AWS_SECRET_ACCESS_KEY=...       # from the logs-s3 secret
 
 duckdb -s "
-CREATE SECRET minio (TYPE S3, KEY_ID getenv('AWS_ACCESS_KEY_ID'),
+CREATE SECRET lab_s3 (TYPE S3, KEY_ID getenv('AWS_ACCESS_KEY_ID'),
                      SECRET getenv('AWS_SECRET_ACCESS_KEY'),
-                     ENDPOINT 'minio.carlboettiger.info', URL_STYLE 'path');
+                     ENDPOINT 's3.carlboettiger.info', URL_STYLE 'path');
 SELECT timestamp, model, user_message_this_turn, latency_ms
 FROM read_ndjson_auto('s3://logs-open-llm-proxy/2026-*/*.jsonl', union_by_name=true)
 ORDER BY timestamp DESC LIMIT 20;

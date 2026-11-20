@@ -2684,3 +2684,38 @@ def test_refresh_served_aliases_keeps_last_answer_and_skips_keyless():
         assert p.served_ids("nimbus") == {"nemotron-3.5-lightning"}  # last good answer kept
         assert p.SERVED["nimbus"]["error"] == "ReadTimeout"
     p.SERVED.clear()
+
+
+# ---------------------------------------------------------------------------
+# Per-tier upstream timeout (#190)
+# ---------------------------------------------------------------------------
+
+def test_tier_upstream_timeout_overrides_default_and_is_inherited():
+    cfg = {"providers": {}, "tiers": {
+        "public": {"models": ["a"]},
+        "bench": {"models": ["a"], "upstream_timeout_seconds": 14400},
+        "bench-child": {"extends": "bench", "models": ["b"]},
+        "bench-short": {"extends": "bench", "upstream_timeout_seconds": 60},
+    }}
+    t = llm_proxy.resolve_tiers(cfg)
+    assert t["public"]["upstream_timeout_seconds"] is None
+    assert t["bench"]["upstream_timeout_seconds"] == 14400.0
+    assert t["bench-child"]["upstream_timeout_seconds"] == 14400.0
+    assert t["bench-short"]["upstream_timeout_seconds"] == 60.0
+
+
+def test_tier_upstream_timeout_must_be_positive():
+    import pytest
+    with pytest.raises(ValueError):
+        llm_proxy.resolve_tiers({"providers": {}, "tiers": {
+            "x": {"models": ["a"], "upstream_timeout_seconds": 0}}})
+
+
+def test_upstream_timeout_for_tier_changes_read_only():
+    p = _reload(PROXY_KEY="testkey")
+    assert p.upstream_timeout_for_tier("public") is p._UPSTREAM_TIMEOUT
+    assert p.upstream_timeout_for_tier("no-such-tier") is p._UPSTREAM_TIMEOUT
+    for tier in ("benchmark-free", "benchmark-paid"):
+        t = p.upstream_timeout_for_tier(tier)
+        assert t.read == 14400.0, tier
+        assert (t.connect, t.write, t.pool) == (30.0, 30.0, 30.0)

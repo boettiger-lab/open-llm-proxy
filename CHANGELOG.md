@@ -9,6 +9,11 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **A per-tier upstream timeout, 4 hours for the benchmark tiers (#190).** A tier's
+  `upstream_timeout_seconds` replaces `UPSTREAM_TIMEOUT_SECONDS` (default 1200) for its calls
+  and is inherited through `extends`. `benchmark-free` and `benchmark-paid` set 14400 to match
+  glen-benchmark's per-call budget (glen-benchmark#120); every other tier keeps 20 minutes.
+  Only the `read` timeout changes.
 - **Free and paid benchmark tiers, the paid one on its own capped key.** `benchmark-free`
   holds only NRP and DSE models (the set of glen-benchmark's free runs and NRP judges);
   `benchmark` extends it until the `glen-benchmark` key's line is renamed. `benchmark-paid`
@@ -100,6 +105,9 @@ See [Releases](README.md#releases) for how a release is cut.
   stays attributable when several apps share one namespace key. A label, not authentication.
 
 ### Changed
+- **The cirrus README names the lab's object store `s3.carlboettiger.info` (#196).** The
+  office MinIO became a RustFS server on 2026-11-18, and the `minio.carlboettiger.info` alias
+  will be retired.
 - **The private tier is trimmed to five models and no longer extends public.** Private apps
   get OpenRouter's `deepseek/deepseek-v4.1-flash-1017` (now the private default, on
   OpenRouter's default price-weighted routing), the same model with `:nitro` (fastest
