@@ -2337,14 +2337,12 @@ def test_glen_app_header_logged_as_sanitised_label():
 
 def test_shipped_benchmark_tiers_split_free_from_paid():
     """glen-benchmark's free runs (#175) use only NRP and DSE models, on the
-    `benchmark-free` tier; `benchmark` is a name for it until the key's line is
-    renamed. Paid OpenRouter models are on `benchmark-paid`, a separate key, so a
+    `benchmark-free` tier. Paid OpenRouter models are on `benchmark-paid`, a separate key, so a
     free run can never reach one. Neither tier has budget limits, so a long
     matrix is not cut off with a 429 midway."""
     p = _reload(PROXY_KEY="testkey")
     free, paid = p.TIERS["benchmark-free"], p.TIERS["benchmark-paid"]
-    assert p.TIERS["benchmark"]["models"] == free["models"]
-    assert p.TIERS["benchmark"]["auto"] == free["auto"]
+    assert "benchmark" not in p.TIERS          # the transitional alias is gone
     for m in p.tier_model_list("benchmark-free"):
         assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus"), m
     for judge in ("deepseek-v4-flash", "glm-5", "qwen3"):   # glen's NRP judge panels
@@ -2353,7 +2351,7 @@ def test_shipped_benchmark_tiers_split_free_from_paid():
     assert not set(paid["models"]) & set(free["models"])
     listed = {m["id"]: m["provider"] for m in p.tier_model_list("benchmark-paid")}
     assert set(listed.values()) == {"openrouter-benchmark"}, listed
-    for tier in ("benchmark-free", "benchmark-paid", "benchmark"):
+    for tier in ("benchmark-free", "benchmark-paid"):
         assert p.budget_counters(tier, "glen-benchmark", "10.0.0.1", None) == []
 
 def test_tier_extends_inherits_models_and_default():
@@ -2527,7 +2525,7 @@ def test_shipped_config_discovers_only_self_hosted_providers():
     assert p.PROVIDERS["nrp"]["discover_models"] and p.PROVIDERS["nimbus"]["discover_models"]
     assert "nrp" not in p.TIERS["public"]["auto"]          # NRP is a curated subset
     assert set(p.TIERS["public"]["auto"]) <= {"nimbus", "nimbus2", "gemma4-nimbus"}
-    assert p.TIERS["benchmark"]["auto"] == p.TIERS["public"]["auto"]
+    assert p.TIERS["benchmark-free"]["auto"] == p.TIERS["public"]["auto"]
 
 
 def test_discovered_ids_route_before_prefixes():
@@ -2545,7 +2543,7 @@ def test_automatic_tier_follows_what_the_server_serves():
             nrp={"deepseek-v4-flash", "glm-5", "kimi", "qwen3", "qwen3-small", "gpt-oss",
                  "minimax-m2", "gemma", "gemma-small", "cuda", "kubernetes"})
     assert p.model_in_tier("nemotron-3.5-lightning", "public")
-    assert p.model_in_tier("nemotron-3.5-lightning", "benchmark")     # through extends
+    assert p.model_in_tier("nemotron-3.5-lightning", "benchmark-free")
     assert not p.model_in_tier("qwen", "public")                      # rotated out
     assert not p.model_in_tier("cuda", "public")                      # NRP is manual
     ids = [m["id"] for m in p.tier_model_list("public")]

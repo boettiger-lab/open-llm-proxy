@@ -91,7 +91,7 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
 - **Adding a tier.** Add a block to `tiers`, usually extending an existing one, and give a key the prefix `<tier>/` in the keys file. Add budget limits for it under `budgets` if it needs any; a tier with none has no limit.
 - **Model settings.** The top-level `models` map holds settings for each model id that a client applies: `label`, `temperature`, `top_p`, `seed`, `max_tokens`, `llm_timeout_seconds`, `reasoning_toggle`, `reasoning_default` and `prompt_cache`, with the meanings of glen's `llm_models` fields. `GET /v1/models` returns them as `settings` on each entry. They are defaults for the client, not limits: an app's own `llm_models` entry overrides them, and the proxy enforces nothing from them. Other keys pass through with a startup warning. Limits the proxy does enforce stay on the provider, as below.
 - **The benchmark tiers (#175).** glen-benchmark runs free and paid models on separate keys, so a run's spend is always deliberate and attributable.
-  - `benchmark-free` holds only NRP and DSE models, including the NRP judges. The `glen-benchmark` key uses it. `benchmark` extends it and nothing else, so the key's older `benchmark/glen-benchmark` line keeps working until it is renamed `benchmark-free/glen-benchmark`; then `benchmark` can go.
+  - `benchmark-free` holds only NRP and DSE models, including the NRP judges. The `benchmark-free/glen-benchmark` key uses it.
   - `benchmark-paid` holds the paid OpenRouter models, for the `benchmark-paid/glen-benchmark-paid` key. Its `provider_overrides` sends its OpenRouter calls to `openrouter-benchmark`, a second OpenRouter key with its own credit limit (`OPENROUTER_BENCHMARK_KEY`, optional Secret `openrouter-benchmark-key`). The same ids called from private still use the main key. Without the benchmark key, its calls fail with a 500 that names the missing key; they never reach the main key.
   - glen-benchmark's registry is `suite/models.yaml` and `suite/judges.yaml` in that repo, which can't edit this one, so screening a new candidate is a one-line PR adding it to `tiers.benchmark-free.models` or `tiers.benchmark-paid.models`. That does not offer it to any app. Neither tier has budget limits, because a 429 midway through a matrix loses cells and the keys work only in-cluster.
 - **Other deployments.** With no `tiers` key, every routable model is allowed. cirrus mounts its own config and is unaffected.
@@ -117,7 +117,7 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
 
 ### Token budgets and the deny-list
 
-**Budgets (#168).** The proxy counts output (completion) tokens over a rolling 4-hour window. Each counter is checked against its tier's limit in `config.json` `budgets`. A tier with no entry, such as `benchmark`, has no limit:
+**Budgets (#168).** The proxy counts output (completion) tokens over a rolling 4-hour window. Each counter is checked against its tier's limit in `config.json` `budgets`. A tier with no entry, such as `benchmark-free`, has no limit:
 
 | Counter | Identifies | Public | Private |
 |---|---|---|---|

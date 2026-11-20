@@ -199,9 +199,6 @@
       "provider_overrides": {
         "openrouter": "openrouter-benchmark"
       }
-    },
-    "benchmark": {
-      "extends": "benchmark-free"
     }
   },
   "models": {

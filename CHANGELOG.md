@@ -152,6 +152,9 @@ See [Releases](README.md#releases) for how a release is cut.
   `rustfs-logs-write`, following the proxy logs (#178). Earlier archives stay on Ceph.
 
 ### Removed
+- **The transitional `benchmark` tier alias.** It only extended `benchmark-free` so the
+  `glen-benchmark` key's old `benchmark/` line kept working. Both deployments' keys files now
+  use `benchmark-free/` and `benchmark-paid/`, so no key resolves to it.
 - **`headless/`: the benchmark runner, matrix Jobs, question banks and `matrix-archiver`.**
   They moved to boettiger-lab/glen-benchmark on 2026-11-07, which now owns benchmarking.
 - **`logs-mirror-raw-hourly` and the consolidation jobs' rustfs mirror step** (#178). They
