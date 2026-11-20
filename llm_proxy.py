@@ -1332,8 +1332,37 @@ def _never_raises(fn):
                       f"persistently broken, not a one-off. See #39.", flush=True)
     return wrapper
 
+def _input_chars(messages) -> int:
+    """Characters of text the caller sent in `messages` (#164): string content,
+    the text parts of list content, and tool-call arguments. Not tokens: the
+    proxy can't count those before a call, so a size limit has to use this."""
+    n = 0
+    for m in messages or ():
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            n += len(c)
+        elif isinstance(c, list):
+            n += sum(len(part.get("text") or "") for part in c
+                     if isinstance(part, dict) and isinstance(part.get("text"), str))
+        for tc in m.get("tool_calls") or ():
+            args = ((tc or {}).get("function") or {}).get("arguments") if isinstance(tc, dict) else None
+            if isinstance(args, str):
+                n += len(args)
+    return n
+
+
+def _request_bytes(headers):
+    """The request body's size from Content-Length, or None if it was not sent."""
+    try:
+        return int(headers.get("content-length"))
+    except (TypeError, ValueError):
+        return None
+
+
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, request_bytes: int = None, tools: List[Dict] = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -1377,6 +1406,12 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         "origin": origin,
         "message_count": len(messages),
         "tools_count": tools_count,
+        # Request size (#164), measured to set limits on oversized requests:
+        # body bytes from Content-Length (null if absent), text characters in
+        # `messages`, and characters of the serialized `tools` schemas.
+        "request_bytes": request_bytes,
+        "input_chars": _input_chars(messages),
+        "tools_chars": len(json.dumps(tools, separators=(",", ":"))) if tools else 0,
         # Requested thinking mode (what the client asked for), distinct from the
         # observed reasoning trace on the response side. null = client didn't send
         # the flag / model default; True/False = explicit request override.
@@ -1749,7 +1784,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking, request_bytes=_request_bytes(http_request.headers), tools=request.tools)
     
     # Make request to LLM provider. NB: name this `http_client`, NOT `client` —
     # `client` is the X-Client header value passed to log_response() below; an

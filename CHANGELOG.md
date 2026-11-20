@@ -9,6 +9,10 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Request size on each request log row (#164).** `request_bytes` (from `Content-Length`),
+  `input_chars` (text in `messages`, including tool-call arguments) and `tools_chars` (the
+  serialized `tools` schemas), so limits on oversized requests can be set from measured
+  traffic. They are in `entry` only, not flattened Parquet columns. Nothing is rejected yet.
 - **A per-tier upstream timeout, 4 hours for the benchmark tiers (#190).** A tier's
   `upstream_timeout_seconds` replaces `UPSTREAM_TIMEOUT_SECONDS` (default 1200) for its calls
   and is inherited through `extends`. `benchmark-free` and `benchmark-paid` set 14400 to match
