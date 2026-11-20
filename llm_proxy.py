@@ -755,6 +755,9 @@ NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVID
 # {"openrouter": "openrouter-benchmark"}: the same OpenRouter ids, billed to the
 # benchmark's own capped key, while other tiers calling the same ids stay on the
 # main key. Routing is otherwise by model id alone. It is not inherited.
+# `upstream_timeout_seconds` replaces UPSTREAM_TIMEOUT_SECONDS for this tier's
+# calls (#190): benchmark runs give a call hours, while apps cap theirs far
+# below the 20-minute default. It is inherited through `extends`.
 # A model outside the caller's tier gets a 403; `GET /v1/models` returns the
 # tier's list, in order, with the default flagged. No `tiers` key -> every
 # routable model is allowed (cirrus and other deployments keep their behavior).
@@ -776,12 +779,17 @@ def resolve_tiers(cfg: dict):
         parents = spec.get("extends") or []
         if isinstance(parents, str):
             parents = [parents]
-        models, auto, default = [], [], None
+        models, auto, default, timeout = [], [], None, None
         for parent in parents:
             inherited = resolve(parent, stack + (name,))
             models += [m for m in inherited["models"] if m not in models]
             auto += [a for a in inherited["auto"] if a not in auto]
             default = default or inherited["default_model"]
+            timeout = timeout or inherited["upstream_timeout_seconds"]
+        if spec.get("upstream_timeout_seconds") is not None:
+            timeout = float(spec["upstream_timeout_seconds"])
+            if timeout <= 0:
+                raise ValueError(f"tiers.{name}.upstream_timeout_seconds must be positive")
         models += [m for m in (spec.get("models") or []) if m not in models]
         for a in spec.get("auto") or []:
             if not (cfg.get("providers") or {}).get(a, {}).get("discover_models"):
@@ -800,7 +808,7 @@ def resolve_tiers(cfg: dict):
                     raise ValueError(f"tiers.{name}.provider_overrides names {prov!r}, "
                                      "which is not a provider")
         out[name] = {"default_model": default, "models": tuple(models), "auto": tuple(auto),
-                     "provider_overrides": overrides}
+                     "provider_overrides": overrides, "upstream_timeout_seconds": timeout}
         return out[name]
 
     for name in tiers:
@@ -1480,6 +1488,16 @@ _UPSTREAM_TIMEOUT = httpx.Timeout(
     _UPSTREAM_READ_TIMEOUT, connect=30.0, write=30.0, pool=30.0
 )
 
+
+def upstream_timeout_for_tier(tier) -> httpx.Timeout:
+    """The upstream timeout for a caller on `tier`: the tier's own
+    `upstream_timeout_seconds` (#190) if it sets one, else the deployment's.
+    Only `read` changes; connect/write/pool stay at 30s either way."""
+    read = ((TIERS or {}).get(tier) or {}).get("upstream_timeout_seconds")
+    if not read:
+        return _UPSTREAM_TIMEOUT
+    return httpx.Timeout(read, connect=30.0, write=30.0, pool=30.0)
+
 # Threshold for the "slow completion" warning below (#82). This is *not* a cap
 # this proxy controls or enforces — it is a guess at the tightest deadline a
 # caller is likely to have, used only to flag a logged 200 the client may never
@@ -1737,7 +1755,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     # `client` is the X-Client header value passed to log_response() below; an
     # `as client` here shadowed it with the AsyncClient object, so json.dumps in
     # log_response raised and every response was silently dropped from S3 (#37).
-    async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT) as http_client:
+    async with httpx.AsyncClient(timeout=upstream_timeout_for_tier(tier)) as http_client:
         fallback_from = refused[0] if refused else None
         try:
             endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
