@@ -2719,3 +2719,77 @@ def test_upstream_timeout_for_tier_changes_read_only():
         t = p.upstream_timeout_for_tier(tier)
         assert t.read == 14400.0, tier
         assert (t.connect, t.write, t.pool) == (30.0, 30.0, 30.0)
+
+
+# ---------------------------------------------------------------------------
+# Request size on each request row (#164)
+# ---------------------------------------------------------------------------
+
+def test_input_chars_counts_text_parts_and_tool_arguments():
+    msgs = [
+        {"role": "system", "content": "abcde"},                                  # 5
+        {"role": "user", "content": [{"type": "text", "text": "xyz"},           # 3
+                                     {"type": "image_url", "image_url": {"url": "data:..."}}]},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"function": {"name": "query", "arguments": '{"a":1}'}}]},  # 7
+        {"role": "tool", "tool_call_id": "t1", "content": "0123456789"},        # 10
+        "not a dict",
+    ]
+    assert llm_proxy._input_chars(msgs) == 25
+    assert llm_proxy._input_chars(None) == 0
+
+
+def test_request_bytes_from_content_length():
+    assert llm_proxy._request_bytes({"content-length": "1234"}) == 1234
+    assert llm_proxy._request_bytes({}) is None
+    assert llm_proxy._request_bytes({"content-length": "junk"}) is None
+
+
+def test_request_row_logs_size_fields():
+    p = _reload(LOG_CAPTURE_MODE="summary")
+    p._log_buffer.clear()
+    tools = [{"type": "function", "function": {"name": "query", "parameters": {}}}]
+    p.log_request("nrp", "qwen3", [{"role": "user", "content": "hello"}], tools_count=1,
+                  request_id="r1", request_bytes=999, tools=tools)
+    e = p._log_buffer[-1]
+    assert e["request_bytes"] == 999
+    assert e["input_chars"] == 5
+    assert e["tools_chars"] == len(json.dumps(tools, separators=(",", ":")))
+    p._log_buffer.clear()
+    p.log_request("nrp", "qwen3", [{"role": "user", "content": "hi"}], request_id="r2")
+    e = p._log_buffer[-1]
+    assert e["request_bytes"] is None and e["tools_chars"] == 0
+
+
+def test_handler_passes_content_length_to_request_row():
+    import asyncio
+    from unittest.mock import patch
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **k):
+            return _FakeResp()
+
+    class _FakeRequest:
+        headers = {"origin": "https://app", "content-length": "321"}
+
+    req = p.ChatRequest(model="qwen3", messages=[{"role": "user", "content": "hi"}])
+    with patch.object(p, "get_provider_for_model",
+                      return_value=("nrp", {"endpoint": "http://upstream", "api_key": "k"})), \
+         patch.object(p.httpx, "AsyncClient", _FakeAsyncClient):
+        asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+    rows = [e for e in p._log_buffer if e.get("type") == "request"]
+    assert rows[-1]["request_bytes"] == 321 and rows[-1]["input_chars"] == 2
