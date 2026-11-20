@@ -99,6 +99,12 @@ See [Releases](README.md#releases) for how a release is cut.
 - **`app` log field from the `X-Glen-App` header.** Each app's nginx names itself, so traffic
   stays attributable when several apps share one namespace key. A label, not authentication.
 
+### Removed
+
+- **The transitional `benchmark` tier alias.** It only extended `benchmark-free` so the
+  `glen-benchmark` key's old `benchmark/` line kept working. Both deployments' keys files now
+  use `benchmark-free/` and `benchmark-paid/`, so no key resolves to it.
+
 ### Changed
 - **The private tier is trimmed to five models and no longer extends public.** Private apps
   get OpenRouter's `deepseek/deepseek-v4.1-flash-1017` (now the private default, on
