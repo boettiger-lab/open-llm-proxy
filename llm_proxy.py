@@ -1362,7 +1362,7 @@ def _request_bytes(headers):
 
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, request_bytes: int = None, tools: List[Dict] = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, request_bytes: int = None, tools: List[Dict] = None, reasoning_effort: str = None):
     """Log incoming request in structured JSON format"""
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
@@ -1416,6 +1416,9 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         # observed reasoning trace on the response side. null = client didn't send
         # the flag / model default; True/False = explicit request override.
         "enable_thinking": enable_thinking,
+        # Requested reasoning level (#205), as the client sent it; null when not
+        # sent. In `entry` only, not a flattened Parquet column.
+        "reasoning_effort": reasoning_effort,
         "user_question": _scrub_text(_cap(user_question, _USER_QUESTION_MAX)),
         "user_message_this_turn": _scrub_text(_cap(user_message_this_turn, _USER_QUESTION_MAX)),
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
@@ -1591,6 +1594,10 @@ class ChatRequest(BaseModel):
     response_format: Optional[Dict[str, Any]] = None
     usage: Optional[Dict[str, Any]] = None  # e.g. OpenRouter {"include": true}
     provider: Optional[Dict[str, Any]] = None  # OpenRouter routing block (zdr/order/only/...)
+    # Reasoning level (#205), e.g. "low"/"high"; for models whose chat template
+    # takes a level rather than an on/off `enable_thinking` (Inkling-2-Mini).
+    # Forwarded verbatim; the upstream decides which values it accepts.
+    reasoning_effort: Optional[str] = None
 
 def build_upstream_call(request, provider_name: str, provider_config: dict, model: str):
     """(endpoint, headers, payload) for sending `request` to one provider as `model`."""
@@ -1632,7 +1639,7 @@ def build_upstream_call(request, provider_name: str, provider_config: dict, mode
     max_tokens = effective_max_tokens(request.max_tokens, provider_config)
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
-    for field in ("top_p", "seed", "stop", "response_format"):
+    for field in ("top_p", "seed", "stop", "response_format", "reasoning_effort"):
         value = getattr(request, field)
         if value is not None:
             if field == "top_p" and rejects_sampling:
@@ -1784,7 +1791,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=500, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking, request_bytes=_request_bytes(http_request.headers), tools=request.tools)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking, reasoning_effort=request.reasoning_effort, request_bytes=_request_bytes(http_request.headers), tools=request.tools)
     
     # Make request to LLM provider. NB: name this `http_client`, NOT `client` —
     # `client` is the X-Client header value passed to log_response() below; an

@@ -661,8 +661,42 @@ def test_passthrough_omits_unset_fields():
     """Fields the client didn't send are not injected (provider defaults intact)."""
     payload = _run_proxy_capture(dict(
         model="qwen3", messages=[{"role": "user", "content": "hi"}]))
-    for k in ("seed", "top_p", "stop", "max_tokens", "response_format", "usage", "provider"):
+    for k in ("seed", "top_p", "stop", "max_tokens", "response_format", "usage", "provider",
+              "reasoning_effort"):
         assert k not in payload, f"{k} should not be forwarded when unset"
+
+
+def test_reasoning_effort_forwarded_verbatim_to_any_provider():
+    """`reasoning_effort` reaches upstream unchanged when sent (#205).
+
+    Inkling-2-Mini's chat template reads a level, not `enable_thinking`. No
+    validation and no translation: values outside the OpenAI set ("xhigh",
+    "max") pass through, and nothing is added to `chat_template_kwargs` or an
+    OpenRouter `reasoning` object (the #153 trap)."""
+    for effort in ("low", "none", "xhigh"):
+        payload = _run_proxy_capture(dict(
+            model="qwen3", messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort=effort))
+        assert payload["reasoning_effort"] == effort
+        assert "chat_template_kwargs" not in payload
+    or_payload = _run_proxy_capture(
+        dict(model="z-ai/glm-5.2", messages=[{"role": "user", "content": "hi"}],
+             reasoning_effort="low"),
+        provider=("openrouter", {"endpoint": "http://or", "api_key": "k"}))
+    assert or_payload["reasoning_effort"] == "low"
+    assert "reasoning" not in or_payload
+
+
+def test_request_logs_requested_reasoning_effort():
+    """The requested level is on the request record; null when not sent (#205)."""
+    p = _reload(LOG_CAPTURE_MODE="summary")
+    for effort in (None, "low"):
+        p._log_buffer.clear()
+        p.log_request("nrp", "qwen3", [{"role": "user", "content": "hi"}],
+                      request_id="r1", reasoning_effort=effort)
+        entry = json.loads(json.dumps(p._log_buffer[-1]))
+        assert "reasoning_effort" in entry
+        assert entry["reasoning_effort"] == effort
 
 
 def test_openrouter_only_knobs():
