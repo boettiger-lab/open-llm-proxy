@@ -150,7 +150,7 @@
   "tiers": {
     "public": {
       "default_model": "deepseek-v4-flash",
-      "transcription_model": "gemma-small",
+      "transcription_model": "parakeet",
       "models": [
         "deepseek-v4-flash",
         "deepseek-or",

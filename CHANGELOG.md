@@ -17,8 +17,9 @@ See [Releases](README.md#releases) for how a release is cut.
   (parakeet-tdt-0.6b-v3) and `whisper-turbo` (faster-whisper-large-v3-turbo). It is an
   `"api": "audio_transcriptions"` provider: the client sends the same chat request with an
   `input_audio` part as before, and the proxy uploads the audio and returns the transcript
-  as a chat completion. Public keeps `gemma-small`; private gets `parakeet`, so private
-  apps have voice input for the first time.
+  as a chat completion. Both public and private use `parakeet` (public moves off
+  `gemma-small`, which stays a chat model), so private apps have voice input for the first
+  time.
 - **`reasoning_effort` is forwarded upstream (#205).** A client's top-level `reasoning_effort`
   goes to the provider verbatim when sent, like the #47 knobs, for models whose chat template
   takes a reasoning level instead of `enable_thinking` (Inkling-2-Mini on vLLM). The proxy does

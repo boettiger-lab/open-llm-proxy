@@ -2149,7 +2149,7 @@ def test_each_tier_names_a_transcription_model():
         p = _reload(PROXY_KEY="testkey")
         pub = asyncio.run(p.list_models(authorization="Bearer k-tpl"))
         prv = asyncio.run(p.list_models(authorization="Bearer k-coasts"))
-        assert pub["transcription_model"] == "gemma-small"
+        assert pub["transcription_model"] == "parakeet"
         assert prv["transcription_model"] == "parakeet"
         assert {"tier", "default_model"} <= set(prv)
         assert "parakeet" not in {m["id"] for m in prv["data"]}
