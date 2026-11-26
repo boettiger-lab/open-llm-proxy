@@ -9,6 +9,17 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **A transcription model for each tier, and DSE whisper as a provider (#207).** A tier's
+  `transcription_model` is named in `GET /v1/models` beside `default_model`, so apps no
+  longer need `transcription_model` in their own config (SchmidtDSE/glen#542). The tier may
+  call it without listing it as a chat model. New provider `whisper-cirrus`
+  (`whisper-cirrus.carlboettiger.info`, speaches, on the nimbus key) serves `parakeet`
+  (parakeet-tdt-0.6b-v3) and `whisper-turbo` (faster-whisper-large-v3-turbo). It is an
+  `"api": "audio_transcriptions"` provider: the client sends the same chat request with an
+  `input_audio` part as before, and the proxy uploads the audio and returns the transcript
+  as a chat completion. Both public and private use `parakeet` (public moves off
+  `gemma-small`, which stays a chat model), so private apps have voice input for the first
+  time.
 - **Thinking switch for MiMo V2.6 Flash and GLM 5.3 Flash on nimbus (#203).** The `nimbus`
   provider passes `enable_thinking` to `mimo-v2.6-flash` and `glm-5.3-flash` through
   `chat_template_kwargs`, and both have labels. MiMo was checked against vllm-nimbus; GLM is
@@ -234,6 +245,12 @@ See [Releases](README.md#releases) for how a release is cut.
   capped, because vLLM rejects prompt + `max_tokens` beyond the model's context.
 
 ### Fixed
+- **Voice recordings are not logged, and multimodal requests have request rows again
+  (#207).** A user message whose content is a list (audio or images) made `log_request`
+  throw in the scrubber, so the request row was dropped. Such content is now logged as its
+  text with a placeholder per media part, and `input_audio` data is replaced by its format
+  and size everywhere in the log, including full capture mode. Request rows from April
+  2026 hold full base64 recordings (38 rows, up to 2.3 MB).
 - **Headless runs send the duckdb-mcp Bearer token.** Since 2026-11-07 the public MCP
   endpoints (`duckdb-mcp`, `dev-duckdb-mcp`, `experimental-duckdb-mcp`, `ca30x30-mcp`)
   return 401 without `Authorization: Bearer <token>` (SchmidtDSE/geo-query#453), so every

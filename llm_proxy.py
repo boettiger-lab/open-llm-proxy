@@ -11,6 +11,8 @@ from fastapi import FastAPI, HTTPException, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
+import base64
+import binascii
 import hashlib
 import httpx
 import os
@@ -640,6 +642,13 @@ def build_provider_entry(provider_config: dict) -> dict:
         # (#194). Only for providers that serve a short list of their own, like
         # NRP and our vLLMs; never for an aggregator such as OpenRouter.
         "discover_models": bool(provider_config.get("discover_models")),
+        # What the upstream speaks (#207). "chat_completions" (default) is every
+        # LLM provider. "audio_transcriptions" is an OpenAI-style speech-to-text
+        # server (speaches/whisper): the proxy takes the audio out of a chat
+        # request's `input_audio` part, posts it as a multipart upload, and
+        # answers with the transcript as a chat completion, so a client that
+        # transcribes through chat (glen-harness) only changes the model id.
+        "api": provider_config.get("api", "chat_completions"),
     }
 
 
@@ -779,13 +788,14 @@ def resolve_tiers(cfg: dict):
         parents = spec.get("extends") or []
         if isinstance(parents, str):
             parents = [parents]
-        models, auto, default, timeout = [], [], None, None
+        models, auto, default, timeout, transcription = [], [], None, None, None
         for parent in parents:
             inherited = resolve(parent, stack + (name,))
             models += [m for m in inherited["models"] if m not in models]
             auto += [a for a in inherited["auto"] if a not in auto]
             default = default or inherited["default_model"]
             timeout = timeout or inherited["upstream_timeout_seconds"]
+            transcription = transcription or inherited["transcription_model"]
         if spec.get("upstream_timeout_seconds") is not None:
             timeout = float(spec["upstream_timeout_seconds"])
             if timeout <= 0:
@@ -807,8 +817,13 @@ def resolve_tiers(cfg: dict):
                 if prov not in (cfg.get("providers") or {}):
                     raise ValueError(f"tiers.{name}.provider_overrides names {prov!r}, "
                                      "which is not a provider")
+        # The model a client sends voice input to (#207). The tier may call it
+        # even when it is not in `models`, and it is not listed among the chat
+        # models; `GET /v1/models` names it beside `default_model`.
+        transcription = spec.get("transcription_model") or transcription
         out[name] = {"default_model": default, "models": tuple(models), "auto": tuple(auto),
-                     "provider_overrides": overrides, "upstream_timeout_seconds": timeout}
+                     "provider_overrides": overrides, "upstream_timeout_seconds": timeout,
+                     "transcription_model": transcription}
         return out[name]
 
     for name in tiers:
@@ -865,6 +880,8 @@ def model_in_tier(model: str, tier) -> bool:
     spec = TIERS.get(tier)
     if spec is None:
         return False
+    if model == spec.get("transcription_model"):
+        return True
     for pat in spec["models"]:
         if model == pat or (pat.endswith("*") and model.startswith(pat[:-1])):
             return True
@@ -1361,9 +1378,55 @@ def _request_bytes(headers):
         return None
 
 
+def _without_audio(messages):
+    """`messages` with each `input_audio` part's data replaced by its size (#207).
+    A voice recording is not logged: the transcript is, on the response row."""
+    def stub(part):
+        if isinstance(part, dict) and part.get("type") == "input_audio":
+            audio = part.get("input_audio") or {}
+            data = audio.get("data") or ""
+            return {"type": "input_audio", "input_audio": {
+                "format": audio.get("format"), "bytes": (len(data) * 3 // 4 - len(data) + len(data.rstrip("=")))
+                if isinstance(data, str) else None}}
+        return part
+    out = []
+    for m in messages or []:
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list) and any(
+                isinstance(c, dict) and c.get("type") == "input_audio" for c in content):
+            m = {**m, "content": [stub(c) for c in content]}
+        out.append(m)
+    return out
+
+
+def _content_text(content):
+    """A message's content as text for the log. Multimodal content (a list of
+    parts) is its text parts, with a placeholder for each media part, such as
+    `[input_audio wav, 352044 bytes]`. Before #207 a list reached the scrubber
+    as-is and made log_request throw, so these requests had no request row."""
+    if not isinstance(content, list):
+        return content
+    out = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "text":
+            out.append(part.get("text") or "")
+        elif kind == "input_audio":
+            audio = part.get("input_audio") or {}
+            size = audio.get("bytes")
+            out.append(f"[input_audio {audio.get('format')}"
+                       + (f", {size} bytes]" if size is not None else "]"))
+        else:
+            out.append(f"[{kind}]")
+    return "\n".join(out)
+
+
 @_never_raises
 def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, request_bytes: int = None, tools: List[Dict] = None, reasoning_effort: str = None):
     """Log incoming request in structured JSON format"""
+    messages = _without_audio(messages)
     # Extract the original user question (first human message, stable across all turns)
     user_question = next(
         (m.get("content", "") for m in messages if m.get("role") == "user"),
@@ -1419,8 +1482,8 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         # Requested reasoning level (#205), as the client sent it; null when not
         # sent. In `entry` only, not a flattened Parquet column.
         "reasoning_effort": reasoning_effort,
-        "user_question": _scrub_text(_cap(user_question, _USER_QUESTION_MAX)),
-        "user_message_this_turn": _scrub_text(_cap(user_message_this_turn, _USER_QUESTION_MAX)),
+        "user_question": _scrub_text(_cap(_content_text(user_question), _USER_QUESTION_MAX)),
+        "user_message_this_turn": _scrub_text(_cap(_content_text(user_message_this_turn), _USER_QUESTION_MAX)),
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
     }
     # Training-grade fidelity: capture the entire (scrubbed, system-deduped)
@@ -1599,9 +1662,57 @@ class ChatRequest(BaseModel):
     # Forwarded verbatim; the upstream decides which values it accepts.
     reasoning_effort: Optional[str] = None
 
+def extract_audio(messages):
+    """(bytes, format) of the last `input_audio` part in `messages`, or None."""
+    for m in reversed(messages or []):
+        content = m.get("content") if isinstance(m, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in reversed(content):
+            if isinstance(part, dict) and part.get("type") == "input_audio":
+                audio = part.get("input_audio") or {}
+                try:
+                    data = base64.b64decode(audio.get("data") or "", validate=True)
+                except (binascii.Error, ValueError):
+                    return None
+                if data:
+                    return data, (audio.get("format") or "wav").lower()
+    return None
+
+
+def transcript_as_completion(result: dict, model: str, request_id: str) -> dict:
+    """A transcription server's `{"text": ...}` as a chat completion."""
+    text = (result or {}).get("text") or ""
+    return {
+        "id": f"transcription-{request_id}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{"index": 0, "finish_reason": "stop",
+                     "message": {"role": "assistant", "content": text.strip()}}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+async def post_upstream(http_client, provider_config: dict, endpoint: str, headers: dict, payload: dict):
+    """POST one upstream call: JSON for chat, a multipart upload for transcription."""
+    if provider_config.get("api") == "audio_transcriptions":
+        data, fmt = payload["audio"]
+        return await http_client.post(
+            endpoint, headers=headers,
+            data={"model": payload["model"], "response_format": "json"},
+            files={"file": (f"audio.{fmt}", data, f"audio/{fmt}")})
+    return await http_client.post(endpoint, json=payload, headers=headers)
+
+
 def build_upstream_call(request, provider_name: str, provider_config: dict, model: str):
     """(endpoint, headers, payload) for sending `request` to one provider as `model`."""
     api_key = provider_config["api_key"]
+    if provider_config.get("api") == "audio_transcriptions":
+        headers = {"Authorization": f"Bearer {api_key}", **(provider_config.get("extra_headers") or {})}
+        upstream_model = provider_config.get("model_aliases", {}).get(model, model)
+        return provider_config["endpoint"], headers, {
+            "model": upstream_model, "audio": extract_audio(request.messages)}
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
@@ -1790,6 +1901,14 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                      origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=500, detail=error_msg)
 
+    # A transcription model needs audio (#207); without it there is nothing to send.
+    if provider_config.get("api") == "audio_transcriptions" and extract_audio(request.messages) is None:
+        error_msg = (f"Model '{request.model}' transcribes speech: send the audio as an "
+                     "`input_audio` content part (base64 `data` and a `format` such as wav).")
+        log_response(provider_name, request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+        raise HTTPException(status_code=400, detail=error_msg)
+
     # Log incoming request
     log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking, reasoning_effort=request.reasoning_effort, request_bytes=_request_bytes(http_request.headers), tools=request.tools)
     
@@ -1804,7 +1923,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             routes = pending_routes   # the fallback chain, looked up on the first refusal
             while True:
                 try:
-                    response = await http_client.post(endpoint, json=payload, headers=headers)
+                    response = await post_upstream(http_client, provider_config, endpoint, headers, payload)
                     response.raise_for_status()
                     break
                 except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ConnectTimeout) as e:
@@ -1829,6 +1948,8 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                           flush=True)
                     endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
             result = response.json()
+            if provider_config.get("api") == "audio_transcriptions":
+                result = transcript_as_completion(result, served_model, request_id)
             # Answer under the proxy's id for the model that served it, not the
             # upstream alias (`deepseek-nimbus`, not nimbus2's `deepseek-v4-flash`).
             if payload["model"] != served_model and isinstance(result, dict) and "model" in result:
@@ -2107,7 +2228,8 @@ async def list_models(authorization: str = Header(None), refresh: bool = False):
         # so callers can't make the proxy call every provider (`?refresh=true`).
         data = tier_model_list(ident[1])
         return {"object": "list", "data": data, "tier": ident[1],
-                "default_model": next((m["id"] for m in data if m["default"]), None)}
+                "default_model": next((m["id"] for m in data if m["default"]), None),
+                "transcription_model": (TIERS.get(ident[1]) or {}).get("transcription_model")}
 
     cache = await refresh_models(force=refresh)
     return {

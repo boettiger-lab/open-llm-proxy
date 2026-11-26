@@ -80,7 +80,7 @@ for fidelity, so old `entry::JSON->>'…'` / `json_extract_string` queries still
 | `tools_count` | `INTEGER` | Request only — tools offered |
 | `enable_thinking` | `BOOLEAN` | Request only — the thinking mode the client **asked for** (`request.enable_thinking`). `null` = flag not sent / model default; `true`/`false` = explicit override. Distinct from the response-side `has_reasoning_content` (what the model actually **did**) — together they disambiguate "reasoning off by request" from "model chose not to think" from "non-thinking model". |
 | `user_question` | `VARCHAR` | Request only — **first** user message (see trap below) |
-| `user_message_this_turn` | `VARCHAR` | Request only — the **last** user message, i.e. the actual prompt that triggered *this* turn. Use this (not `user_question`) to count or read distinct requests within a session. `null` on records written before #89. |
+| `user_message_this_turn` | `VARCHAR` | Request only — the **last** user message, i.e. the actual prompt that triggered *this* turn. Use this (not `user_question`) to count or read distinct requests within a session. `null` on records written before #89. Multimodal content is logged as its text parts with a placeholder per media part, e.g. `[input_audio wav, 352044 bytes]` or `[image_url]`; audio data is never logged (#207). Before #207 such requests had no request row. |
 | `latency_ms` | `BIGINT` | Response only |
 | `has_tool_calls` | `BOOLEAN` | Response only |
 | `has_content` | `BOOLEAN` | Response only |

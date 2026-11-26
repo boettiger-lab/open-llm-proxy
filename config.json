@@ -122,6 +122,21 @@
       ],
       "model_prefixes": []
     },
+    "whisper-cirrus": {
+      "endpoint": "https://whisper-cirrus.carlboettiger.info/v1/audio/transcriptions",
+      "models_endpoint": "https://whisper-cirrus.carlboettiger.info/v1/models",
+      "api": "audio_transcriptions",
+      "api_key_env": "NIMBUS_API_KEY",
+      "models": [
+        "parakeet",
+        "whisper-turbo"
+      ],
+      "model_aliases": {
+        "parakeet": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+        "whisper-turbo": "deepdml/faster-whisper-large-v3-turbo-ct2"
+      },
+      "model_prefixes": []
+    },
     "vllm-cirrus": {
       "endpoint": "https://vllm-cirrus.carlboettiger.info/v1/chat/completions",
       "api_key_env": "NIMBUS_API_KEY",
@@ -139,6 +154,7 @@
   "tiers": {
     "public": {
       "default_model": "deepseek-v4-flash",
+      "transcription_model": "parakeet",
       "models": [
         "deepseek-v4-flash",
         "deepseek-or",
@@ -160,6 +176,7 @@
     },
     "private": {
       "default_model": "deepseek/deepseek-v4.1-flash-1017",
+      "transcription_model": "parakeet",
       "models": [
         "deepseek/deepseek-v4.1-flash-1017",
         "deepseek/deepseek-v4.1-flash-1017:nitro",
