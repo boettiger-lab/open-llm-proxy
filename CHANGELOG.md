@@ -9,6 +9,12 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **`reasoning_effort` is forwarded upstream (#205).** A client's top-level `reasoning_effort`
+  goes to the provider verbatim when sent, like the #47 knobs, for models whose chat template
+  takes a reasoning level instead of `enable_thinking` (Inkling-2-Mini on vLLM). The proxy does
+  not check the value, and the upstream rejects ones it doesn't accept. `enable_thinking`
+  handling is unchanged, and nothing is translated into OpenRouter's `reasoning` object (#153).
+  The requested level is logged as `reasoning_effort` on the request record, in `entry` only.
 - **Request size on each request log row (#164).** `request_bytes` (from `Content-Length`),
   `input_chars` (text in `messages`, including tool-call arguments) and `tools_chars` (the
   serialized `tools` schemas), so limits on oversized requests can be set from measured
