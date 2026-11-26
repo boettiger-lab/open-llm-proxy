@@ -9,6 +9,12 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **`context_length` on each model in `GET /v1/models` (#209).** Tokens, as the entry's own
+  field, not in `settings`, and left out when unknown. Discovered from vLLM's `max_model_len`
+  for the nimbus servers; set in the `models` map for NRP (read 2026-11-26 from vLLM's
+  oversized-`max_tokens` error) and the OpenRouter ids (from OpenRouter's catalog). A
+  configured value overrides a discovered one. glen-harness can derive its history budget
+  from it (SchmidtDSE/glen-harness#28).
 - **A transcription model for each tier, and DSE whisper as a provider (#207).** A tier's
   `transcription_model` is named in `GET /v1/models` beside `default_model`, so apps no
   longer need `transcription_model` in their own config (SchmidtDSE/glen#542). The tier may
