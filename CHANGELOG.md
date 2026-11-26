@@ -20,6 +20,10 @@ See [Releases](README.md#releases) for how a release is cut.
   as a chat completion. Both public and private use `parakeet` (public moves off
   `gemma-small`, which stays a chat model), so private apps have voice input for the first
   time.
+- **Thinking switch for MiMo V2.6 Flash and GLM 5.3 Flash on nimbus (#203).** The `nimbus`
+  provider passes `enable_thinking` to `mimo-v2.6-flash` and `glm-5.3-flash` through
+  `chat_template_kwargs`, and both have labels. MiMo was checked against vllm-nimbus; GLM is
+  untested until its recipe is next loaded.
 - **`reasoning_effort` is forwarded upstream (#205).** A client's top-level `reasoning_effort`
   goes to the provider verbatim when sent, like the #47 knobs, for models whose chat template
   takes a reasoning level instead of `enable_thinking` (Inkling-2-Mini on vLLM). The proxy does

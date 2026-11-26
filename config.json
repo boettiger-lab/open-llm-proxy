@@ -86,11 +86,15 @@
       "discover_models": true,
       "models": [
         "qwen",
-        "nemotron-3.5-lightning"
+        "nemotron-3.5-lightning",
+        "mimo-v2.6-flash",
+        "glm-5.3-flash"
       ],
       "thinking_models": {
         "qwen": "enable_thinking",
-        "nemotron-3.5-lightning": "enable_thinking"
+        "nemotron-3.5-lightning": "enable_thinking",
+        "mimo-v2.6-flash": "enable_thinking",
+        "glm-5.3-flash": "enable_thinking"
       },
       "model_prefixes": []
     },
@@ -233,6 +237,8 @@
     "qwen": { "label": "DSE Qwen3.8 Flash" },
     "deepseek-nimbus": { "label": "DSE DeepSeek V4 Flash" },
     "nemotron-3.5-lightning": { "label": "DSE Nemotron 3.5 Lightning" },
+    "mimo-v2.6-flash": { "label": "DSE MiMo V2.6 Flash" },
+    "glm-5.3-flash": { "label": "DSE GLM 5.3 Flash" },
     "xiaomi/mimo-v2.6-flash": { "label": "MiMo V2.6 Flash" },
     "deepseek/deepseek-v4.1-flash-1017": { "label": "DeepSeek V4 Flash (1017)" },
     "deepseek/deepseek-v4.1-flash-1017:nitro": { "label": "DeepSeek V4 Flash Nitro (1017)" },
