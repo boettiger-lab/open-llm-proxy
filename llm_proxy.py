@@ -1378,22 +1378,44 @@ def _request_bytes(headers):
         return None
 
 
+def _b64_size(data: str) -> int:
+    return len(data) * 3 // 4 - len(data) + len(data.rstrip("="))
+
+
+def _without_audio_urls(value):
+    """`value` with every `data:audio/...` URL's payload replaced by its size."""
+    if isinstance(value, str) and value.startswith("data:audio/"):
+        head, _, data = value.partition(",")
+        return f"{head},[{_b64_size(data)} bytes removed]"
+    if isinstance(value, list):
+        return [_without_audio_urls(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _without_audio_urls(v) for k, v in value.items()}
+    return value
+
+
+def _has_audio(part) -> bool:
+    return isinstance(part, dict) and (
+        part.get("type") == "input_audio" or "data:audio/" in json.dumps(part))
+
+
 def _without_audio(messages):
-    """`messages` with each `input_audio` part's data replaced by its size (#207).
-    A voice recording is not logged: the transcript is, on the response row."""
+    """`messages` with each recording replaced by its size (#207): an
+    `input_audio` part's data, and any `data:audio/...` URL (`audio_url` and
+    similar parts). A voice recording is not logged; the transcript is, on the
+    response row."""
     def stub(part):
         if isinstance(part, dict) and part.get("type") == "input_audio":
             audio = part.get("input_audio") or {}
             data = audio.get("data") or ""
             return {"type": "input_audio", "input_audio": {
-                "format": audio.get("format"), "bytes": (len(data) * 3 // 4 - len(data) + len(data.rstrip("=")))
-                if isinstance(data, str) else None}}
-        return part
+                "format": audio.get("format"),
+                "bytes": _b64_size(data) if isinstance(data, str) else None}}
+        return _without_audio_urls(part)
     out = []
     for m in messages or []:
         content = m.get("content") if isinstance(m, dict) else None
-        if isinstance(content, list) and any(
-                isinstance(c, dict) and c.get("type") == "input_audio" for c in content):
+        if isinstance(content, list) and any(_has_audio(c) for c in content):
             m = {**m, "content": [stub(c) for c in content]}
         out.append(m)
     return out
