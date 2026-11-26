@@ -2875,7 +2875,7 @@ def test_refresh_served_aliases_keeps_last_answer_and_skips_keyless():
     answers = {"vllm-nimbus2": (["deepseek-v4-flash"], None),
                "vllm-nimbus.": (["nemotron-3.5-lightning"], None)}
 
-    async def fake_fetch(cfg, client):
+    async def fake_fetch(cfg, client, context=None):
         for needle, ans in answers.items():
             if needle in cfg["endpoint"]:
                 return ans
@@ -2893,6 +2893,72 @@ def test_refresh_served_aliases_keeps_last_answer_and_skips_keyless():
         assert p.served_ids("nimbus") == {"nemotron-3.5-lightning"}  # last good answer kept
         assert p.SERVED["nimbus"]["error"] == "ReadTimeout"
     p.SERVED.clear()
+
+
+def test_discovery_records_max_model_len_under_the_proxy_id():
+    """vLLM's `max_model_len` is kept per served model (#209), under the proxy
+    id when the upstream id is aliased."""
+    import asyncio
+    from unittest.mock import patch
+    p = importlib.reload(llm_proxy)
+    p.SERVED.clear()
+
+    class _Resp:
+        def __init__(self, data): self._data = data
+        def raise_for_status(self): pass
+        def json(self): return {"data": self._data}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, headers=None, timeout=None):
+            if "vllm-nimbus2" in url:
+                return _Resp([{"id": "deepseek-v4-flash", "max_model_len": 350000}])
+            if "vllm-nimbus." in url:
+                return _Resp([{"id": "glm-5.3-flash", "max_model_len": 262144}])
+            return _Resp([{"id": "x"}])        # a server that reports no window
+
+    keyed = {n: dict(p.PROVIDERS[n], api_key="k") for n in ("nimbus", "nimbus2", "gemma4-nimbus")}
+    with patch.object(p.httpx, "AsyncClient", _Client), patch.dict(p.PROVIDERS, keyed):
+        asyncio.run(p.refresh_served())
+        assert p.served_context("nimbus2", "deepseek-nimbus") == 350000
+        assert p.served_context("nimbus", "glm-5.3-flash") == 262144
+        assert p.served_context("gemma4-nimbus", "x") is None
+        assert p.served_context("nrp", "qwen3") is None
+        lst = {m["id"]: m for m in p.tier_model_list("public")}
+        assert lst["glm-5.3-flash"]["context_length"] == 262144
+        assert lst["glm-5.3-flash"]["settings"] == {"label": "DSE GLM 5.3 Flash"}
+        assert lst["deepseek-nimbus"]["context_length"] == 350000   # aliased upstream id
+    p.SERVED.clear()
+
+
+def test_models_list_carries_context_length_outside_settings():
+    """`context_length` is the entry's own field (#209): from the `models` map,
+    never inside `settings`, and absent when unknown."""
+    import asyncio
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl,benchmark-paid/bp:k-bp"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p.SERVED.clear()
+        pub = {m["id"]: m for m in asyncio.run(p.list_models(authorization="Bearer k-tpl"))["data"]}
+        assert pub["kimi"]["context_length"] == 131072
+        assert pub["kimi"]["settings"] == {"label": "NRP Kimi"}
+        assert "context_length" not in pub["gpt-oss"]                # not known
+        assert all("context_length" not in m.get("settings", {}) for m in pub.values())
+        bp = {m["id"]: m for m in asyncio.run(p.list_models(authorization="Bearer k-bp"))["data"]}
+        assert bp["openai/gpt-6-luna"]["context_length"] == 1050000
+        assert "settings" not in bp["openai/gpt-6-luna"]             # only a window, no settings
+        # a configured value overrides what the server reports
+        p.SERVED["nimbus2"] = {"ids": frozenset({"deepseek-nimbus"}), "error": None,
+                               "fetched_iso": "", "context": {"deepseek-nimbus": 350000}}
+        p.MODEL_SETTINGS["deepseek-nimbus"] = {"label": "x", "context_length": 7}
+        entry = next(m for m in p.tier_model_list("public") if m["id"] == "deepseek-nimbus")
+        assert entry["context_length"] == 7 and entry["settings"] == {"label": "x"}
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        p.SERVED.clear()
+        _reload(PROXY_KEY="testkey")
 
 
 # ---------------------------------------------------------------------------

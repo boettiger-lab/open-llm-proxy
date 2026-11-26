@@ -673,6 +673,13 @@ def served_ids(provider_name: str):
     return None if entry is None else entry["ids"]
 
 
+def served_context(provider_name: str, model: str):
+    """The context window `provider_name` reports for `model` (vLLM's
+    `max_model_len`, #209), or None if it reports none."""
+    entry = SERVED.get(provider_name)
+    return (entry.get("context") or {}).get(model) if entry else None
+
+
 def model_available(model: str, provider_name: str) -> bool:
     """False only when the provider is known to serve something else."""
     ids = served_ids(provider_name)
@@ -853,6 +860,12 @@ PRIMARY_KEY_TIER = config.get("primary_key_tier", "private")
 MODEL_SETTING_KEYS = {
     "label", "temperature", "top_p", "seed", "max_tokens", "llm_timeout_seconds",
     "reasoning_toggle", "reasoning_default", "prompt_cache",
+    # Not a client setting: the model's context window in tokens (#209). It is
+    # returned as the entry's own `context_length`, not inside `settings`, and
+    # overrides what discovery reports. Set it for models whose server does not
+    # report one: NRP's gateway lists ids only, and OpenRouter's catalog is not
+    # fetched (its ids here are pinned versions, so the value does not drift).
+    "context_length",
 }
 
 
@@ -903,8 +916,12 @@ def tier_model_list(tier) -> list:
     def add(mid, provider):
         entry = {"id": mid, "object": "model", "owned_by": provider,
                  "provider": provider, "default": mid == spec["default_model"]}
-        if mid in MODEL_SETTINGS:
-            entry["settings"] = dict(MODEL_SETTINGS[mid])
+        settings = dict(MODEL_SETTINGS.get(mid) or {})
+        context = settings.pop("context_length", None) or served_context(provider, mid)
+        if context:
+            entry["context_length"] = context
+        if settings:
+            entry["settings"] = settings
         out.append(entry)
         seen.add(mid)
 
@@ -2102,9 +2119,10 @@ def _models_headers(provider_config: dict) -> dict:
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
-async def _fetch_provider_models(cfg: dict, client) -> tuple:
+async def _fetch_provider_models(cfg: dict, client, context: dict = None) -> tuple:
     """Return (ids, error). Never raises — an unreachable provider must degrade,
-    not break the endpoint."""
+    not break the endpoint. If `context` is given, it is filled with each id's
+    `max_model_len` where the server reports one (vLLM does, #209)."""
     try:
         r = await client.get(_models_url(cfg), headers=_models_headers(cfg),
                              timeout=_MODELS_TIMEOUT)
@@ -2112,6 +2130,10 @@ async def _fetch_provider_models(cfg: dict, client) -> tuple:
         payload = r.json()
         ids = [m.get("id") for m in payload.get("data", [])
                if isinstance(m, dict) and m.get("id")]
+        if context is not None:
+            for m in payload.get("data", []):
+                if isinstance(m, dict) and isinstance(m.get("max_model_len"), int):
+                    context[m["id"]] = m["max_model_len"]
         return ids, None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"[:200]
@@ -2124,10 +2146,11 @@ async def refresh_served() -> None:
     names = [n for n, c in PROVIDERS.items() if c.get("discover_models") and c.get("api_key")]
     if not names:
         return
+    contexts = {n: {} for n in names}
     try:
         async with httpx.AsyncClient() as client:
             results = await asyncio.gather(
-                *(_fetch_provider_models(PROVIDERS[n], client) for n in names))
+                *(_fetch_provider_models(PROVIDERS[n], client, contexts[n]) for n in names))
     except Exception as e:
         print(f"⚠️  Model discovery failed: {type(e).__name__}: {e}", flush=True)
         return
@@ -2145,7 +2168,8 @@ async def refresh_served() -> None:
         ids = frozenset(reverse.get(mid, mid) for mid in ids)
         if previous is None or previous["ids"] != ids:
             print(f"🔎 {name} serves: {', '.join(sorted(ids)) or 'nothing'}", flush=True)
-        SERVED[name] = {"ids": ids, "fetched_iso": now, "error": None}
+        SERVED[name] = {"ids": ids, "fetched_iso": now, "error": None,
+                        "context": {reverse.get(mid, mid): n for mid, n in contexts[name].items()}}
     owners = {}
     for name in PROVIDERS:
         for mid in served_ids(name) or ():
