@@ -2139,6 +2139,162 @@ def test_models_endpoint_returns_the_callers_tier_list():
         _reload(PROXY_KEY="testkey")
 
 
+def test_each_tier_names_a_transcription_model():
+    """`/v1/models` names the tier's transcription model beside `default_model`
+    (#207); the tier may call it, but it is not listed as a chat model, and the
+    private tier does not reach the public tier's gemma-small."""
+    import asyncio
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl,private/coasts:k-coasts"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        pub = asyncio.run(p.list_models(authorization="Bearer k-tpl"))
+        prv = asyncio.run(p.list_models(authorization="Bearer k-coasts"))
+        assert pub["transcription_model"] == "gemma-small"
+        assert prv["transcription_model"] == "parakeet"
+        assert {"tier", "default_model"} <= set(prv)
+        assert "parakeet" not in {m["id"] for m in prv["data"]}
+        assert p.model_in_tier("parakeet", "private")
+        assert not p.model_in_tier("gemma-small", "private")
+        assert p.get_provider_for_model("parakeet")[0] == "whisper-cirrus"
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_transcription_model_inherits_through_extends():
+    p = importlib.reload(llm_proxy)
+    t = p.resolve_tiers({"tiers": {
+        "base": {"models": ["qwen3"], "transcription_model": "parakeet"},
+        "child": {"extends": "base"},
+        "other": {"extends": "base", "transcription_model": "whisper-turbo"},
+        "none": {"models": ["qwen3"]}}})
+    assert t["child"]["transcription_model"] == "parakeet"
+    assert t["other"]["transcription_model"] == "whisper-turbo"
+    assert t["none"]["transcription_model"] is None
+
+
+def _transcription_harness(p, text="Hello there."):
+    """Fake upstream that records multipart posts and answers like speaches."""
+    posts = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"text": text, "logprobs": None, "usage": None}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, endpoint, json=None, headers=None, data=None, files=None):
+            posts.append({"endpoint": endpoint, "json": json, "headers": headers,
+                          "data": data, "files": files})
+            return _Resp()
+
+    return posts, _Client
+
+
+def test_chat_request_to_a_transcription_model_becomes_an_upload():
+    """The harness's transcription call (a chat request with an `input_audio`
+    part) reaches whisper-cirrus as a multipart upload under the upstream id, and
+    the transcript comes back as a chat completion under the proxy id (#207)."""
+    import asyncio
+    import base64
+    from unittest.mock import patch
+    os.environ["PROXY_KEYS_EXTRA"] = "private/coasts:k-coasts"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        posts, client = _transcription_harness(p, text="  Hello there.  ")
+
+        class _FakeRequest:
+            headers = {"origin": "https://app"}
+
+        audio = b"RIFF....WAVEfmt fake"
+        req = p.ChatRequest(model="parakeet", max_tokens=500, messages=[
+            {"role": "system", "content": "You are a speech-to-text transcriber."},
+            {"role": "user", "content": [{"type": "input_audio", "input_audio": {
+                "data": base64.b64encode(audio).decode(), "format": "wav"}}]}])
+        p._log_buffer.clear()
+        with patch.object(p.httpx, "AsyncClient", client), \
+             patch.dict(p.PROVIDERS["whisper-cirrus"], {"api_key": "nk"}):
+            result = asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer k-coasts"))
+        (post,) = posts
+        assert post["endpoint"].endswith("/v1/audio/transcriptions")
+        assert post["json"] is None
+        assert post["data"]["model"] == "istupakov/parakeet-tdt-0.6b-v3-onnx"
+        assert post["files"]["file"] == ("audio.wav", audio, "audio/wav")
+        assert post["headers"]["Authorization"] == "Bearer nk"
+        assert "Content-Type" not in post["headers"]   # httpx sets the multipart boundary
+        assert result["model"] == "parakeet"
+        assert result["choices"][0]["message"] == {"role": "assistant", "content": "Hello there."}
+        resp = [e for e in p._log_buffer if e.get("type") == "response"][-1]
+        assert (resp["provider"], resp["model"], resp.get("error")) == ("whisper-cirrus", "parakeet", None)
+        # The recording is not logged; its format and size are.
+        reqrow = [e for e in p._log_buffer if e.get("type") == "request"][-1]
+        assert base64.b64encode(audio).decode() not in json.dumps(reqrow)
+        assert reqrow["user_message_this_turn"] == f"[input_audio wav, {len(audio)} bytes]"
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_transcription_model_without_audio_is_a_400():
+    import asyncio
+    from fastapi import HTTPException
+    from unittest.mock import patch
+    os.environ["PROXY_KEYS_EXTRA"] = "private/coasts:k-coasts"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        posts, client = _transcription_harness(p)
+
+        class _FakeRequest:
+            headers = {}
+
+        req = p.ChatRequest(model="parakeet", messages=[{"role": "user", "content": "hi"}])
+        with patch.object(p.httpx, "AsyncClient", client), \
+             patch.dict(p.PROVIDERS["whisper-cirrus"], {"api_key": "nk"}):
+            try:
+                asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer k-coasts"))
+            except HTTPException as e:
+                assert e.status_code == 400 and "input_audio" in e.detail
+            else:
+                raise AssertionError("a transcription model needs audio")
+        assert posts == []
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_multimodal_request_is_logged_as_text():
+    """A list-content message used to make log_request throw (the scrubber wants
+    a string), so the request row was lost; now its text and placeholders are logged."""
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    p.log_request("nrp", "gemma-small", [{"role": "user", "content": [
+        {"type": "text", "text": "What is in this picture?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}])
+    (row,) = [e for e in p._log_buffer if e.get("type") == "request"]
+    assert row["user_question"] == "What is in this picture?\n[image_url]"
+
+
+def test_extract_audio():
+    p = importlib.reload(llm_proxy)
+    assert p.extract_audio([{"role": "user", "content": "hi"}]) is None
+    assert p.extract_audio([{"role": "user", "content": [
+        {"type": "input_audio", "input_audio": {"data": "not base64!", "format": "wav"}}]}]) is None
+    assert p.extract_audio([{"role": "user", "content": [
+        {"type": "text", "text": "x"},
+        {"type": "input_audio", "input_audio": {"data": "AAEC", "format": "MP3"}}]}]) == (b"\x00\x01\x02", "mp3")
+
+
 def test_no_public_api_schema():
     p = importlib.reload(llm_proxy)
     assert p.app.openapi_url is None and p.app.docs_url is None and p.app.redoc_url is None
