@@ -249,8 +249,11 @@ See [Releases](README.md#releases) for how a release is cut.
   (#207).** A user message whose content is a list (audio or images) made `log_request`
   throw in the scrubber, so the request row was dropped. Such content is now logged as its
   text with a placeholder per media part, and `input_audio` data is replaced by its format
-  and size everywhere in the log, including full capture mode. Request rows from April
-  2026 hold full base64 recordings (38 rows, up to 2.3 MB).
+  and size everywhere in the log, including full capture mode. So is the payload of any
+  `data:audio/...` URL (an `audio_url` part). The 40 April 2026 request
+  rows that held full recordings (up to 2.3 MB each) were purged from the rustfs copy of
+  `consolidated/monthly/2026-04.parquet` and `sessions/monthly/2026-04.parquet` on
+  2026-11-26, the recording replaced by `[audio removed]`.
 - **Headless runs send the duckdb-mcp Bearer token.** Since 2026-11-07 the public MCP
   endpoints (`duckdb-mcp`, `dev-duckdb-mcp`, `experimental-duckdb-mcp`, `ca30x30-mcp`)
   return 401 without `Authorization: Bearer <token>` (SchmidtDSE/geo-query#453), so every

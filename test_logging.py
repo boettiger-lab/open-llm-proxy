@@ -2285,6 +2285,25 @@ def test_multimodal_request_is_logged_as_text():
     assert row["user_question"] == "What is in this picture?\n[image_url]"
 
 
+def test_audio_data_urls_are_not_logged():
+    """Audio sent as a `data:audio/...` URL (an `audio_url` part, as April 2026
+    tests did) is not logged either; its size is."""
+    p = _reload(PROXY_KEY="testkey")
+    p._log_buffer.clear()
+    payload = "SUQzBAAAAAAjSFRDT04" * 50
+    p.log_request("nrp", "gemma-small", [{"role": "user", "content": [
+        {"type": "text", "text": "Please transcribe this."},
+        {"type": "audio_url", "audio_url": {"url": "data:audio/mp3;base64," + payload}},
+        {"type": "audio", "url": "data:audio/mp3;base64," + payload}]}])
+    (row,) = [e for e in p._log_buffer if e.get("type") == "request"]
+    assert payload not in json.dumps(row)
+    assert row["user_question"] == "Please transcribe this.\n[audio_url]\n[audio]"
+    stripped = p._without_audio([{"role": "user", "content": [
+        {"type": "audio_url", "audio_url": {"url": "data:audio/mp3;base64," + payload}}]}])
+    assert stripped[0]["content"][0]["audio_url"]["url"] == (
+        f"data:audio/mp3;base64,[{len(payload) * 3 // 4} bytes removed]")
+
+
 def test_extract_audio():
     p = importlib.reload(llm_proxy)
     assert p.extract_audio([{"role": "user", "content": "hi"}]) is None
