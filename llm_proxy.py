@@ -8,6 +8,7 @@ Requires authentication token to prevent unauthorized use
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import asyncio
@@ -777,6 +778,15 @@ NAMESPACED_DEFAULT_PROVIDER = resolve_namespaced_default_provider(config, PROVID
 # A model outside the caller's tier gets a 403; `GET /v1/models` returns the
 # tier's list, in order, with the default flagged. No `tiers` key -> every
 # routable model is allowed (cirrus and other deployments keep their behavior).
+# Request size limits per tier (#164), set from measured traffic (see the
+# issue): `body_bytes` (the request body, checked before the JSON is parsed),
+# `input_chars` (text in `messages`, as logged; audio doesn't count),
+# `messages` and `tools` (counts). A tier inherits its parents' limits and
+# overrides them one by one; a limit nobody sets is not enforced. Over a limit
+# is a 413 that names it, logged as provider `too-large`.
+REQUEST_LIMIT_KEYS = {"body_bytes", "input_chars", "messages", "tools"}
+
+
 def resolve_tiers(cfg: dict):
     """Map of tier -> {"default_model", "models"}, or None when unconfigured."""
     tiers = cfg.get("tiers")
@@ -796,8 +806,10 @@ def resolve_tiers(cfg: dict):
         if isinstance(parents, str):
             parents = [parents]
         models, auto, default, timeout, transcription = [], [], None, None, None
+        limits = {}
         for parent in parents:
             inherited = resolve(parent, stack + (name,))
+            limits = {**inherited["limits"], **limits}
             models += [m for m in inherited["models"] if m not in models]
             auto += [a for a in inherited["auto"] if a not in auto]
             default = default or inherited["default_model"]
@@ -828,9 +840,18 @@ def resolve_tiers(cfg: dict):
         # even when it is not in `models`, and it is not listed among the chat
         # models; `GET /v1/models` names it beside `default_model`.
         transcription = spec.get("transcription_model") or transcription
+        own = spec.get("limits") or {}
+        unknown = sorted(set(own) - REQUEST_LIMIT_KEYS)
+        if unknown:
+            raise ValueError(f"tiers.{name}.limits: unknown limits {unknown}; "
+                             f"known: {sorted(REQUEST_LIMIT_KEYS)}")
+        for key, value in own.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"tiers.{name}.limits.{key} must be a positive integer")
+        limits = {**limits, **own}
         out[name] = {"default_model": default, "models": tuple(models), "auto": tuple(auto),
                      "provider_overrides": overrides, "upstream_timeout_seconds": timeout,
-                     "transcription_model": transcription}
+                     "transcription_model": transcription, "limits": limits}
         return out[name]
 
     for name in tiers:
@@ -884,6 +905,29 @@ def resolve_model_settings(cfg: dict) -> dict:
 
 
 MODEL_SETTINGS = resolve_model_settings(config)
+
+
+def tier_limits(tier) -> dict:
+    """The tier's request size limits (#164); empty when it has none."""
+    return ((TIERS or {}).get(tier) or {}).get("limits") or {}
+
+
+def over_limit(tier, messages, tools):
+    """The first count limit `messages`/`tools` exceed, as an error message, or None."""
+    limits = tier_limits(tier)
+    checks = (("messages", len(messages or ()), "messages"),
+              ("tools", len(tools or ()), "tools"),
+              ("input_chars", None, "characters of text"))
+    for key, value, unit in checks:
+        limit = limits.get(key)
+        if limit is None:
+            continue
+        if value is None:
+            value = _input_chars(messages)
+        if value > limit:
+            return (f"Request too large for {tier} apps: {value:,} {unit}, "
+                    f"over the limit of {limit:,} ({key}).")
+    return None
 
 
 def model_in_tier(model: str, tier) -> bool:
@@ -1874,6 +1918,13 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                      origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=400, detail=error_msg)
 
+    # Request size limits (#164); the body size was checked before parsing.
+    too_large = over_limit(tier, request.messages, request.tools)
+    if too_large:
+        log_response("too-large", request.model, {}, 0, error=too_large,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+        raise HTTPException(status_code=413, detail=too_large)
+
     # Determine provider based on model
     try:
         provider_name, provider_config = route_for_tier(request.model, tier)
@@ -2071,6 +2122,65 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
             # Use 502 Bad Gateway for connection errors (more accurate than 500)
             # 500 should only be for internal proxy errors
             raise HTTPException(status_code=502, detail=f"Connection error: {error_detail}")
+
+class BodyLimitMiddleware:
+    """Refuse a chat request whose body is over its tier's `body_bytes` (#164)
+    before FastAPI reads and parses it. A declared Content-Length is checked
+    first; a body without one is read up to the limit, then handed on."""
+
+    PATHS = ("/v1/chat/completions", "/chat")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] not in self.PATHS:
+            return await self.app(scope, receive, send)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        ident = key_identity(headers.get("authorization"))
+        limit = tier_limits(ident[1]).get("body_bytes") if ident else None
+        if not limit:
+            return await self.app(scope, receive, send)
+        declared = _request_bytes(headers)
+        if declared is not None and declared > limit:
+            return await self._reject(scope, receive, send, headers, ident, f"{declared:,} bytes", limit)
+        body, more = b"", True
+        while more:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+            if len(body) > limit:
+                return await self._reject(scope, receive, send, headers, ident,
+                                          f"more than {limit:,} bytes", limit)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        return await self.app(scope, replay, send)
+
+    async def _reject(self, scope, receive, send, headers, ident, size, limit):
+        key_name, tier = ident
+        error_msg = (f"Request too large for {tier} apps: {size}, over the limit "
+                     f"of {limit:,} (body_bytes).")
+        log_response("too-large", None, {}, 0, error=error_msg,
+                     origin=headers.get("origin") or headers.get("referer"),
+                     request_id=uuid.uuid4().hex[:8], session_id=headers.get("x-session-id"),
+                     client=headers.get("x-client"), key_name=key_name,
+                     client_ip=client_ip_for_log(headers), tier=tier,
+                     user=user_for_log(headers), app=app_for_log(headers))
+        response = JSONResponse({"detail": error_msg}, status_code=413)
+        await response(scope, receive, send)
+
+
+app.add_middleware(BodyLimitMiddleware)
+
 
 @app.options("/v1/chat/completions")
 @app.options("/chat")

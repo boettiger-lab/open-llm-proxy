@@ -153,6 +153,7 @@
   "default_provider": "nrp",
   "tiers": {
     "public": {
+      "limits": { "body_bytes": 8000000, "input_chars": 1000000, "messages": 200, "tools": 64 },
       "default_model": "deepseek-v4-flash",
       "transcription_model": "parakeet",
       "models": [
@@ -175,6 +176,7 @@
       ]
     },
     "private": {
+      "limits": { "body_bytes": 8000000, "input_chars": 3000000, "messages": 400, "tools": 64 },
       "default_model": "deepseek/deepseek-v4.1-flash-1017",
       "transcription_model": "parakeet",
       "models": [
@@ -186,6 +188,7 @@
       ]
     },
     "benchmark-free": {
+      "limits": { "body_bytes": 16000000, "input_chars": 4000000, "messages": 1500, "tools": 64 },
       "default_model": "deepseek-v4-flash",
       "upstream_timeout_seconds": 14400,
       "models": [
@@ -207,6 +210,7 @@
       ]
     },
     "benchmark-paid": {
+      "limits": { "body_bytes": 16000000, "input_chars": 4000000, "messages": 1500, "tools": 64 },
       "default_model": "deepseek/deepseek-v4.1-flash-1017",
       "upstream_timeout_seconds": 14400,
       "models": [

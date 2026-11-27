@@ -492,7 +492,7 @@ Each LLM call produces two JSON entries on stdout: a `REQUEST` line when the cal
 | `model` | Model used |
 | `origin` | Same as request — identifies which app |
 | `client` | Same as request — `X-Client` header (client app + version), `null` until sent |
-| `key_name`, `client_ip`, `tier`, `user`, `app` | Same as request. Rejections are logged with `provider` set to `disallowed` (model outside tier), `budget-exceeded` (429) or `blocked` (deny-list). |
+| `key_name`, `client_ip`, `tier`, `user`, `app` | Same as request. Rejections are logged with `provider` set to `disallowed` (model outside tier), `budget-exceeded` (429), `blocked` (deny-list) or `too-large` (413, over a tier's request size limit, #164; a body refused before parsing has no `model`). |
 | `session_id` | Same as request — per-session id from the `user` body field / `X-Session-Id` header |
 | `latency_ms` | End-to-end latency in milliseconds |
 | `has_content` | Whether the LLM returned text content |
