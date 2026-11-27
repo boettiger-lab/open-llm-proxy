@@ -127,13 +127,10 @@ spec:
             secretKeyRef:
               name: open-llm-proxy-secrets
               key: nrp-api-key
-        - name: PROXY_KEY
-          valueFrom:
-            secretKeyRef:
-              name: open-llm-proxy-secrets
-              key: proxy-key
+        # No PROXY_KEY: the legacy shared key was retired on 2026-11-27 (#204).
+        # Every client has its own key in the PROXY_KEYS_FILE below.
         # Optional additional revocable client keys (comma-separated), e.g.
-        # per-user eval keys. Accepted exactly like PROXY_KEY; revoke by removing
+        # per-user eval keys. Accepted like the keys file's; revoke by removing
         # from the secret value and restarting. optional=true so the pod starts
         # fine when the secret key is absent (backward compatible).
         - name: PROXY_KEYS_EXTRA

@@ -2481,7 +2481,7 @@ async def list_models(authorization: str = Header(None), refresh: bool = False):
     offering ids that will 400.
     """
     if not client_keys():
-        raise HTTPException(status_code=500, detail="PROXY_KEY not configured on server")
+        raise HTTPException(status_code=500, detail="No client keys configured on server")
     ident = key_identity(authorization)
     if not ident:
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing proxy key")
@@ -2528,7 +2528,8 @@ async def health_check():
         # must never restart or de-rotate a pod that is serving fine (#39).
         "status": "healthy",
         "providers": providers_status,
-        "proxy_key_configured": bool(PROXY_KEY),
+        "proxy_key_configured": bool(PROXY_KEY),   # legacy shared key; unset since #204
+        "client_keys": len(client_keys()),
         "logging": {
             "last_window": _log_health["last_window"],
             "windows_checked": _log_health["windows_checked"],
