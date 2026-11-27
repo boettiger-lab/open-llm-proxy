@@ -9,6 +9,15 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Shared reasoning levels, translated per provider (#214).** A request may carry
+  `reasoning_level` (`none`/`low`/`medium`/`high`). Each provider's `reasoning_levels`
+  table translates it per model into `reasoning_effort` and/or `enable_thinking`;
+  `/v1/models` advertises `settings.reasoning_levels` from the table and a hand-set default
+  `reasoning_level`. Raw `reasoning_effort`/`enable_thinking` override a translated level and
+  turn the default off, so current clients are unchanged. An untranslatable level is a 400
+  listing the model's levels; fallbacks that can't translate it are skipped. Request rows
+  log `reasoning_level`, `reasoning_level_applied` and `reasoning_level_source`. **All tables
+  ship empty**: no model has levels until the owner approves entries.
 - **`context_length` on each model in `GET /v1/models` (#209).** Tokens, as the entry's own
   field, not in `settings`, and left out when unknown. Discovered from vLLM's `max_model_len`
   for the nimbus servers; set in the `models` map for NRP (read 2026-11-26 from vLLM's
