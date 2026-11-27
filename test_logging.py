@@ -2314,6 +2314,167 @@ def test_extract_audio():
         {"type": "input_audio", "input_audio": {"data": "AAEC", "format": "MP3"}}]}]) == (b"\x00\x01\x02", "mp3")
 
 
+def test_tier_limits_inherit_and_validate():
+    p = importlib.reload(llm_proxy)
+    t = p.resolve_tiers({"tiers": {
+        "base": {"models": ["a"], "limits": {"messages": 10, "tools": 5}},
+        "child": {"extends": "base", "limits": {"messages": 20}},
+        "none": {"models": ["a"]}}})
+    assert t["child"]["limits"] == {"messages": 20, "tools": 5}
+    assert t["none"]["limits"] == {}
+    for bad in ({"msgs": 1}, {"messages": 0}, {"messages": "10"}, {"messages": True}):
+        try:
+            p.resolve_tiers({"tiers": {"x": {"models": ["a"], "limits": bad}}})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"must reject {bad}")
+
+
+def test_shipped_limits_are_the_164_numbers():
+    p = importlib.reload(llm_proxy)
+    assert p.tier_limits("public") == {"body_bytes": 8_000_000, "input_chars": 1_000_000,
+                                       "messages": 200, "tools": 64}
+    assert p.tier_limits("private") == {"body_bytes": 8_000_000, "input_chars": 3_000_000,
+                                        "messages": 400, "tools": 64}
+    for b in ("benchmark-free", "benchmark-paid"):
+        assert p.tier_limits(b) == {"body_bytes": 16_000_000, "input_chars": 4_000_000,
+                                    "messages": 1500, "tools": 64}
+    assert p.tier_limits("no-such-tier") == {}
+
+
+def test_over_limit_counts_text_not_audio():
+    import base64
+    p = importlib.reload(llm_proxy)
+    p.TIERS = p.resolve_tiers({"tiers": {"t": {"models": ["a"], "limits": {
+        "messages": 3, "tools": 2, "input_chars": 10}}}})
+    ok = [{"role": "user", "content": "0123456789"}]
+    assert p.over_limit("t", ok, None) is None
+    assert "messages" in p.over_limit("t", ok * 4, None)
+    assert "(tools)" in p.over_limit("t", ok, [{}, {}, {}])
+    assert "(input_chars)" in p.over_limit("t", [{"role": "user", "content": "x" * 11}], None)
+    voice = [{"role": "user", "content": [{"type": "input_audio", "input_audio": {
+        "data": base64.b64encode(b"\0" * 100000).decode(), "format": "wav"}}]}]
+    assert p.over_limit("t", voice, None) is None
+    assert p.over_limit("unlimited", ok * 99, None) is None
+
+
+def test_handler_refuses_too_many_messages_with_413():
+    import asyncio
+    from fastapi import HTTPException
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+
+        class _FakeRequest:
+            headers = {"origin": "https://app"}
+
+        p._log_buffer.clear()
+        req = p.ChatRequest(model="deepseek-v4-flash",
+                            messages=[{"role": "user", "content": "hi"}] * 201)
+        try:
+            asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer k-tpl"))
+        except HTTPException as e:
+            assert e.status_code == 413
+            assert e.detail == ("Request too large for public apps: 201 messages, "
+                                "over the limit of 200 (messages).")
+        else:
+            raise AssertionError("201 messages must be refused for public")
+        (row,) = [e for e in p._log_buffer if e.get("type") == "response"]
+        assert (row["provider"], row["tier"], row["key_name"]) == ("too-large", "public", "tpl")
+        assert not [e for e in p._log_buffer if e.get("type") == "request"]
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+import httpx as _httpx_real
+_REAL_ASYNC_CLIENT = _httpx_real.AsyncClient   # tests patch httpx.AsyncClient for upstreams
+
+
+def _asgi_post(p, body: bytes, headers: dict, chunked=False):
+    """POST /v1/chat/completions through the real ASGI app (middleware included)."""
+    import asyncio
+
+    async def go():
+        transport = _httpx_real.ASGITransport(app=p.app)
+        async with _REAL_ASYNC_CLIENT(transport=transport, base_url="http://proxy") as c:
+            if chunked:
+                async def gen():
+                    for i in range(0, len(body), 65536):
+                        yield body[i:i + 65536]
+                return await c.post("/v1/chat/completions", content=gen(), headers=headers)
+            return await c.post("/v1/chat/completions", content=body, headers=headers)
+    return asyncio.run(go())
+
+
+def test_body_over_limit_is_refused_before_parsing():
+    """A declared Content-Length over the tier's body_bytes is a 413 before the
+    body is read; a chunked body is cut off at the limit; neither reaches the
+    handler (the body below is not even valid JSON)."""
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p.TIERS["public"]["limits"]["body_bytes"] = 1000
+        p._log_buffer.clear()
+        auth = {"Authorization": "Bearer k-tpl", "Content-Type": "application/json",
+                "Origin": "https://app"}
+        r = _asgi_post(p, b"x" * 1001, auth)
+        assert r.status_code == 413
+        assert r.json()["detail"] == ("Request too large for public apps: 1,001 bytes, "
+                                      "over the limit of 1,000 (body_bytes).")
+        r = _asgi_post(p, b"x" * 5000, auth, chunked=True)
+        assert r.status_code == 413 and "more than 1,000 bytes" in r.json()["detail"]
+        rows = [e for e in p._log_buffer if e.get("type") == "response"]
+        assert [(e["provider"], e["tier"], e["origin"]) for e in rows] == [
+            ("too-large", "public", "https://app")] * 2
+        # unauthenticated: no tier, so no body limit; the handler's 401 answers
+        r = _asgi_post(p, b"x" * 5000, {"Content-Type": "application/json"})
+        assert r.status_code in (401, 422)
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
+def test_body_under_limit_reaches_the_handler_intact():
+    """Under the limit, the middleware hands the whole body on, chunked or not."""
+    import json as _json
+    from unittest.mock import patch
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl"
+    try:
+        p = _reload(PROXY_KEY="testkey")
+        p.TIERS["public"]["limits"]["body_bytes"] = 200_000
+        seen = []
+
+        class _Resp:
+            def raise_for_status(self): pass
+            def json(self):
+                return {"model": "deepseek-v4-flash", "usage": {"completion_tokens": 1},
+                        "choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+        class _Client:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, endpoint, json=None, headers=None):
+                seen.append(json)
+                return _Resp()
+
+        text = "y" * 150_000
+        body = _json.dumps({"model": "deepseek-v4-flash",
+                            "messages": [{"role": "user", "content": text}]}).encode()
+        auth = {"Authorization": "Bearer k-tpl", "Content-Type": "application/json"}
+        with patch.object(p.httpx, "AsyncClient", _Client), \
+             patch.dict(p.PROVIDERS["nrp"], {"api_key": "k"}):
+            for chunked in (False, True):
+                r = _asgi_post(p, body, auth, chunked=chunked)
+                assert r.status_code == 200, r.text
+        assert [m["messages"][0]["content"] for m in seen] == [text, text]
+    finally:
+        del os.environ["PROXY_KEYS_EXTRA"]
+        _reload(PROXY_KEY="testkey")
+
+
 _SAMPLE_LEVELS = {
     "nrp": {"deepseek-v4-flash": {"none": {"reasoning_effort": "none"},
                                   "low": {"reasoning_effort": "low"},

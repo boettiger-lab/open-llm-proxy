@@ -18,6 +18,13 @@ See [Releases](README.md#releases) for how a release is cut.
   listing the model's levels; fallbacks that can't translate it are skipped. Request rows
   log `reasoning_level`, `reasoning_level_applied` and `reasoning_level_source`. **All tables
   ship empty**: no model has levels until the owner approves entries.
+- **Request size limits per tier (#164).** A tier's `limits` cap the request body
+  (`body_bytes`), its text (`input_chars`), `messages` and `tools`; over a limit is a 413
+  that names it, logged as provider `too-large`. Set from a week of measured traffic: public
+  8 MB / 1,000,000 characters / 200 messages / 64 tools; private 8 MB / 3,000,000 / 400 / 64;
+  `benchmark-free` and `benchmark-paid` 16 MB / 4,000,000 / 1,500 / 64. The body is checked
+  before JSON parsing. Audio does not count as text, and the body limits leave room for about
+  3 minutes of voice.
 - **`context_length` on each model in `GET /v1/models` (#209).** Tokens, as the entry's own
   field, not in `settings`, and left out when unknown. Discovered from vLLM's `max_model_len`
   for the nimbus servers; set in the `models` map for NRP (read 2026-11-26 from vLLM's
