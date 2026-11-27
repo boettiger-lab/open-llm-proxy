@@ -2475,6 +2475,177 @@ def test_body_under_limit_reaches_the_handler_intact():
         _reload(PROXY_KEY="testkey")
 
 
+_SAMPLE_LEVELS = {
+    "nrp": {"deepseek-v4-flash": {"none": {"reasoning_effort": "none"},
+                                  "low": {"reasoning_effort": "low"},
+                                  "medium": {"reasoning_effort": "high"},
+                                  "high": {"reasoning_effort": "max"}},
+            "qwen3": {"none": {"enable_thinking": False}, "high": {"enable_thinking": True}}},
+    # nimbus2's copy of DeepSeek (the fallback) has no "none"
+    "nimbus2": {"deepseek-nimbus": {"low": {"reasoning_effort": "low"},
+                                    "high": {"reasoning_effort": "high"}}},
+}
+
+
+def _with_levels(p, default=None):
+    for prov, table in _SAMPLE_LEVELS.items():
+        p.PROVIDERS[prov] = dict(p.PROVIDERS[prov], reasoning_levels=table, api_key="k")
+    if default:
+        p.MODEL_SETTINGS["deepseek-v4-flash"] = dict(p.MODEL_SETTINGS["deepseek-v4-flash"],
+                                                    reasoning_level=default)
+    return p
+
+
+def _capture_upstream(p, fail=()):
+    """Fake upstream recording each payload; endpoints containing a `fail` needle 503."""
+    posts = []
+
+    class _Resp:
+        def __init__(self, url, status): self.url, self.status_code, self.text, self.headers = url, status, "x", {}
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                req = p.httpx.Request("POST", self.url)
+                raise p.httpx.HTTPStatusError("x", request=req,
+                                              response=p.httpx.Response(self.status_code, text="x", request=req))
+        def json(self):
+            return {"model": "m", "usage": {"completion_tokens": 1},
+                    "choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, endpoint, json=None, headers=None):
+            posts.append((endpoint, json))
+            return _Resp(endpoint, 503 if any(f in endpoint for f in fail) else 200)
+
+    return posts, _Client
+
+
+def _chat(p, client_cls, **body):
+    import asyncio
+    from unittest.mock import patch
+
+    class _FakeRequest:
+        headers = {"origin": "https://app"}
+
+    req = p.ChatRequest(messages=[{"role": "user", "content": "hi"}], **body)
+    with patch.object(p.httpx, "AsyncClient", client_cls):
+        return asyncio.run(p.proxy_chat(req, _FakeRequest(), authorization="Bearer testkey"))
+
+
+def test_shipped_reasoning_level_tables_are_empty():
+    """#214 ships the mechanism only: no model advertises levels yet."""
+    p = _reload(PROXY_KEY="testkey")
+    assert all(not c["reasoning_levels"] for c in p.PROVIDERS.values())
+    assert all("reasoning_level" not in s for s in p.MODEL_SETTINGS.values())
+    for tier in p.TIERS:
+        for m in p.tier_model_list(tier):
+            assert "reasoning_levels" not in m.get("settings", {}), m["id"]
+
+
+def test_reasoning_level_tables_are_validated():
+    p = importlib.reload(llm_proxy)
+    assert p.validate_reasoning_levels(_SAMPLE_LEVELS["nrp"]) is _SAMPLE_LEVELS["nrp"]
+    for bad in ({"m": {"max": {"reasoning_effort": "max"}}},           # not a shared level
+                {"m": {"low": {}}},                                   # translates to nothing
+                {"m": {"low": {"temperature": 0}}},                   # not a reasoning field
+                {"m": {"low": {"enable_thinking": "yes"}}},
+                {"m": {"low": {"reasoning_effort": 3}}},
+                {"m": ["low"]}):
+        try:
+            p.validate_reasoning_levels(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"must reject {bad}")
+
+
+def test_client_level_is_translated_for_the_route():
+    p = _with_levels(_reload(PROXY_KEY="testkey"))
+    posts, client = _capture_upstream(p)
+    p._log_buffer.clear()
+    _chat(p, client, model="deepseek-v4-flash", reasoning_level="medium")
+    _chat(p, client, model="qwen3", reasoning_level="none")
+    assert posts[0][1]["reasoning_effort"] == "high"                # medium -> high on NRP
+    assert "chat_template_kwargs" not in posts[0][1]
+    assert posts[1][1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in posts[1][1]
+    reqs = [e for e in p._log_buffer if e.get("type") == "request"]
+    assert [(e["reasoning_level"], e["reasoning_level_applied"], e["reasoning_level_source"])
+            for e in reqs] == [("medium", "medium", "client"), ("none", "none", "client")]
+
+
+def test_raw_fields_override_the_translation_and_suppress_the_default():
+    p = _with_levels(_reload(PROXY_KEY="testkey"), default="low")
+    posts, client = _capture_upstream(p)
+    p._log_buffer.clear()
+    # level + raw: the raw value wins
+    _chat(p, client, model="deepseek-v4-flash", reasoning_level="medium", reasoning_effort="xhigh")
+    # raw only (old glen sends enable_thinking: true): no default applied
+    _chat(p, client, model="deepseek-v4-flash", enable_thinking=True)
+    # nothing sent: the model's default applies
+    _chat(p, client, model="deepseek-v4-flash")
+    assert posts[0][1]["reasoning_effort"] == "xhigh"
+    assert "reasoning_effort" not in posts[1][1]
+    assert posts[2][1]["reasoning_effort"] == "low"
+    reqs = [e for e in p._log_buffer if e.get("type") == "request"]
+    assert [(e["reasoning_level"], e["reasoning_level_applied"], e["reasoning_level_source"])
+            for e in reqs] == [("medium", "medium", "client"), (None, None, None), (None, "low", "default")]
+
+
+def test_unknown_or_untranslatable_level_is_a_400_listing_the_levels():
+    from fastapi import HTTPException
+    p = _with_levels(_reload(PROXY_KEY="testkey"))
+    posts, client = _capture_upstream(p)
+    p._log_buffer.clear()
+    cases = [("deepseek-v4-flash", "max", "Its levels: none, low, medium, high."),
+             ("qwen3", "low", "Its levels: none, high."),
+             ("glm-5", "low", "It has no reasoning levels")]
+    for model, level, expect in cases:
+        try:
+            _chat(p, client, model=model, reasoning_level=level)
+        except HTTPException as e:
+            assert e.status_code == 400 and expect in e.detail, e.detail
+        else:
+            raise AssertionError(f"{model}/{level} must be refused")
+    assert posts == []
+    assert {e["provider"] for e in p._log_buffer if e.get("type") == "response"} == {"bad-reasoning-level"}
+
+
+def test_fallback_that_cannot_translate_the_level_is_skipped():
+    """deepseek-v4-flash falls back to deepseek-nimbus, whose table has no "none":
+    with "none" the fallback is skipped (the NRP error stands); with "low" it is used."""
+    from fastapi import HTTPException
+    p = _with_levels(_reload(PROXY_KEY="testkey"))
+    posts, client = _capture_upstream(p, fail=("ellm.nrp",))
+    try:
+        _chat(p, client, model="deepseek-v4-flash", reasoning_level="none")
+    except HTTPException as e:
+        assert e.status_code == 502
+    else:
+        raise AssertionError("no route can serve 'none' once NRP fails")
+    assert [ep for ep, _ in posts] == [p.PROVIDERS["nrp"]["endpoint"]]
+    posts.clear()
+    _chat(p, client, model="deepseek-v4-flash", reasoning_level="low")
+    assert [ep for ep, _ in posts] == [p.PROVIDERS["nrp"]["endpoint"], p.PROVIDERS["nimbus2"]["endpoint"]]
+    assert posts[1][1]["reasoning_effort"] == "low"
+
+
+def test_models_list_advertises_levels_from_the_table():
+    p = _with_levels(_reload(PROXY_KEY="testkey"), default="medium")
+    p.MODEL_SETTINGS["qwen3"] = dict(p.MODEL_SETTINGS["qwen3"], reasoning_toggle=True,
+                                     reasoning_level="low")       # "low" not in qwen3's table
+    lst = {m["id"]: m for m in p.tier_model_list("public")}
+    ds = lst["deepseek-v4-flash"]["settings"]
+    assert ds["reasoning_levels"] == ["none", "low", "medium", "high"]
+    assert ds["reasoning_level"] == "medium"
+    q = lst["qwen3"]["settings"]
+    assert q["reasoning_levels"] == ["none", "high"]
+    assert "reasoning_level" not in q and "reasoning_toggle" not in q
+    assert "reasoning_levels" not in lst["glm-5"].get("settings", {})
+
+
 def test_no_public_api_schema():
     p = importlib.reload(llm_proxy)
     assert p.app.openapi_url is None and p.app.docs_url is None and p.app.redoc_url is None

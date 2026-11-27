@@ -15,6 +15,7 @@
         "gemma": "enable_thinking",
         "gemma-small-e4b": "enable_thinking"
       },
+      "reasoning_levels": {},
       "model_prefixes": []
     },
     "openrouter": {
@@ -96,6 +97,7 @@
         "mimo-v2.6-flash": "enable_thinking",
         "glm-5.3-flash": "enable_thinking"
       },
+      "reasoning_levels": {},
       "model_prefixes": []
     },
     "nimbus2": {
@@ -111,6 +113,7 @@
       "thinking_models": {
         "deepseek-nimbus": "thinking"
       },
+      "reasoning_levels": {},
       "model_prefixes": []
     },
     "gemma4-nimbus": {
@@ -147,6 +150,7 @@
       "thinking_models": {
         "qwen3-8": "enable_thinking"
       },
+      "reasoning_levels": {},
       "model_prefixes": []
     }
   },

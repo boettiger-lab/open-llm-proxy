@@ -9,6 +9,15 @@ See [Releases](README.md#releases) for how a release is cut.
 ## [Unreleased]
 
 ### Added
+- **Shared reasoning levels, translated per provider (#214).** A request may carry
+  `reasoning_level` (`none`/`low`/`medium`/`high`). Each provider's `reasoning_levels`
+  table translates it per model into `reasoning_effort` and/or `enable_thinking`;
+  `/v1/models` advertises `settings.reasoning_levels` from the table and a hand-set default
+  `reasoning_level`. Raw `reasoning_effort`/`enable_thinking` override a translated level and
+  turn the default off, so current clients are unchanged. An untranslatable level is a 400
+  listing the model's levels; fallbacks that can't translate it are skipped. Request rows
+  log `reasoning_level`, `reasoning_level_applied` and `reasoning_level_source`. **All tables
+  ship empty**: no model has levels until the owner approves entries.
 - **Request size limits per tier (#164).** A tier's `limits` cap the request body
   (`body_bytes`), its text (`input_chars`), `messages` and `tools`; over a limit is a 413
   that names it, logged as provider `too-large`. Set from a week of measured traffic: public

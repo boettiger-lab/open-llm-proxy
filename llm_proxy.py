@@ -585,6 +585,33 @@ def client_ip_for_log(headers) -> Optional[str]:
 
 
 # Build PROVIDERS dictionary from config
+# The reasoning levels a client may ask for (#214), the same words for every
+# model; each provider's `reasoning_levels` table says what each one means for
+# each model it serves. A model with no table entry has no levels.
+REASONING_LEVELS = ("none", "low", "medium", "high")
+_LEVEL_TRANSLATION_KEYS = {"reasoning_effort", "enable_thinking"}
+
+
+def validate_reasoning_levels(table: dict) -> dict:
+    """Check a provider's `reasoning_levels` table at startup; return it."""
+    for model, levels in table.items():
+        if not isinstance(levels, dict):
+            raise ValueError(f"reasoning_levels.{model} must be an object of levels")
+        for level, translation in levels.items():
+            if level not in REASONING_LEVELS:
+                raise ValueError(f"reasoning_levels.{model}: unknown level {level!r}; "
+                                 f"levels are {', '.join(REASONING_LEVELS)}")
+            if not isinstance(translation, dict) or not translation \
+                    or set(translation) - _LEVEL_TRANSLATION_KEYS:
+                raise ValueError(f"reasoning_levels.{model}.{level} must set reasoning_effort "
+                                 "and/or enable_thinking, and nothing else")
+            if "enable_thinking" in translation and not isinstance(translation["enable_thinking"], bool):
+                raise ValueError(f"reasoning_levels.{model}.{level}.enable_thinking must be true or false")
+            if "reasoning_effort" in translation and not isinstance(translation["reasoning_effort"], str):
+                raise ValueError(f"reasoning_levels.{model}.{level}.reasoning_effort must be a string")
+    return table
+
+
 def build_provider_entry(provider_config: dict) -> dict:
     """Normalize one provider's config into the dict used at request time."""
     api_key_env = provider_config.get("api_key_env")
@@ -610,6 +637,11 @@ def build_provider_entry(provider_config: dict) -> dict:
         "prefixes": provider_config.get("model_prefixes", provider_config.get("models", [])),
         "extra_headers": provider_config.get("extra_headers", {}),
         "thinking_models": provider_config.get("thinking_models", {}),
+        # Shared reasoning levels -> what this provider's copy of a model takes
+        # (#214): {model: {level: {"reasoning_effort": str, "enable_thinking": bool}}}.
+        # Per provider, not per model id, because the same id can differ by server
+        # (NRP's deepseek-v4-flash rejects "medium"; nimbus2's accepts it).
+        "reasoning_levels": validate_reasoning_levels(provider_config.get("reasoning_levels") or {}),
         # Proxy id -> the id the upstream server knows it by. Lets two backends
         # serve the same weights under the same upstream name without colliding
         # in routing: NRP and vllm-nimbus2 both call DeepSeek V4 Flash
@@ -879,8 +911,12 @@ PRIMARY_KEY_TIER = config.get("primary_key_tier", "private")
 # The names match glen's `llm_models` fields. Other keys pass through with a
 # warning, so a client can adopt a new setting before the proxy knows it.
 MODEL_SETTING_KEYS = {
+    "reasoning_level",
     "label", "temperature", "top_p", "seed", "max_tokens", "llm_timeout_seconds",
     "reasoning_toggle", "reasoning_default", "prompt_cache",
+    # The model's default reasoning level (#214), one of REASONING_LEVELS. The
+    # proxy applies it when a client sends no reasoning field, and lists it in
+    # `settings` only where the listed route can translate it.
     # Not a client setting: the model's context window in tokens (#209). It is
     # returned as the entry's own `context_length`, not inside `settings`, and
     # overrides what discovery reports. Set it for models whose server does not
@@ -951,6 +987,26 @@ def model_in_tier(model: str, tier) -> bool:
     return False
 
 
+def model_levels(provider_name: str, model: str) -> list:
+    """The shared levels `provider_name` can translate for `model`, in order."""
+    table = ((PROVIDERS.get(provider_name) or {}).get("reasoning_levels") or {}).get(model) or {}
+    return [lvl for lvl in REASONING_LEVELS if lvl in table]
+
+
+def resolve_reasoning_level(request):
+    """(level, source) for a request (#214). A client's `reasoning_level` wins;
+    with none, the model's default applies only if the client sent no raw
+    `reasoning_effort` or `enable_thinking`, so older clients and benchmark runs
+    that send raw fields are never changed. (None, None) when no level applies."""
+    if request.reasoning_level is not None:
+        return request.reasoning_level, "client"
+    if request.reasoning_effort is None and request.enable_thinking is None:
+        default = (MODEL_SETTINGS.get(request.model) or {}).get("reasoning_level")
+        if default:
+            return default, "default"
+    return None, None
+
+
 def tier_model_list(tier) -> list:
     """The tier's listable models (exact ids that route), in configured order,
     each with its client `settings` when the `models` map has any."""
@@ -962,6 +1018,17 @@ def tier_model_list(tier) -> list:
                  "provider": provider, "default": mid == spec["default_model"]}
         settings = dict(MODEL_SETTINGS.get(mid) or {})
         context = settings.pop("context_length", None) or served_context(provider, mid)
+        # Reasoning levels (#214), from the listed route's table, never by hand.
+        # A model with levels has no on/off toggle; its default is listed only if
+        # that route can translate it.
+        levels = model_levels(provider, mid)
+        default_level = settings.pop("reasoning_level", None)
+        if levels:
+            settings.pop("reasoning_toggle", None)
+            settings.pop("reasoning_default", None)
+            settings["reasoning_levels"] = levels
+            if default_level in levels:
+                settings["reasoning_level"] = default_level
         if context:
             entry["context_length"] = context
         if settings:
@@ -1507,7 +1574,7 @@ def _content_text(content):
 
 
 @_never_raises
-def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, request_bytes: int = None, tools: List[Dict] = None, reasoning_effort: str = None):
+def log_request(provider: str, model: str, messages: List[Dict], tools_count: int = 0, origin: str = None, request_id: str = None, session_id: str = None, client: str = None, enable_thinking: bool = None, key_name: str = None, client_ip: str = None, tier: str = None, user: str = None, app: str = None, request_bytes: int = None, tools: List[Dict] = None, reasoning_effort: str = None, reasoning_level: str = None, reasoning_level_applied: str = None, reasoning_level_source: str = None):
     """Log incoming request in structured JSON format"""
     messages = _without_audio(messages)
     # Extract the original user question (first human message, stable across all turns)
@@ -1565,6 +1632,13 @@ def log_request(provider: str, model: str, messages: List[Dict], tools_count: in
         # Requested reasoning level (#205), as the client sent it; null when not
         # sent. In `entry` only, not a flattened Parquet column.
         "reasoning_effort": reasoning_effort,
+        # Shared reasoning level (#214): what the client asked for (null if
+        # none), the level the proxy translated for the route, and whether that
+        # level came from the client or the model's default. Raw
+        # `reasoning_effort`/`enable_thinking` above override the translation.
+        "reasoning_level": reasoning_level,
+        "reasoning_level_applied": reasoning_level_applied,
+        "reasoning_level_source": reasoning_level_source,
         "user_question": _scrub_text(_cap(_content_text(user_question), _USER_QUESTION_MAX)),
         "user_message_this_turn": _scrub_text(_cap(_content_text(user_message_this_turn), _USER_QUESTION_MAX)),
         "tool_results_this_turn": list(reversed(tool_results)) if tool_results else None,
@@ -1744,6 +1818,10 @@ class ChatRequest(BaseModel):
     # takes a level rather than an on/off `enable_thinking` (Inkling-2-Mini).
     # Forwarded verbatim; the upstream decides which values it accepts.
     reasoning_effort: Optional[str] = None
+    # Shared reasoning level (#214): none / low / medium / high, translated per
+    # provider and model from `reasoning_levels`. A raw `reasoning_effort` or
+    # `enable_thinking` sent with it overrides the translation.
+    reasoning_level: Optional[str] = None
 
 def extract_audio(messages):
     """(bytes, format) of the last `input_audio` part in `messages`, or None."""
@@ -1788,8 +1866,10 @@ async def post_upstream(http_client, provider_config: dict, endpoint: str, heade
     return await http_client.post(endpoint, json=payload, headers=headers)
 
 
-def build_upstream_call(request, provider_name: str, provider_config: dict, model: str):
-    """(endpoint, headers, payload) for sending `request` to one provider as `model`."""
+def build_upstream_call(request, provider_name: str, provider_config: dict, model: str,
+                        level: str = None):
+    """(endpoint, headers, payload) for sending `request` to one provider as `model`,
+    with reasoning `level` (#214) translated for this provider's copy of it."""
     api_key = provider_config["api_key"]
     if provider_config.get("api") == "audio_transcriptions":
         headers = {"Authorization": f"Bearer {api_key}", **(provider_config.get("extra_headers") or {})}
@@ -1833,8 +1913,13 @@ def build_upstream_call(request, provider_name: str, provider_config: dict, mode
     max_tokens = effective_max_tokens(request.max_tokens, provider_config)
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
+    translation = ((provider_config.get("reasoning_levels") or {}).get(model) or {}).get(level) or {}
+    reasoning_effort = request.reasoning_effort if request.reasoning_effort is not None \
+        else translation.get("reasoning_effort")
+    enable_thinking = request.enable_thinking if request.enable_thinking is not None \
+        else translation.get("enable_thinking")
     for field in ("top_p", "seed", "stop", "response_format", "reasoning_effort"):
-        value = getattr(request, field)
+        value = reasoning_effort if field == "reasoning_effort" else getattr(request, field)
         if value is not None:
             if field == "top_p" and rejects_sampling:
                 continue  # same 400 as temperature on these models
@@ -1855,11 +1940,11 @@ def build_upstream_call(request, provider_name: str, provider_config: dict, mode
         payload["cache_salt"] = CACHE_SALT
 
     # Thinking mode: inject per-model chat_template_kwargs if enable_thinking is set
-    if request.enable_thinking is not None:
+    if enable_thinking is not None:
         thinking_models = provider_config.get("thinking_models", {})
         thinking_key = thinking_models.get(model)
         if thinking_key:
-            payload["chat_template_kwargs"] = {thinking_key: request.enable_thinking}
+            payload["chat_template_kwargs"] = {thinking_key: enable_thinking}
         else:
             print(f"ℹ️  enable_thinking requested for '{model}' but no thinking_key configured — ignoring")
     return provider_config["endpoint"], headers, payload
@@ -1936,6 +2021,26 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                      origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Reasoning level (#214). An unknown word, or a level this model's route can't
+    # translate, is a 400 that lists the model's levels. Fallbacks that can't
+    # translate a client's level are skipped below; a default level that a
+    # route can't translate is simply not applied there.
+    level, level_source = resolve_reasoning_level(request)
+    if level_source == "client" and level not in model_levels(provider_name, request.model):
+        offered = model_levels(provider_name, request.model)
+        error_msg = (f"Reasoning level '{level}' is not available for '{request.model}'. "
+                     + (f"Its levels: {', '.join(offered)}." if offered else
+                        "It has no reasoning levels; omit `reasoning_level`."))
+        log_response("bad-reasoning-level", request.model, {}, 0, error=error_msg,
+                     origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    def level_routes():
+        routes = fallback_routes(request.model, tier)
+        if level_source == "client":
+            routes = [r for r in routes if level in model_levels(r[0], r[2])]
+        return routes
+
     # A model rotated off one of the tier's automatic providers is not a tier
     # violation; it falls through to the "not currently served" answer below.
     rotated_out = (TIERS is not None and provider_name in (TIERS.get(tier) or {}).get("auto", ())
@@ -1955,7 +2060,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     served_model, refused, pending_routes = request.model, [], None
     unserved = not model_available(request.model, provider_name)
     if unserved or not model_usable(request.model, provider_name):
-        pending_routes = fallback_routes(request.model, tier)
+        pending_routes = level_routes()
     if pending_routes:
         refused.append({"provider": provider_name, "model": request.model, "status": None,
                         "error": "not currently served" if unserved else "no API key",
@@ -2000,7 +2105,10 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
         raise HTTPException(status_code=400, detail=error_msg)
 
     # Log incoming request
-    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking, reasoning_effort=request.reasoning_effort, request_bytes=_request_bytes(http_request.headers), tools=request.tools)
+    log_request(provider_name, request.model, request.messages, len(request.tools or []), origin=origin, request_id=request_id, session_id=session_id, client=client, key_name=key_name, client_ip=client_ip, tier=tier, user=user, app=app, enable_thinking=request.enable_thinking, reasoning_effort=request.reasoning_effort, request_bytes=_request_bytes(http_request.headers), tools=request.tools,
+                reasoning_level=request.reasoning_level,
+                reasoning_level_applied=level if level in model_levels(provider_name, served_model) else None,
+                reasoning_level_source=level_source if level in model_levels(provider_name, served_model) else None)
     
     # Make request to LLM provider. NB: name this `http_client`, NOT `client` —
     # `client` is the X-Client header value passed to log_response() below; an
@@ -2009,7 +2117,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
     async with httpx.AsyncClient(timeout=upstream_timeout_for_tier(tier)) as http_client:
         fallback_from = refused[0] if refused else None
         try:
-            endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
+            endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model, level)
             routes = pending_routes   # the fallback chain, looked up on the first refusal
             while True:
                 try:
@@ -2020,7 +2128,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                     if not should_fall_back(e, provider_config):
                         raise
                     if routes is None:
-                        routes = fallback_routes(request.model, tier)
+                        routes = level_routes()
                     if not routes:
                         raise
                     refused.append({
@@ -2036,7 +2144,7 @@ async def proxy_chat(request: ChatRequest, http_request: Request, authorization:
                           f"({refused[-1]['status'] or refused[-1]['error'][:60]}); "
                           f"retrying on {provider_name} as {served_model} (request_id={request_id})",
                           flush=True)
-                    endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model)
+                    endpoint, headers, payload = build_upstream_call(request, provider_name, provider_config, served_model, level)
             result = response.json()
             if provider_config.get("api") == "audio_transcriptions":
                 result = transcript_as_completion(result, served_model, request_id)
