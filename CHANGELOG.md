@@ -8,6 +8,15 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Removed
+- **The shared `proxy-key` and the `no-harness` key are retired (#204).** The NRP
+  Deployments no longer set `PROXY_KEY` (logged as `primary`; last used 2026-11-17, by
+  `agent-check` test origins only). `proxy-key` is removed from `open-llm-proxy-secrets` in
+  `biodiversity` and `schmidtdse`, and `no-harness` (unused since 2026-11-10) from
+  `biodiversity/open-llm-proxy-app-keys` and the proxy's keys file. Every client has its own
+  key. `/health` now reports `client_keys`, the number of accepted keys. The code still
+  accepts `PROXY_KEY` where a deployment sets it (the parked cirrus manifests do).
+
 ### Added
 - **Shared reasoning levels, translated per provider (#214).** A request may carry
   `reasoning_level` (`none`/`low`/`medium`/`high`). Each provider's `reasoning_levels`

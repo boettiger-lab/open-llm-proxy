@@ -14,7 +14,7 @@ your-namespace
 │  geo-agent app(s)                                    │
 │       │                                              │
 │       ├── POST /v1/chat/completions ──▶ open-llm-proxy ──▶ NRP / OpenRouter / Nimbus
-│       │         (PROXY_KEY auth)            │         │
+│       │       (client key auth)             │         │
 │       │                                     ▼         │
 │       │                            s3://logs-<ns>/    │
 │       │                                              │
@@ -26,9 +26,9 @@ Each namespace runs its own open-llm-proxy. The MCP data server can be shared ac
 
 ## How it works
 
-Clients send standard `/v1/chat/completions` requests with a `PROXY_KEY` in the `Authorization` header. The proxy:
+Clients send standard `/v1/chat/completions` requests with their own client key in the `Authorization` header. The proxy:
 
-1. Authenticates the client against `PROXY_KEY`
+1. Authenticates the client against its key list (see [Client keys](#client-keys))
 2. Routes to the correct provider based on model name
 3. Logs the request and response to stdout and buffers for S3
 4. Returns the provider response unmodified
@@ -80,7 +80,7 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
 
 - **How a key gets its tier.** Each client key (see [Client keys](#client-keys)) carries its tier as a prefix in the keys file: `public/tpl:<key>` or `private/tpl-internal:<key>`.
   - A key with no prefix is `public` (`default_key_tier`).
-  - The legacy shared `PROXY_KEY` is `private` (`primary_key_tier`) only while the apps move to their own keys. Set it to `public`, or revoke it, once they have.
+  - The legacy shared `PROXY_KEY` was retired on 2026-11-27 (#204): the NRP deployments no longer set it. A deployment that still sets it gives it `primary_key_tier`.
 - **Requests.** A model outside the caller's tier gets a **403** that lists what the tier offers, and is logged with `provider: "disallowed"` and `tier`.
 - **Request size limits (#164).** A tier's `limits` cap `body_bytes` (the request body), `input_chars` (text in `messages`, as logged; audio does not count), `messages` and `tools`. A tier inherits its parents' limits and can override each one; a limit no tier sets is not enforced. The body is checked before it is parsed, from `Content-Length` or, without one, while it is read. A request over a limit gets a **413** that names the limit and the tier, and is logged with `provider: "too-large"`. The numbers come from measured traffic (see #164): public 8 MB / 1M characters / 200 messages / 64 tools; private 8 MB / 3M / 400 / 64; benchmark tiers 16 MB / 4M / 1,500 / 64. The body limits leave room for about 3 minutes of voice input, which arrives as base64 WAV in the body.
 - **The model list.** `GET /v1/models` returns the caller's tier list in order, flagging `default` on one entry and adding `default_model`. Entries carry `settings` from the `models` map. It doesn't fetch the upstream catalogs.
@@ -289,7 +289,7 @@ shred -u /tmp/keys
 - **Revoking a key:** delete its line and re-apply the same way. The Secret is mounted as a file, and kubelet refreshes it in place, usually within a minute. The proxy re-reads the file when it changes, so no restart is needed.
 - **Unknown or revoked keys:** both get the same 401.
 - **Key names:** letters, digits, `.`, `_` and `-`. The optional `tier/` prefix sets the model tier.
-- **Older forms:** `PROXY_KEY` (logged as `primary`) and `PROXY_KEYS_EXTRA` still work, as comma-separated `name:key` entries or bare keys. A bare key is logged as `unnamed-<hash prefix>`. Both need a restart to change.
+- **Older forms:** `PROXY_KEY` (logged as `primary`; no longer set on NRP, #204) and `PROXY_KEYS_EXTRA` still work, as comma-separated `name:key` entries or bare keys. A bare key is logged as `unnamed-<hash prefix>`. Both need a restart to change.
 
 The app's nginx forwards the visitor's address as `X-Real-IP`, and the proxy logs it as `client_ip`. By default it is a salted hash (`CLIENT_IP_LOG=hash`, salt from the `client-ip-salt` key of `open-llm-proxy-secrets`), which is enough to count and block one visitor without storing the address itself. With no salt set, nothing is logged. Set `CLIENT_IP_LOG=raw` to log the address itself, or `off` to log nothing.
 
@@ -318,7 +318,7 @@ Rather than hardcoding a model list, clients can query the deployment:
 
 ```bash
 # from a pod in the cluster (there is no public endpoint)
-curl -H "Authorization: Bearer $PROXY_KEY" http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1/models
+curl -H "Authorization: Bearer $CLIENT_KEY" http://open-llm-proxy.biodiversity.svc.cluster.local:8002/v1/models
 ```
 
 OpenAI-shaped (`{"object": "list", "data": [...]}`), with each entry annotated by
@@ -460,4 +460,4 @@ Tags are descriptive only — deployment still tracks `main` (see [Update](#upda
 GET https://<your-host>/health
 ```
 
-Returns provider configuration status and whether `PROXY_KEY` is set.
+Returns provider configuration status, the number of accepted client keys (`client_keys`), and whether the legacy `PROXY_KEY` is set.
