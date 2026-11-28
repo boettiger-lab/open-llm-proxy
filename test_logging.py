@@ -2885,7 +2885,7 @@ def test_shipped_benchmark_tiers_split_free_from_paid():
     free, paid = p.TIERS["benchmark-free"], p.TIERS["benchmark-paid"]
     assert "benchmark" not in p.TIERS          # the transitional alias is gone
     for m in p.tier_model_list("benchmark-free"):
-        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus"), m
+        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus", "nimbus3"), m
     for judge in ("deepseek-v4-flash", "glm-5", "qwen3"):   # glen's NRP judge panels
         assert p.model_in_tier(judge, "benchmark-free"), judge
     assert len(paid["models"]) == 8 and paid["auto"] == ()
@@ -3065,7 +3065,7 @@ def test_shipped_config_discovers_only_self_hosted_providers():
     assert not p.PROVIDERS["openrouter"]["discover_models"]
     assert p.PROVIDERS["nrp"]["discover_models"] and p.PROVIDERS["nimbus"]["discover_models"]
     assert "nrp" not in p.TIERS["public"]["auto"]          # NRP is a curated subset
-    assert set(p.TIERS["public"]["auto"]) <= {"nimbus", "nimbus2", "gemma4-nimbus"}
+    assert set(p.TIERS["public"]["auto"]) <= {"nimbus", "nimbus2", "gemma4-nimbus", "nimbus3"}
     assert p.TIERS["benchmark-free"]["auto"] == p.TIERS["public"]["auto"]
 
 

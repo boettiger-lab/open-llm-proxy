@@ -18,6 +18,10 @@ See [Releases](README.md#releases) for how a release is cut.
   accepts `PROXY_KEY` where a deployment sets it (the parked cirrus manifests do).
 
 ### Added
+- **`inkling-2-mini` on the DSE `nimbus3` host, for the benchmark.** A new provider,
+  `nimbus3` (`vllm-nimbus3.carlboettiger.info`, the same `NIMBUS_API_KEY` as the other DSE
+  hosts), serves `inkling-2-mini`. Like the other DSE hosts, its served models are
+  discovered into the `public` and `benchmark-free` tiers. The server applies medium reasoning effort by default (k8s#286).
 - **Shared reasoning levels, translated per provider (#214).** A request may carry
   `reasoning_level` (`none`/`low`/`medium`/`high`). Each provider's `reasoning_levels`
   table translates it per model into `reasoning_effort` and/or `enable_thinking`;
