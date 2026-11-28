@@ -3065,7 +3065,7 @@ def test_shipped_config_discovers_only_self_hosted_providers():
     assert not p.PROVIDERS["openrouter"]["discover_models"]
     assert p.PROVIDERS["nrp"]["discover_models"] and p.PROVIDERS["nimbus"]["discover_models"]
     assert "nrp" not in p.TIERS["public"]["auto"]          # NRP is a curated subset
-    assert set(p.TIERS["public"]["auto"]) <= {"nimbus", "nimbus2", "gemma4-nimbus"}
+    assert set(p.TIERS["public"]["auto"]) <= {"nimbus", "nimbus2", "gemma4-nimbus", "nimbus3"}
     assert p.TIERS["benchmark-free"]["auto"] == p.TIERS["public"]["auto"]
 
 

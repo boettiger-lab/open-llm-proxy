@@ -185,7 +185,8 @@
       "auto": [
         "nimbus",
         "nimbus2",
-        "gemma4-nimbus"
+        "gemma4-nimbus",
+        "nimbus3"
       ]
     },
     "private": {
@@ -214,13 +215,13 @@
         "minimax-m2",
         "gemma",
         "gemma-small",
-        "deepseek-nimbus",
-        "inkling-2-mini"
+        "deepseek-nimbus"
       ],
       "auto": [
         "nimbus",
         "nimbus2",
-        "gemma4-nimbus"
+        "gemma4-nimbus",
+        "nimbus3"
       ]
     },
     "benchmark-paid": {
@@ -257,7 +258,7 @@
     "nemotron-3.5-lightning": { "label": "DSE Nemotron 3.5 Lightning" },
     "mimo-v2.6-flash": { "label": "DSE MiMo V2.6 Flash" },
     "glm-5.3-flash": { "label": "DSE GLM 5.3 Flash" },
-    "inkling-2-mini": { "label": "DSE Inkling 2 Mini" },
+    "inkling-2-mini": { "label": "inkling-2-mini (DSE)" },
     "xiaomi/mimo-v2.6-flash": { "label": "MiMo V2.6 Flash", "context_length": 1048576 },
     "deepseek/deepseek-v4.1-flash-1017": { "label": "DeepSeek V4 Flash (1017)", "context_length": 1048576 },
     "deepseek/deepseek-v4.1-flash-1017:nitro": { "label": "DeepSeek V4 Flash Nitro (1017)", "context_length": 1048576 },
