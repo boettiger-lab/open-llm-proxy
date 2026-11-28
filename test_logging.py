@@ -2885,7 +2885,7 @@ def test_shipped_benchmark_tiers_split_free_from_paid():
     free, paid = p.TIERS["benchmark-free"], p.TIERS["benchmark-paid"]
     assert "benchmark" not in p.TIERS          # the transitional alias is gone
     for m in p.tier_model_list("benchmark-free"):
-        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus"), m
+        assert m["provider"] in ("nrp", "nimbus", "nimbus2", "gemma4-nimbus", "nimbus3"), m
     for judge in ("deepseek-v4-flash", "glm-5", "qwen3"):   # glen's NRP judge panels
         assert p.model_in_tier(judge, "benchmark-free"), judge
     assert len(paid["models"]) == 8 and paid["auto"] == ()
