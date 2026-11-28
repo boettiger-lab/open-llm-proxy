@@ -2932,7 +2932,8 @@ def test_shipped_tiers_extend_without_changing_their_lists():
     pub, prv = (p.TIERS[t]["models"] for t in ("public", "private"))
     assert prv == ("deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash-1017:nitro",
                    "deepseek-v4-flash", "gemma", "deepseek-nimbus")
-    assert len(pub) == 11 and p.TIERS["private"]["auto"] == ()
+    assert len(pub) == 9 and "gpt-oss" not in pub and "gemma-small" not in pub
+    assert p.TIERS["private"]["auto"] == ()
     assert p.TIERS["public"]["default_model"] == "deepseek-v4-flash"
     assert p.TIERS["private"]["default_model"] == "deepseek/deepseek-v4.1-flash-1017"
 
@@ -3260,7 +3261,7 @@ def test_discovery_records_max_model_len_under_the_proxy_id():
         assert p.served_context("nrp", "qwen3") is None
         lst = {m["id"]: m for m in p.tier_model_list("public")}
         assert lst["glm-5.3-flash"]["context_length"] == 262144
-        assert lst["glm-5.3-flash"]["settings"] == {"label": "DSE GLM 5.3 Flash"}
+        assert lst["glm-5.3-flash"]["settings"] == {"label": "glm-5.3-flash (DSE)", "reasoning_toggle": True}
         assert lst["deepseek-nimbus"]["context_length"] == 350000   # aliased upstream id
     p.SERVED.clear()
 
@@ -3269,18 +3270,19 @@ def test_models_list_carries_context_length_outside_settings():
     """`context_length` is the entry's own field (#209): from the `models` map,
     never inside `settings`, and absent when unknown."""
     import asyncio
-    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl,benchmark-paid/bp:k-bp"
+    os.environ["PROXY_KEYS_EXTRA"] = "public/tpl:k-tpl,benchmark-paid/bp:k-bp,benchmark-free/bf:k-bf"
     try:
         p = _reload(PROXY_KEY="testkey")
         p.SERVED.clear()
         pub = {m["id"]: m for m in asyncio.run(p.list_models(authorization="Bearer k-tpl"))["data"]}
         assert pub["kimi"]["context_length"] == 131072
-        assert pub["kimi"]["settings"] == {"label": "NRP Kimi"}
-        assert "context_length" not in pub["gpt-oss"]                # not known
+        assert pub["kimi"]["settings"] == {"label": "kimi (NRP)", "reasoning_toggle": True}
+        bf = {m["id"]: m for m in asyncio.run(p.list_models(authorization="Bearer k-bf"))["data"]}
+        assert "context_length" not in bf["gpt-oss"]                 # not known
         assert all("context_length" not in m.get("settings", {}) for m in pub.values())
         bp = {m["id"]: m for m in asyncio.run(p.list_models(authorization="Bearer k-bp"))["data"]}
         assert bp["openai/gpt-6-luna"]["context_length"] == 1050000
-        assert "settings" not in bp["openai/gpt-6-luna"]             # only a window, no settings
+        assert bp["openai/gpt-6-luna"]["settings"] == {"label": "GPT-6 Luna (openrouter)"}
         # a configured value overrides what the server reports
         p.SERVED["nimbus2"] = {"ids": frozenset({"deepseek-nimbus"}), "error": None,
                                "fetched_iso": "", "context": {"deepseek-nimbus": 350000}}

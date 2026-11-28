@@ -73,8 +73,8 @@ The proxy keeps curated model lists in `config.json`, one per tier: public apps,
                      "provider_overrides": {"openrouter": "openrouter-benchmark"}}
 },
 "models": {
-  "deepseek-v4-flash": {"label": "NRP DeepSeek V4 Flash"},
-  "z-ai/glm-5.2":      {"label": "GLM-5.2"}
+  "deepseek-v4-flash": {"label": "deepseek-v4-flash (NRP)"},
+  "z-ai/glm-5.2":      {"label": "GLM-5.2 (openrouter)"}
 }
 ```
 

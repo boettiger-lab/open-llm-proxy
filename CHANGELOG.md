@@ -8,6 +8,18 @@ See [Releases](README.md#releases) for how a release is cut.
 
 ## [Unreleased]
 
+### Changed
+- **Model labels follow the benchmark's naming.** NRP and DSE models are labeled by
+  their route id and host, as on the glen-benchmark dashboard: `deepseek-v4-flash (NRP)`,
+  `glm-5.3-flash (DSE)`. OpenRouter models are labeled by model name and
+  `(openrouter)`, such as `MiMo V2.6 Flash (openrouter)`, and the benchmark-paid models,
+  which had no label, now have one.
+- **`gpt-oss` and `gemma-small` leave the public tier.** They stay in `benchmark-free`.
+- **Thinking models list `reasoning_toggle: true` (#214).** Every model in the `models` map
+  with a thinking switch in `thinking_models` now carries it in `/v1/models` settings, so
+  glen shows its 🧠 on/off toggle. Its default is left unset, so glen starts it on, as these
+  models already ran. A model that later gets reasoning levels drops the toggle.
+
 ### Removed
 - **The shared `proxy-key` and the `no-harness` key are retired (#204).** The NRP
   Deployments no longer set `PROXY_KEY` (logged as `primary`; last used 2026-11-17, by
